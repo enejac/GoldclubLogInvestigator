@@ -50,6 +50,17 @@ AI_PROVIDER_CHOICES: tuple[str, ...] = (
 )
 _KEY_TABLE_HEADER_STATE = "table/header_state"
 _KEY_TABLE_HEADER_SCHEMA = "table/header_schema_version"
+_KEY_MAINWIN_GEOMETRY = "mainwin/geometry"
+_KEY_MAINWIN_WINDOW_STATE = "mainwin/windowState"
+_KEY_MAINWIN_X = "mainwin/x"
+_KEY_MAINWIN_Y = "mainwin/y"
+_KEY_MAINWIN_W = "mainwin/width"
+_KEY_MAINWIN_H = "mainwin/height"
+_KEY_SAS_VERIFY_GEOMETRY = "sasVerify/geometry"
+_KEY_SAS_VERIFY_X = "sasVerify/x"
+_KEY_SAS_VERIFY_Y = "sasVerify/y"
+_KEY_SAS_VERIFY_W = "sasVerify/width"
+_KEY_SAS_VERIFY_H = "sasVerify/height"
 # Bump when column count/modes change so stale QByteArray header state is dropped once.
 _TABLE_HEADER_SCHEMA_CURRENT = 3
 
@@ -312,6 +323,164 @@ class SettingsManager:
         else:
             return None
         return out if out else None
+
+    @staticmethod
+    def _settings_qbytearray(raw: object) -> QByteArray | None:
+        if raw is None:
+            return None
+        if isinstance(raw, QByteArray):
+            return raw if not raw.isEmpty() else None
+        if isinstance(raw, (bytes, bytearray, memoryview)):
+            ba = QByteArray(bytes(raw))
+            return ba if not ba.isEmpty() else None
+        return None
+
+    @staticmethod
+    def _settings_int(raw: object) -> int | None:
+        if raw is None:
+            return None
+        try:
+            return int(raw)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def save_main_window_geometry(window: object) -> None:
+        """Persist main-window size, position, and tool/dock layout."""
+        s = SettingsManager._s()
+        save_geometry = getattr(window, "saveGeometry", None)
+        save_state = getattr(window, "saveState", None)
+        geometry = getattr(window, "geometry", None)
+        if callable(save_geometry):
+            s.setValue(_KEY_MAINWIN_GEOMETRY, save_geometry())
+        if callable(save_state):
+            s.setValue(_KEY_MAINWIN_WINDOW_STATE, save_state())
+        if callable(geometry):
+            geo = geometry()
+            s.setValue(_KEY_MAINWIN_X, int(geo.x()))
+            s.setValue(_KEY_MAINWIN_Y, int(geo.y()))
+            s.setValue(_KEY_MAINWIN_W, int(geo.width()))
+            s.setValue(_KEY_MAINWIN_H, int(geo.height()))
+        s.sync()
+
+    @staticmethod
+    def restore_main_window_geometry(window: object) -> bool:
+        """Restore last saved main-window size/position; returns True if anything applied."""
+        s = SettingsManager._s()
+        restored = False
+        restore_geometry = getattr(window, "restoreGeometry", None)
+        restore_state = getattr(window, "restoreState", None)
+        g = SettingsManager._settings_qbytearray(s.value(_KEY_MAINWIN_GEOMETRY))
+        if g is not None and callable(restore_geometry):
+            restored = bool(restore_geometry(g)) or restored
+        st = SettingsManager._settings_qbytearray(s.value(_KEY_MAINWIN_WINDOW_STATE))
+        if st is not None and callable(restore_state):
+            restored = bool(restore_state(st)) or restored
+        if not restored:
+            x = SettingsManager._settings_int(s.value(_KEY_MAINWIN_X))
+            y = SettingsManager._settings_int(s.value(_KEY_MAINWIN_Y))
+            w = SettingsManager._settings_int(s.value(_KEY_MAINWIN_W))
+            h = SettingsManager._settings_int(s.value(_KEY_MAINWIN_H))
+            set_geometry = getattr(window, "setGeometry", None)
+            move = getattr(window, "move", None)
+            resize = getattr(window, "resize", None)
+            if (
+                x is not None
+                and y is not None
+                and w is not None
+                and h is not None
+                and w > 0
+                and h > 0
+                and callable(set_geometry)
+            ):
+                set_geometry(x, y, w, h)
+                restored = True
+            elif x is not None and y is not None and callable(move):
+                move(x, y)
+                restored = True
+            elif w is not None and h is not None and w > 0 and h > 0 and callable(resize):
+                resize(w, h)
+                restored = True
+        SettingsManager._ensure_window_on_screen(window)
+        return restored
+
+    @staticmethod
+    def save_sas_verify_dialog_geometry(window: object) -> None:
+        """Persist SAS accounting verification dialog size and position."""
+        s = SettingsManager._s()
+        save_geometry = getattr(window, "saveGeometry", None)
+        geometry = getattr(window, "geometry", None)
+        if callable(save_geometry):
+            s.setValue(_KEY_SAS_VERIFY_GEOMETRY, save_geometry())
+        if callable(geometry):
+            geo = geometry()
+            s.setValue(_KEY_SAS_VERIFY_X, int(geo.x()))
+            s.setValue(_KEY_SAS_VERIFY_Y, int(geo.y()))
+            s.setValue(_KEY_SAS_VERIFY_W, int(geo.width()))
+            s.setValue(_KEY_SAS_VERIFY_H, int(geo.height()))
+        s.sync()
+
+    @staticmethod
+    def restore_sas_verify_dialog_geometry(window: object) -> bool:
+        """Restore last SAS verify dialog size/position."""
+        s = SettingsManager._s()
+        restored = False
+        restore_geometry = getattr(window, "restoreGeometry", None)
+        g = SettingsManager._settings_qbytearray(s.value(_KEY_SAS_VERIFY_GEOMETRY))
+        if g is not None and callable(restore_geometry):
+            restored = bool(restore_geometry(g)) or restored
+        if not restored:
+            x = SettingsManager._settings_int(s.value(_KEY_SAS_VERIFY_X))
+            y = SettingsManager._settings_int(s.value(_KEY_SAS_VERIFY_Y))
+            w = SettingsManager._settings_int(s.value(_KEY_SAS_VERIFY_W))
+            h = SettingsManager._settings_int(s.value(_KEY_SAS_VERIFY_H))
+            set_geometry = getattr(window, "setGeometry", None)
+            move = getattr(window, "move", None)
+            resize = getattr(window, "resize", None)
+            if (
+                x is not None
+                and y is not None
+                and w is not None
+                and h is not None
+                and w > 0
+                and h > 0
+                and callable(set_geometry)
+            ):
+                set_geometry(x, y, w, h)
+                restored = True
+            elif x is not None and y is not None and callable(move):
+                move(x, y)
+                restored = True
+            elif w is not None and h is not None and w > 0 and h > 0 and callable(resize):
+                resize(w, h)
+                restored = True
+        SettingsManager._ensure_window_on_screen(window)
+        return restored
+
+    @staticmethod
+    def _ensure_window_on_screen(window: object) -> None:
+        from PySide6.QtGui import QGuiApplication
+
+        frame_geometry = getattr(window, "frameGeometry", None)
+        set_geometry = getattr(window, "setGeometry", None)
+        if not callable(frame_geometry) or not callable(set_geometry):
+            return
+        frame = frame_geometry()
+        if not frame.isValid():
+            return
+        screens = QGuiApplication.screens()
+        for screen in screens:
+            if screen.availableGeometry().intersects(frame):
+                return
+        primary = QGuiApplication.primaryScreen()
+        if primary is None:
+            return
+        avail = primary.availableGeometry()
+        w = min(max(frame.width(), 320), avail.width())
+        h = min(max(frame.height(), 240), avail.height())
+        x = avail.x() + max(0, (avail.width() - w) // 2)
+        y = avail.y() + max(0, (avail.height() - h) // 2)
+        set_geometry(x, y, w, h)
 
     @staticmethod
     def invalidate_table_header_state_if_schema_stale() -> None:

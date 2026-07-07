@@ -2001,10 +2001,78 @@ class IncidentViewModel(QObject):
             return str(total)
 
         # SPECIAL CASE: SAS 001C (Total Machine Paid Paytable Win)
-        # Observed on this cabinet/firmware: 001C matches Coin Out (0001).
+        # On some firmware coinOut XML tracks this meter; do not reuse 0001 coin-out
+        # aggregation (sasbonuswin/progwin) — that is total coin out, not paytable-only.
         if code == "001C":
             v = machine_state.get("coinout") or machine_state.get("totalcoinout")
             return str(v).strip() if v is not None else None
+
+        # SPECIAL CASE: SAS 0001 (Total Coin Out Credits / Win)
+        # Include bonus cashable-in transfers when present in transMeter:
+        #   deviceClass="bonus", meterName="cashableInAmt" -> bonus_cashableinamt.
+        bonus_cashable_in = _safe_int(machine_state.get("bonuscashableinamt"))
+        if code == "0001":
+            def _scale_0001_raw(raw: str) -> str:
+                s = (raw or "").strip()
+                if not s or not s.isdigit():
+                    return s
+                return f"{(int(s) / 100.0):.2f}"
+
+            def _finish_coin_out(base_int: int) -> str:
+                if bonus_cashable_in > 0:
+                    combined = base_int + bonus_cashable_in
+                    try:
+                        import sys as _sys
+
+                        _sys.__stdout__.write(
+                            "[UI-ALIAS] CoinOut adjusted with bonus_cashableinamt: "
+                            f"{base_int} + {bonus_cashable_in} = {combined}\n"
+                        )
+                        _sys.__stdout__.flush()
+                    except Exception:
+                        pass
+                    return _scale_0001_raw(str(combined))
+                return _scale_0001_raw(str(base_int))
+
+            # SAS 0001 is total coin-out (paytable + SAS/prog win). GoldClub XML splits
+            # these: coinout/basegamecoinout hold paytable only; sasbonuswin/progwin are
+            # separate. Do not return early from alias coinout — it misses win buckets.
+            paytable_keys = (
+                "coinout",
+                "totalcoinout",
+                "gamecoinout",
+                "basegamecoinout",
+                "bggamecoinout",
+                "scattercoinout",
+                "progscattercoinout",
+                "addscattercoinout",
+            )
+            win_keys = ("sasbonuswin", "progwin")
+            paytable_total = max(
+                (_safe_int(machine_state.get(k)) for k in paytable_keys),
+                default=0,
+            )
+            win_total = sum(_safe_int(machine_state.get(k)) for k in win_keys)
+            if paytable_total > 0 or win_total > 0:
+                return _finish_coin_out(paytable_total + win_total)
+
+            # Legacy alias fallthrough for cabinets that store a single coin-out key.
+            for a in aliases:
+                nk = norm_key(a)
+                if not nk or nk in paytable_keys or nk in win_keys:
+                    continue
+                v = machine_state.get(nk)
+                if v is None:
+                    continue
+                base_raw = str(v).strip()
+                if not base_raw or not base_raw.isdigit():
+                    continue
+                base_int = _safe_int(base_raw)
+                if base_int == 0:
+                    continue
+                return _finish_coin_out(base_int)
+
+            return _finish_coin_out(0)
 
         # SPECIAL CASE: SAS 0017 / 0018 (AFT/WAT transfers) are AGGREGATE meters.
         # The EGM reports the transfer total as cashable + non-cashable (restricted)
@@ -2031,44 +2099,9 @@ class IncidentViewModel(QObject):
                 except Exception:
                     pass
                 return str(total)
+            if "watcashableinamt" in machine_state or "wattransferincnt" in machine_state:
+                return "0"
             # Older cabinets / different schema: fall through to alias lookup below.
-
-        # SPECIAL CASE: SAS 0001 (Total Coin Out Credits / Win)
-        # Include bonus cashable-in transfers when present in transMeter:
-        #   deviceClass="bonus", meterName="cashableInAmt" -> bonus_cashableinamt.
-        bonus_cashable_in = _safe_int(machine_state.get("bonuscashableinamt"))
-        if code == "0001":
-            def _scale_0001_raw(raw: str) -> str:
-                s = (raw or "").strip()
-                if not s or not s.isdigit():
-                    return s
-                return f"{(int(s) / 100.0):.2f}"
-
-            for a in aliases:
-                nk = norm_key(a)
-                if not nk:
-                    continue
-                v = machine_state.get(nk)
-                if v is None:
-                    continue
-                base_raw = str(v).strip()
-                if not base_raw:
-                    continue
-                base_int = _safe_int(base_raw)
-                if bonus_cashable_in > 0:
-                    combined = str(base_int + bonus_cashable_in)
-                    try:
-                        import sys as _sys
-
-                        _sys.__stdout__.write(
-                            "[UI-ALIAS] CoinOut adjusted with bonus_cashableinamt: "
-                            f"{base_int} + {bonus_cashable_in} = {combined}\n"
-                        )
-                        _sys.__stdout__.flush()
-                    except Exception:
-                        pass
-                    return _scale_0001_raw(combined)
-                return _scale_0001_raw(base_raw)
 
         # DEBUG: For Transfer In (0017), help locate any hidden "1000" values in machine_state.
         # Do not short-circuit normal alias matching; only fall back to the first found 1000
@@ -2097,15 +2130,51 @@ class IncidentViewModel(QObject):
             except Exception:
                 pass
 
+        # SPECIAL CASE: Games Won — missing gameswon on multigamer cabinets means 0 wins.
+        if code == "0006":
+            won_s = str(machine_state.get("gameswon") or "").strip()
+            if won_s.isdigit():
+                return won_s
+            if str(
+                machine_state.get("gamesplayed")
+                or machine_state.get("gamebaseplays")
+                or ""
+            ).strip().isdigit():
+                return "0"
+
         # SPECIAL CASE: Games Lost (Played - Won). Not always stored as its own meter.
         if code == "0007":
             played_s = str(machine_state.get("gamesplayed") or "").strip()
             won_s = str(machine_state.get("gameswon") or "").strip()
             played = int(played_s) if played_s.isdigit() else None
-            won = int(won_s) if won_s.isdigit() else None
-            if played is not None and won is not None:
+            if played is not None:
+                won = int(won_s) if won_s.isdigit() else 0
                 return str(max(0, played - won))
             # If we can't compute it, fall through to alias lookup; may exist directly on some cabinets.
+
+        # WAT per-bucket meters: when WAT is active but a bucket key is absent, treat as 0.
+        _wat_in_bucket_keys = {
+            "00A0": "watcashableinamt",
+            "00A2": "watnoncashinamt",
+            "00A4": "watpromoinamt",
+        }
+        _wat_out_bucket_keys = {
+            "00B8": "watcashableoutamt",
+            "00BA": "watnoncashoutamt",
+            "00BC": "watpromooutamt",
+        }
+        if code in _wat_in_bucket_keys:
+            nk = _wat_in_bucket_keys[code]
+            if nk in machine_state:
+                return str(machine_state[nk]).strip()
+            if "watcashableinamt" in machine_state or "wattransferincnt" in machine_state:
+                return "0"
+        if code in _wat_out_bucket_keys:
+            nk = _wat_out_bucket_keys[code]
+            if nk in machine_state:
+                return str(machine_state[nk]).strip()
+            if "watcashableinamt" in machine_state or "wattransferincnt" in machine_state:
+                return "0"
 
         # Debug: help diagnose cabinets that store handpay/cancelled in shared keys.
         if code in {"0004", "0023"}:

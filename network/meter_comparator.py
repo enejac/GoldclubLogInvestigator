@@ -65,6 +65,36 @@ def _meter_value_to_int(val_str: str) -> int:
         return 0
 
 
+def _compare_intish(value: str) -> int | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    body = raw[1:] if raw.startswith("-") else raw
+    if "." in body:
+        body = body.replace(".", "")
+    if not body.isdigit():
+        return None
+    return int(body.lstrip("0") or "0")
+
+
+def align_bills_in_sas_credits(sas_value: str, machine_credits: str) -> str:
+    """
+    Normalize 000B / TotalCreditsFromBills for cabinet compare.
+
+    Some EGMs report bills-in in whole dollars (``6`` = $6) while GoldClub cabinet
+    state stores ``notesInStackerAmt`` in credits (``600`` = $6 at 100 credits/$).
+    """
+    s = _compare_intish(sas_value)
+    m = _compare_intish(machine_credits)
+    if s is None:
+        return (sas_value or "").strip()
+    if m is None or s == m:
+        return str(s)
+    if s * 100 == m:
+        return str(m)
+    return str(s)
+
+
 def _extract_sas_meters(sas_path: str) -> dict[str, int]:
     meters: dict[str, int] = {}
     if not os.path.exists(sas_path):

@@ -262,3 +262,124 @@ def test_visible_verify_table_headers_subset() -> None:
         column_visible=column_visible,
     )
     assert headers == ["6F Code", "Meter Name", "SAS (6F)"]
+
+
+def test_normalize_int_for_compare_empty_is_blank() -> None:
+    from gui.sas_verify_dialog import SasVerifyDialog
+
+    dlg = SasVerifyDialog.__new__(SasVerifyDialog)
+    assert dlg._normalize_int_for_compare("") == ""
+    assert dlg._normalize_int_for_compare("600") == "600"
+    assert dlg._normalize_int_for_compare("0.00") == "0"
+
+
+def test_0006_defaults_zero_when_games_played() -> None:
+    vm = _make_vm()
+    state = {"gamesplayed": "1"}
+    assert vm.get_gm2u_value_for_sas_code("0006", state) == "0"
+
+
+def test_0007_games_lost_played_minus_won() -> None:
+    vm = _make_vm()
+    state = {"gamesplayed": "1"}
+    assert vm.get_gm2u_value_for_sas_code("0007", state) == "1"
+
+
+def test_wat_bucket_defaults_zero_when_wat_active() -> None:
+    vm = _make_vm()
+    state = {"watcashableinamt": "500"}
+    assert vm.get_gm2u_value_for_sas_code("00A2", state) == "0"
+    assert vm.get_gm2u_value_for_sas_code("00B8", state) == "0"
+    assert vm.get_gm2u_value_for_sas_code("0018", state) == "0"
+
+
+def test_001c_does_not_reuse_0001_coin_out_aggregate() -> None:
+    vm = _make_vm()
+    state = {
+        "bggamecoinout": "0",
+        "sasbonuswin": "500",
+        "progwin": "500",
+    }
+    assert _norm_compare(vm.get_gm2u_value_for_sas_code("0001", state)) == "1000"
+    assert vm.get_gm2u_value_for_sas_code("001C", state) is None
+
+
+def test_001c_uses_coinout_when_present() -> None:
+    vm = _make_vm()
+    state = {"coinout": "250000"}
+    assert vm.get_gm2u_value_for_sas_code("001C", state) == "250000"
+
+
+def test_0001_coin_out_includes_sas_and_prog_wins() -> None:
+    vm = _make_vm()
+    state = {
+        "coinout": "140",
+        "basegamecoinout": "140",
+        "bggamecoinout": "140",
+        "sasbonuswin": "500",
+        "progwin": "500",
+    }
+    assert _norm_compare(vm.get_gm2u_value_for_sas_code("0001", state)) == "1140"
+
+
+def test_0001_coin_out_sums_theme_win_meters() -> None:
+    vm = _make_vm()
+    state = {
+        "bggamecoinout": "0",
+        "sasbonuswin": "500",
+        "progwin": "500",
+    }
+    assert _norm_compare(vm.get_gm2u_value_for_sas_code("0001", state)) == "1000"
+
+
+def test_0001_coin_out_from_lab_cabinet_state() -> None:
+    """Live-cabinet check: 0001 = max(paytable coin-out keys) + sasbonuswin + progwin.
+
+    Expectation is computed from the loaded state (cabinet meters move with play),
+    not hardcoded.
+    """
+    from network.accounting_state_loader import load_machine_accounting_state_pure
+
+    vm = _make_vm()
+    state = load_machine_accounting_state_pure(r"\\\\10.0.0.90\\c\$\\Goldclub\\var\\log")
+    if not state:
+        return
+
+    def _i(key: str) -> int:
+        try:
+            return int(str(state.get(key, "0")).strip() or "0")
+        except ValueError:
+            return 0
+
+    paytable = max(
+        _i(k)
+        for k in (
+            "coinout",
+            "totalcoinout",
+            "gamecoinout",
+            "basegamecoinout",
+            "bggamecoinout",
+            "scattercoinout",
+            "progscattercoinout",
+            "addscattercoinout",
+        )
+    )
+    expected = paytable + _i("sasbonuswin") + _i("progwin")
+    assert _norm_compare(vm.get_gm2u_value_for_sas_code("0001", state)) == str(expected)
+
+
+def test_cabinet_bill_aggregate_keys_from_lab_state() -> None:
+    from network.accounting_state_loader import (
+        cabinet_bill_reject_count,
+        cabinet_bill_stacker_amount_credits,
+        cabinet_bill_stacker_count,
+    )
+
+    state = {
+        "notesinstackeramt": "600",
+        "notesinstackercnt": "2",
+        "billrejectcnt": "0",
+    }
+    assert cabinet_bill_stacker_amount_credits(state) == "600"
+    assert cabinet_bill_stacker_count(state) == "2"
+    assert cabinet_bill_reject_count(state) == "0"

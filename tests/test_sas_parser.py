@@ -239,3 +239,83 @@ def test_handpay_cancelled_frame_names_and_values() -> None:
         "TotalAttendantPaidProg.Win (2000)",
         "TotalCancelledCredits (0400)",
     ]
+
+
+def test_bill_in_long_poll_parse() -> None:
+    from network.sas_serial_meters import (
+        append_sas_crc,
+        build_simple_long_poll,
+        crc16_kermit,
+        decode_bill_bcd_count,
+        parse_bill_in_response_frame,
+        parse_sas_bill_paste,
+    )
+
+    tx = build_simple_long_poll(address=0x01, cmd=0x33)
+    assert tx[:2] == bytes([0x01, 0x33])
+    assert crc16_kermit(tx[:-2]) == (tx[-2] | (tx[-1] << 8))
+    body = bytes([0x01, 0x33, 0x00, 0x00, 0x00, 0x01])
+    rx = append_sas_crc(body)
+    assert parse_bill_in_response_frame(rx, address=0x01, cmd=0x33) == 1
+    assert decode_bill_bcd_count(body[2:6]) == 1
+    paste = (
+        "TX>= " + " ".join(f"{b:02X}" for b in tx) + "\n"
+        "RX<= " + " ".join(f"{b:02X}" for b in rx) + "\n"
+    )
+    rows = parse_sas_bill_paste(paste)
+    assert len(rows) == 1
+    assert rows[0].sas_cmd == 0x33
+    assert rows[0].count == 1
+    assert rows[0].amount_cents == 500
+
+
+def test_build_aggregate_bill_rows_from_6f_000b() -> None:
+    from network.sas_serial_meters import build_aggregate_bill_rows, parse_6f_meter_values_from_paste
+
+    paste = (
+        "RX<= 01 6F 4D 00 00 0B 00 09 00 00 00 00 00 00 06 00 "
+        "17 00 09 00 00 00 00 00 00 01 00 00 23 42"
+    )
+    values = parse_6f_meter_values_from_paste(paste)
+    assert values.get("000B") == "600"
+    rows = build_aggregate_bill_rows(
+        paste_text=paste,
+        machine_state={"notesinstackercnt": "2", "notesinstackeramt": "600"},
+    )
+    assert len(rows) == 1
+    assert rows[0].label == "Total Bills In"
+    assert rows[0].sas_code == "000B"
+    assert rows[0].amount_cents == 600
+    assert rows[0].count == 2
+    assert rows[0].source == "aggregate"
+
+
+def test_align_bills_in_sas_credits_maps_dollars_to_credits() -> None:
+    from network.meter_comparator import align_bills_in_sas_credits
+
+    assert align_bills_in_sas_credits("6", "600") == "600"
+    assert align_bills_in_sas_credits("600", "600") == "600"
+    assert align_bills_in_sas_credits("6", "601") == "6"
+
+
+def test_0b00_len8_reports_whole_dollar_bcd() -> None:
+    ordered = sas_parser.parse_rx_response_ordered(
+        "RX<= 01 6F 0D 00 00 0B 00 08 00 00 00 00 00 00 00 06 "
+        "17 00 09 00 00 00 00 00 00 01 00 00 23 42"
+    )
+    assert dict(ordered)["0B00"] == 6
+
+
+def test_build_aggregate_bill_rows_aligns_dollar_sas_000b() -> None:
+    from network.sas_serial_meters import build_aggregate_bill_rows
+
+    paste = (
+        "RX<= 01 6F 0D 00 00 0B 00 08 00 00 00 00 00 00 00 06 "
+        "17 00 09 00 00 00 00 00 00 01 00 00 23 42"
+    )
+    rows = build_aggregate_bill_rows(
+        paste_text=paste,
+        machine_state={"notesinstackercnt": "2", "notesinstackeramt": "600"},
+    )
+    assert len(rows) == 1
+    assert rows[0].amount_cents == 600

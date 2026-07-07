@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import time
 import sys
@@ -260,42 +261,45 @@ def load_machine_accounting_state_pure(scan_root: str) -> dict[str, str]:
     _console_log(f"[SCANNER-LOG] Extracted IP: {ip}")
     _console_log(f"[SCANNER-LOG] Checking {len(direct_files)} potential state files...")
 
-    merged: dict[str, object] = {}
-    parsed_any = False
+    t_all = time.perf_counter()
 
-    for df in direct_files:
+    def probe_and_parse(df: Path) -> dict[str, object]:
+        """One SMB probe + parse, safe to run concurrently (pure, no shared state)."""
         try:
-            _console_log(f"[SCANNER-LOG] Testing: {df}")
             t0 = time.perf_counter()
-            exists = df.exists()
-            dt = (time.perf_counter() - t0) * 1000.0
-            _console_log(f"[SCANNER-LOG] -> exists={exists} (checked in {dt:.1f} ms)")
-            if not exists:
-                continue
-            # is_file() can also touch the network; time it separately.
-            t1 = time.perf_counter()
-            is_file = df.is_file()
-            dt2 = (time.perf_counter() - t1) * 1000.0
-            _console_log(f"[SCANNER-LOG] -> is_file={is_file} (checked in {dt2:.1f} ms)")
-            if not is_file:
-                continue
-
-            _console_log(f"[SCANNER-LOG] Found file! Attempting to parse: {df}")
-            flat = flatten_xml_file_to_norm_map(df)
-            # Verify it actually contains meters (common key in this schema)
-            if flat:
-                parsed_any = True
+            if not df.is_file():
                 _console_log(
-                    f"[SCANNER-LOG] Successfully parsed {len(flat)} keys from {df.name}"
+                    f"[SCANNER-LOG] Missing: {df} "
+                    f"(checked in {(time.perf_counter() - t0) * 1000:.1f} ms)"
                 )
-                merged.update(flat)
-            if flat and ("coinin" not in flat):
-                _console_log("[SCANNER-LOG] File parsed but 'coinin' meter was missing (still merging).")
-            if not flat:
-                _console_log(f"[SCANNER-LOG] Parsing failed or returned empty for {df}")
+                return {}
+            _console_log(f"[SCANNER-LOG] Found file! Attempting to parse: {df}")
+            return flatten_xml_file_to_norm_map(df)
         except OSError:
             _console_log(f"[SCANNER-LOG] OS error probing/parsing: {df}")
+            return {}
+
+    # Probe/read/parse all candidates concurrently — each SMB round trip is
+    # latency-bound, so parallel fan-out cuts wall time roughly by file count.
+    with ThreadPoolExecutor(max_workers=len(direct_files)) as pool:
+        results = list(pool.map(probe_and_parse, direct_files))
+
+    merged: dict[str, object] = {}
+    parsed_any = False
+    # Merge in the original deterministic order (gm2au overrides SASControler1).
+    for df, flat in zip(direct_files, results):
+        if not flat:
             continue
+        parsed_any = True
+        _console_log(f"[SCANNER-LOG] Successfully parsed {len(flat)} keys from {df.name}")
+        if "coinin" not in flat:
+            _console_log("[SCANNER-LOG] File parsed but 'coinin' meter was missing (still merging).")
+        merged.update(flat)
+
+    _console_log(
+        f"[SCANNER-LOG] Parallel probe+parse finished in "
+        f"{(time.perf_counter() - t_all) * 1000:.1f} ms"
+    )
 
     if merged:
         _console_log(
@@ -307,4 +311,54 @@ def load_machine_accounting_state_pure(scan_root: str) -> dict[str, str]:
     # If we get here, direct paths failed. DO NOT os.walk on slow UNC shares.
     _console_log("[SCANNER-LOG] All targeted paths failed. No meter data found.")
     return {}
+
+
+# --- Cabinet bill-in meters (DeviceManagerData on EGM state share) -----------------
+# Verified on lab cabinet 10.0.0.90 (GST20664):
+#   \\host\c$\Goldclub\var\state\GoldClub.Aurum.Services\GCMessenger\SASControler1\
+#   DeviceManagerData.xml_*
+# Per-denom bill counts are SAS-only (long polls $31-$37). Cabinet XML exposes aggregates:
+#   notesInStackerAmt, notesInStackerCnt, billRejectCnt, noteDoorOpens
+
+CABINET_BILL_REJECT_KEYS: tuple[str, ...] = (
+    "billrejectcnt",
+    "billRejectCnt",
+    "BillRejectCnt",
+)
+CABINET_BILL_STACKER_COUNT_KEYS: tuple[str, ...] = (
+    "notesinstackercnt",
+    "notesInStackerCnt",
+    "NotesInStackerCnt",
+)
+CABINET_BILL_STACKER_AMOUNT_KEYS: tuple[str, ...] = (
+    "notesinstackeramt",
+    "notesInStackerAmt",
+    "NotesInStackerAmt",
+    "meters_billinamt",
+    "cabinet_billinamt",
+    "billinamt",
+    "totalbillsin",
+)
+
+
+def _first_normalized_state_value(state: dict[str, object], keys: tuple[str, ...]) -> str:
+    if not state:
+        return ""
+    for key in keys:
+        nk = _norm_key(key)
+        if nk in state:
+            return str(state[nk]).strip()
+    return ""
+
+
+def cabinet_bill_reject_count(state: dict[str, object]) -> str:
+    return _first_normalized_state_value(state, CABINET_BILL_REJECT_KEYS)
+
+
+def cabinet_bill_stacker_count(state: dict[str, object]) -> str:
+    return _first_normalized_state_value(state, CABINET_BILL_STACKER_COUNT_KEYS)
+
+
+def cabinet_bill_stacker_amount_credits(state: dict[str, object]) -> str:
+    return _first_normalized_state_value(state, CABINET_BILL_STACKER_AMOUNT_KEYS)
 

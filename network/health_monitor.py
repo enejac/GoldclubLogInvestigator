@@ -8,9 +8,13 @@ import logging
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_LAB_USER = r"GOLD-CLUB\test"
+_LAB_PASS = "test"
 
 _WMIC_LINE_RE = re.compile(r"^([A-Za-z]+)=(.*)$")
 
@@ -87,6 +91,183 @@ def _fetch_onehand_process_mb(ip: str) -> float | None:
     if b is None or b <= 0:
         return None
     return round(b / (1024.0 * 1024.0), 2)
+
+
+def _wmic_onehand_process_output(ip: str) -> tuple[int, str]:
+    """Query remote ``OneHand.exe`` process ids via WMIC."""
+    cmd = [
+        "wmic",
+        f"/node:{ip}",
+        "process",
+        "where",
+        "name='OneHand.exe'",
+        "get",
+        "ProcessId",
+        "/Value",
+    ]
+    run_kw: dict = {
+        "capture_output": True,
+        "text": True,
+        "timeout": 30,
+    }
+    if os.name == "nt":
+        run_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        r = subprocess.run(cmd, **run_kw)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.debug("WMIC OneHand presence query failed for %s: %s", ip, e)
+        return -1, ""
+    return int(r.returncode), r.stdout or ""
+
+
+@dataclass(frozen=True, slots=True)
+class OneHandStatus:
+    running: bool | None
+    smb_reachable: bool
+
+
+def _ensure_lab_smb_credential(ip: str) -> None:
+    """Idempotent cmdkey mapping for lab cabinet admin share (see LabAccess.ps1)."""
+    if os.name != "nt":
+        return
+    host = (ip or "").strip()
+    if not host:
+        return
+    run_kw: dict = {"capture_output": True, "text": True, "timeout": 10}
+    if os.name == "nt":
+        run_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        subprocess.run(
+            ["cmdkey", f"/add:{host}", "/user:" + _LAB_USER, "/pass:" + _LAB_PASS],
+            **run_kw,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.debug("cmdkey lab credential for %s failed: %s", host, e)
+
+
+def cabinet_smb_reachable(ip_address: str, *, timeout: float = 2.5) -> bool:
+    """
+    True when the cabinet admin share / log root is reachable (TCP/445 + UNC probe).
+
+    WMIC can fail even when SMB works; always probe share access before blaming the network.
+    """
+    from network.scanner_utils import is_smb_alive
+
+    ip = (ip_address or "").strip()
+    if not ip:
+        return False
+    if not is_smb_alive(ip, timeout=timeout):
+        return False
+    _ensure_lab_smb_credential(ip)
+    from pathlib import Path
+
+    log_root = Path(rf"\\{ip}\c$\Goldclub\var\log")
+    try:
+        return log_root.is_dir()
+    except OSError:
+        return False
+
+
+def _onehand_via_wmic(ip: str) -> bool | None:
+    code, out = _wmic_onehand_process_output(ip)
+    if code != 0:
+        return None
+    if "No Instance(s) Available" in out:
+        return False
+    for raw in out.splitlines():
+        line = raw.strip()
+        if not line.startswith("ProcessId="):
+            continue
+        val = line.split("=", 1)[1].strip()
+        if val.isdigit() and int(val) > 0:
+            return True
+    return False
+
+
+def _onehand_via_psexec(ip: str) -> bool | None:
+    from automation.remote_exec import psexec_run, resolve_psexec_path
+
+    if not resolve_psexec_path():
+        return None
+    ps_cmd = (
+        "if (Get-Process -Name OneHand -ErrorAction SilentlyContinue) "
+        "{ 'RUNNING' } else { 'STOPPED' }"
+    )
+    try:
+        result = psexec_run(
+            ip=ip,
+            remote_argv=["powershell.exe", "-NoProfile", "-Command", ps_cmd],
+            username=_LAB_USER,
+            password=_LAB_PASS,
+            as_system=True,
+            timeout=90,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as e:
+        logger.debug("PsExec OneHand presence query failed for %s: %s", ip, e)
+        return None
+    blob = f"{result.stdout or ''}\n{result.stderr or ''}"
+    if "RUNNING" in blob:
+        return True
+    if "STOPPED" in blob or result.returncode == 0:
+        return False
+    return None
+
+
+def check_onehand_status(ip_address: str) -> OneHandStatus | None:
+    """Probe cabinet reachability, then OneHand via WMIC with PsExec fallback."""
+    ip = (ip_address or "").strip()
+    if not ip or os.name != "nt":
+        return None
+    smb = cabinet_smb_reachable(ip)
+    if not smb:
+        return OneHandStatus(running=None, smb_reachable=False)
+    running = _onehand_via_wmic(ip)
+    if running is None:
+        running = _onehand_via_psexec(ip)
+    return OneHandStatus(running=running, smb_reachable=True)
+
+
+def is_onehand_running(ip_address: str) -> bool | None:
+    """
+    Return whether ``OneHand.exe`` is running on the cabinet at ``ip_address``.
+
+    * ``True`` / ``False`` when a remote query answered.
+    * ``None`` when the host could not be queried.
+    """
+    status = check_onehand_status(ip_address)
+    if status is None:
+        return None
+    return status.running
+
+
+def onehand_warning_text(
+    ip_address: str,
+    *,
+    running: bool | None,
+    smb_reachable: bool | None = None,
+) -> str:
+    """Human-readable warning for UI when OneHand is down or not verified."""
+    ip = (ip_address or "").strip() or "the cabinet"
+    if running is True:
+        return ""
+    if running is False:
+        return (
+            f"<b style='color:#b45309;'>Warning:</b> "
+            f"<code>OneHand.exe</code> is <b>not running</b> on <b>{ip}</b>. "
+            f"The SAS host link often returns no RX until the game client is started "
+            f"on the EGM (Aurum / CommCtrl stack)."
+        )
+    if smb_reachable is False:
+        return (
+            f"<b style='color:#92400e;'>Warning:</b> "
+            f"Could not reach cabinet <b>{ip}</b> "
+            f"(SMB/log share unreachable — check lab network and credentials)."
+        )
+    return (
+        f"<b style='color:#92400e;'>Warning:</b> "
+        f"Cabinet <b>{ip}</b> is reachable but <code>OneHand.exe</code> could not be verified "
+        f"(remote process query failed)."
+    )
 
 
 def get_remote_memory_stats(ip_address: str) -> dict[str, Any] | None:

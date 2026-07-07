@@ -92,6 +92,10 @@ def parse_rx_response_ordered(rx_line: str) -> list[tuple[str, int]]:
                         break
                     data = b[cursor : cursor + m_len]
                     cursor += m_len
+                    # Lab EGM (GST20664): 0B00 bills-in reports len=9 but value is 8 BCD bytes;
+                    # the 9th byte is the high byte of the next meter code (17 00 …).
+                    if m_len == 9 and len(data) == 9 and code == "0B00":
+                        data = data[:8]
                     val_str = data.hex().upper()
                     out_b.append((code, _meter_value_to_int(val_str)))
                 if out_b:

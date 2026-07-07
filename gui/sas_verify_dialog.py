@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
@@ -11,13 +12,14 @@ import sys
 import threading
 import traceback
 
-from PySide6.QtCore import QObject, QSettings, QThread, QThreadPool, Signal, Qt, QPoint
+from PySide6.QtCore import QObject, QSettings, QThread, QThreadPool, Signal, Qt, QPoint, QTimer
 from PySide6.QtGui import QAction, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -26,6 +28,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QLineEdit,
     QSplitter,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -34,6 +37,8 @@ from PySide6.QtWidgets import (
 )
 
 from pathlib import Path
+
+from config_manager import SettingsManager
 
 # --- EGM currency / dollar display (100 credits = $1 on USD cabinets) ---
 SAS_VERIFY_MONETARY_CODES = frozenset({
@@ -202,6 +207,17 @@ _KEY_COM_BAUD = "com_baud"
 _SAS_VERIFY_COLUMN_PREFS_VERSION = 2
 _KEY_COLUMN_PREFS_VERSION = "column_prefs_version"
 _DEFAULT_HIDDEN_VERIFY_COLUMNS = frozenset({COL_WIRE_ID, COL_SAS_2F_VALUE})
+
+# Bills tab (View -> meter tabs -> Bills).
+_BILLS_COL_COUNT = 6
+_BILLS_TABLE_HEADERS: tuple[str, ...] = (
+    "Bill",
+    "Amount",
+    "Count",
+    "SAS",
+    "Machine",
+    "Status",
+)
 
 
 def default_verify_column_visible(col: int) -> bool:
@@ -491,6 +507,26 @@ class CompareWorker(QObject):
             self.finished.emit({})
 
 
+class OneHandCheckWorker(QObject):
+    finished = Signal(str, object, object)  # ip, running: bool | None, smb_reachable: bool | None
+
+    def __init__(self, ip: str) -> None:
+        super().__init__(None)
+        self._ip = (ip or "").strip()
+
+    def run(self) -> None:
+        from network.health_monitor import check_onehand_status
+
+        try:
+            status = check_onehand_status(self._ip) if self._ip else None
+            if status is None:
+                self.finished.emit(self._ip, None, None)
+                return
+            self.finished.emit(self._ip, status.running, status.smb_reachable)
+        except Exception:  # noqa: BLE001
+            self.finished.emit(self._ip, None, None)
+
+
 class MeterFetchWorker(QObject):
     finished = Signal(object)  # SasMeterFetchResult
     error = Signal(str)
@@ -507,6 +543,7 @@ class MeterFetchWorker(QObject):
             result = fetch_meters_over_serial(
                 port=self._com_port,
                 baud=self._com_baud,
+                force_capture=True,
             )
             self.finished.emit(result)
         except Exception as exc:  # noqa: BLE001
@@ -520,11 +557,19 @@ class SasVerifyDialog(QDialog):
         self._pool = pool
         self._scan_root = scan_root
         self._machine_state: dict[str, str] = {}
+        self._machine_state_loaded = False
         self._compare_thread: QThread | None = None
         self._compare_worker: CompareWorker | None = None
         self._meter_fetch_thread: QThread | None = None
         self._meter_fetch_worker: MeterFetchWorker | None = None
+        self._onehand_check_thread: QThread | None = None
+        self._onehand_check_worker: OneHandCheckWorker | None = None
+        self._onehand_running: bool | None = None
+        self._onehand_smb_reachable: bool | None = None
+        self._onehand_check_ip = ""
+        self._onehand_check_pending = False
         self._last_parsed_rows: list[Sas6FRow] = []
+        self._last_bill_rows: list = []
         self._sas_2f_values: dict[str, str] = {}
         self._currency = EgmCurrency()
         self._show_dollars = False
@@ -582,6 +627,22 @@ class SasVerifyDialog(QDialog):
         scan_row.addWidget(self._btn_get_meters)
         root.addLayout(scan_row)
 
+        self._onehand_warning = QLabel("")
+        self._onehand_warning.setWordWrap(True)
+        self._onehand_warning.setTextFormat(Qt.TextFormat.RichText)
+        self._onehand_warning.setStyleSheet(
+            "QLabel { background-color: #fef3c7; color: #78350f; padding: 6px 8px; "
+            "border: 1px solid #f59e0b; border-radius: 4px; }"
+        )
+        self._onehand_warning.hide()
+        root.addWidget(self._onehand_warning)
+
+        self._onehand_check_timer = QTimer(self)
+        self._onehand_check_timer.setSingleShot(True)
+        self._onehand_check_timer.setInterval(450)
+        self._onehand_check_timer.timeout.connect(self._run_onehand_check)
+        self._scan_root_edit.textChanged.connect(self._schedule_onehand_check)
+
         self._paste = QTextEdit()
         self._paste.setPlaceholderText("Paste TX>= / RX<= lines here…")
         self._paste.setMinimumHeight(56)
@@ -615,22 +676,57 @@ class SasVerifyDialog(QDialog):
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_table_context_menu)
 
+        self._bills_table = QTableWidget(0, 6)
+        self._bills_table.setHorizontalHeaderLabels(
+            ["Bill", "Amount", "Count", "SAS", "Machine", "Status"]
+        )
+        self._bills_table.setColumnWidth(0, 96)
+        self._bills_table.setColumnWidth(1, 96)
+        self._bills_table.setColumnWidth(2, 72)
+        self._bills_table.setColumnWidth(3, 52)
+        self._bills_table.setColumnWidth(4, 72)
+        self._bills_table.setColumnWidth(5, 88)
+        self._bills_table.horizontalHeader().setStretchLastSection(True)
+        self._bills_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._bills_table.setMinimumHeight(240)
+        self._bills_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._bills_table.customContextMenuRequested.connect(self._on_bills_table_context_menu)
+        self._bill_reject_label = QLabel("BILL REJECT COUNT —")
+        bills_box = QGroupBox("BILL IN")
+        bills_layout = QVBoxLayout(bills_box)
+        bills_layout.addWidget(self._bills_table)
+        bills_layout.addWidget(self._bill_reject_label)
+        bills_tab = QWidget()
+        bills_tab_layout = QVBoxLayout(bills_tab)
+        bills_tab_layout.setContentsMargins(0, 0, 0, 0)
+        bills_tab_layout.addWidget(bills_box)
+        bills_hint = QLabel(
+            "Per-denom bill counts use SAS $31–$37 when the EGM answers those polls. "
+            "If not, Total Bills In falls back to SAS 6F 000B and cabinet "
+            "notesInStackerCnt/Amt from DeviceManagerData."
+        )
+        bills_hint.setWordWrap(True)
+        bills_tab_layout.addWidget(bills_hint)
+
+        self._meter_tabs = QTabWidget()
+        self._meter_tabs.addTab(self._table, "Accounting")
+        self._meter_tabs.addTab(bills_tab, "Bills")
+
         self._content_split = QSplitter(Qt.Orientation.Vertical)
         self._content_split.addWidget(self._paste)
-        self._content_split.addWidget(self._table)
+        self._content_split.addWidget(self._meter_tabs)
         # Table should absorb almost all resize; paste stays a compact strip.
         self._content_split.setStretchFactor(0, 1)
         self._content_split.setStretchFactor(1, 9)
         self._content_split.setChildrenCollapsible(False)
         self._split_meter_dominant_applied = False
+        self._window_geometry_restored = False
         root.addWidget(self._content_split, stretch=1)
 
-        # Ctrl+C on the table copies FULL rows (all columns) as TSV. The built-in
-        # QTableWidget copy only grabs the active cell/selection, which is why some
-        # meter names appeared "lost" when copying directly from the grid.
-        copy_sc = QShortcut(QKeySequence.StandardKey.Copy, self._table)
+        # Ctrl+C copies FULL rows (all columns) as TSV from whichever meter tab has focus.
+        copy_sc = QShortcut(QKeySequence.StandardKey.Copy, self._meter_tabs)
         copy_sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        copy_sc.activated.connect(self._copy_selection_tsv)
+        copy_sc.activated.connect(self._copy_focused_table_selection_tsv)
 
         row = QHBoxLayout()
         row.addStretch(1)
@@ -665,6 +761,75 @@ class SasVerifyDialog(QDialog):
         if app is not None:
             app.aboutToQuit.connect(lambda: self._stop_compare_thread(wait_ms=2000))
             app.aboutToQuit.connect(lambda: self._stop_meter_fetch_thread(wait_ms=2000))
+            app.aboutToQuit.connect(lambda: self._stop_onehand_check_thread(wait_ms=500))
+
+    def _cabinet_ip_from_scan_root(self) -> str:
+        return _extract_unc_host(self._scan_root_edit.text() or self._scan_root)
+
+    def _schedule_onehand_check(self) -> None:
+        self._onehand_check_timer.start()
+
+    def _stop_onehand_check_thread(self, wait_ms: int = 300) -> None:
+        self._quit_or_orphan_thread(self._onehand_check_thread, wait_ms)
+
+    def _on_onehand_check_thread_finished(self) -> None:
+        self._onehand_check_thread = None
+        self._onehand_check_worker = None
+
+    def _run_onehand_check(self) -> None:
+        ip = self._cabinet_ip_from_scan_root()
+        if not ip:
+            self._onehand_running = None
+            self._onehand_smb_reachable = None
+            self._onehand_check_ip = ""
+            self._onehand_check_pending = False
+            self._onehand_warning.hide()
+            return
+        if ip == self._onehand_check_ip and self._onehand_running is not None:
+            self._update_onehand_warning_label(ip)
+            return
+        self._onehand_check_pending = True
+        self._onehand_warning.hide()
+        self._stop_onehand_check_thread(wait_ms=200)
+        self._onehand_check_thread = QThread(self)
+        self._onehand_check_worker = OneHandCheckWorker(ip)
+        self._onehand_check_worker.moveToThread(self._onehand_check_thread)
+        self._onehand_check_thread.started.connect(self._onehand_check_worker.run)
+        self._onehand_check_worker.finished.connect(
+            self._on_onehand_check_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._onehand_check_worker.finished.connect(self._onehand_check_thread.quit)
+        self._onehand_check_worker.finished.connect(self._onehand_check_worker.deleteLater)
+        self._onehand_check_thread.finished.connect(self._on_onehand_check_thread_finished)
+        self._onehand_check_thread.finished.connect(self._onehand_check_thread.deleteLater)
+        self._onehand_check_thread.start()
+
+    def _on_onehand_check_finished(self, ip: str, running: object, smb_reachable: object) -> None:
+        if (ip or "").strip() != self._cabinet_ip_from_scan_root():
+            return
+        self._onehand_check_pending = False
+        self._onehand_check_ip = (ip or "").strip()
+        self._onehand_running = running if isinstance(running, bool) else None
+        self._onehand_smb_reachable = smb_reachable if isinstance(smb_reachable, bool) else None
+        self._update_onehand_warning_label(self._onehand_check_ip)
+
+    def _update_onehand_warning_label(self, ip: str) -> None:
+        from network.health_monitor import onehand_warning_text
+
+        if self._onehand_check_pending:
+            self._onehand_warning.hide()
+            return
+        text = onehand_warning_text(
+            ip,
+            running=self._onehand_running,
+            smb_reachable=self._onehand_smb_reachable,
+        )
+        if text:
+            self._onehand_warning.setText(text)
+            self._onehand_warning.show()
+        else:
+            self._onehand_warning.hide()
 
     def _load_com_port_prefs(self) -> None:
         s = QSettings()
@@ -757,6 +922,15 @@ class SasVerifyDialog(QDialog):
             act.toggled.connect(lambda checked, c=col: self._on_column_visibility_toggled(c, checked))
             columns_menu.addAction(act)
             self._column_actions[col] = act
+        copy_menu = view_menu.addMenu("&Copy")
+        copy_menu.setToolTip("Copy meter grids as tab-separated values for Excel.")
+        act_copy_acct = copy_menu.addAction("Copy all accounting meters")
+        act_copy_acct.triggered.connect(self._copy_all_meters_tsv)
+        act_copy_bills = copy_menu.addAction("Copy all bills")
+        act_copy_bills.triggered.connect(self._copy_all_bills_tsv)
+        copy_menu.addSeparator()
+        act_copy_report = copy_menu.addAction("Copy full report…")
+        act_copy_report.triggered.connect(self._copy_report)
         return bar
 
     def _column_settings(self) -> QSettings:
@@ -809,20 +983,25 @@ class SasVerifyDialog(QDialog):
     def _column_visibility_map(self) -> dict[int, bool]:
         return {col: act.isChecked() for col, act in self._column_actions.items()}
 
-    def _stop_compare_thread(self, wait_ms: int = 300) -> None:
-        th = self._compare_thread
+    @staticmethod
+    def _quit_or_orphan_thread(th: QThread | None, wait_ms: int) -> None:
+        """Ask a worker thread to quit; if it is stuck in blocking network I/O,
+        detach it from the dialog so its destructor never fires while running
+        ("QThread: Destroyed while thread is still running"). The thread's
+        finished→deleteLater connection cleans it up once the call returns.
+        """
         if th is None:
             return
         try:
             if th.isRunning():
                 th.quit()
                 if not th.wait(wait_ms):
-                    # Worker does blocking SMB/network I/O; quit() may not return promptly.
-                    # Force-stop as a last resort to avoid "QThread destroyed while running".
-                    th.terminate()
-                    th.wait(1000)
+                    th.setParent(None)
         except Exception:
             pass
+
+    def _stop_compare_thread(self, wait_ms: int = 300) -> None:
+        self._quit_or_orphan_thread(self._compare_thread, wait_ms)
 
     def _stop_meter_fetch_thread(self, wait_ms: int = 300) -> None:
         th = self._meter_fetch_thread
@@ -831,20 +1010,33 @@ class SasVerifyDialog(QDialog):
         try:
             if th.isRunning():
                 th.quit()
-                if not th.wait(wait_ms):
-                    th.terminate()
-                    th.wait(1000)
+                # Never terminate: a killed worker can leave pyserial holding COM4 open.
+                th.wait(max(wait_ms, 120_000))
         except Exception:
             pass
 
+    def _meter_fetch_running(self) -> bool:
+        th = self._meter_fetch_thread
+        return th is not None and th.isRunning()
+
+    def _compare_running(self) -> bool:
+        th = self._compare_thread
+        return th is not None and th.isRunning()
+
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        SettingsManager.save_sas_verify_dialog_geometry(self)
         self._stop_compare_thread(wait_ms=500)
         self._stop_meter_fetch_thread(wait_ms=500)
+        self._stop_onehand_check_thread(wait_ms=500)
         super().closeEvent(event)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
+        if not self._window_geometry_restored:
+            self._window_geometry_restored = True
+            SettingsManager.restore_sas_verify_dialog_geometry(self)
         self._refresh_com_port_list(preserve_text=True)
+        self._schedule_onehand_check()
         if self._split_meter_dominant_applied:
             return
         self._split_meter_dominant_applied = True
@@ -866,12 +1058,34 @@ class SasVerifyDialog(QDialog):
                 "Enter a COM port (for example COM4).",
             )
             return
+        if self._meter_fetch_running():
+            QMessageBox.information(
+                self,
+                "Get Meters",
+                "A meter fetch is already running on this COM port.\n\n"
+                "Wait for it to finish (6F + bill polls). Do not click Get Meters again — "
+                "interrupting the fetch can lock COM4 until you restart this app.",
+            )
+            return
+        ip = self._cabinet_ip_from_scan_root()
+        if ip and self._onehand_running is False:
+            QMessageBox.warning(
+                self,
+                "Get Meters",
+                f"OneHand.exe is not running on {ip}.\n\n"
+                "The SAS host link often returns no RX until the game client is started "
+                "on the EGM (Aurum / CommCtrl). Start OneHand on the cabinet, then retry.",
+            )
+        elif ip and self._onehand_running is None and not self._onehand_check_pending:
+            self._run_onehand_check()
         self._save_com_port_prefs()
+        self._scan_root = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        if self._scan_root and not self._compare_running():
+            self._begin_cabinet_compare()
         self._btn_get_meters.setEnabled(False)
         from network.sas_serial_meters import DEFAULT_SAS_COM_BAUD
 
-        self._btn_get_meters.setText("Syncing SAS link…")
-        self._stop_meter_fetch_thread(wait_ms=300)
+        self._btn_get_meters.setText("Capturing COM…")
         self._meter_fetch_thread = QThread(self)
         self._meter_fetch_worker = MeterFetchWorker(
             com_port=port,
@@ -910,14 +1124,32 @@ class SasVerifyDialog(QDialog):
         self._paste.setPlainText(str(paste_text))
         self._paste.setFocus()
         parsed = build_verify_6f_rows_from_paste(str(paste_text))
-        if any((r.sas_value_text or "").strip() for r in parsed):
+        bill_rows = getattr(result, "bill_rows", None) or ()
+        from network.sas_serial_meters import build_bill_display_rows
+
+        display_rows = build_bill_display_rows(
+            bill_rows=bill_rows,
+            paste_text=str(paste_text),
+            machine_state=self._machine_state or None,
+        )
+        if display_rows:
+            self._render_bills(display_rows, machine_state=self._machine_state or None)
+        has_6f = any((r.sas_value_text or "").strip() for r in parsed)
+        if has_6f:
             self._last_parsed_rows = parsed
             self._sas_2f_values = parse_sas_2f_paste(str(paste_text))
             self._currency = _detect_egm_currency(
                 self._scan_root_edit.text() or self._scan_root, self._vm
             )
             self._update_dollar_toggle_label()
-            self._render(parsed_rows=parsed, allow_machine_lookup=False)
+            self._render(
+                parsed_rows=parsed,
+                allow_machine_lookup=self._machine_state_loaded,
+            )
+        elif display_rows:
+            self._meter_tabs.setCurrentIndex(1)
+        self._scan_root = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        if self._scan_root and (has_6f or display_rows) and not self._compare_running():
             self._begin_cabinet_compare()
         try:
             p = self.parent()
@@ -938,10 +1170,17 @@ class SasVerifyDialog(QDialog):
         self._btn_get_meters.setEnabled(True)
         self._btn_get_meters.setText("Get Meters")
         self._refresh_com_port_list(preserve_text=True)
+        msg = message or "Serial meter fetch failed."
+        if self._onehand_running is False and "SAS link not responding" in msg:
+            ip = self._cabinet_ip_from_scan_root() or "the cabinet"
+            msg += (
+                f"\n\nOneHand.exe is not running on {ip}. "
+                "Start the game client on the EGM, then click Get Meters again."
+            )
         QMessageBox.warning(
             self,
             "Get Meters",
-            message or "Serial meter fetch failed.",
+            msg,
         )
 
     def _on_compare_thread_finished(self) -> None:
@@ -949,17 +1188,24 @@ class SasVerifyDialog(QDialog):
         self._compare_worker = None
 
     def _on_compare_clicked(self) -> None:
-        parsed = build_verify_6f_rows_from_paste(self._paste.toPlainText())
-        if not any((r.sas_value_text or "").strip() for r in parsed):
+        paste_text = self._paste.toPlainText()
+        parsed = build_verify_6f_rows_from_paste(paste_text)
+        has_6f = any((r.sas_value_text or "").strip() for r in parsed)
+        self._load_bills_from_paste(paste_text)
+        has_bills = bool(self._last_bill_rows)
+        if not has_6f and not has_bills:
             QMessageBox.information(
                 self,
                 "SAS accounting verification",
-                "No valid SAS 6F RX lines found in the pasted text.",
+                "No valid SAS 6F or bill-in RX lines found in the pasted text.",
             )
+            return
+        if not has_6f:
+            self._meter_tabs.setCurrentIndex(1)
             return
 
         self._last_parsed_rows = parsed
-        self._sas_2f_values = parse_sas_2f_paste(self._paste.toPlainText())
+        self._sas_2f_values = parse_sas_2f_paste(paste_text)
 
         self._currency = _detect_egm_currency(self._scan_root_edit.text() or self._scan_root, self._vm)
         self._update_dollar_toggle_label()
@@ -985,6 +1231,7 @@ class SasVerifyDialog(QDialog):
         self._btn_get_meters.setEnabled(False)
 
         self._stop_compare_thread(wait_ms=300)
+        self._machine_state_loaded = False
 
         self._compare_thread = QThread(self)
         self._compare_worker = CompareWorker(_extract_unc_host(self._scan_root), self._scan_root)
@@ -1020,11 +1267,26 @@ class SasVerifyDialog(QDialog):
                 # IMPORTANT: keep keys normalized/lowercase for alias lookup
                 # (loader returns normalized keys like "coinin"; uppercasing breaks lookups).
                 self._machine_state = {str(k).strip(): str(v) for k, v in state_obj.items()}
+                self._machine_state_loaded = bool(self._machine_state)
             else:
                 self._machine_state = {}
+                self._machine_state_loaded = False
             self._currency = _detect_egm_currency(self._scan_root, self._vm)
             self._update_dollar_toggle_label()
-            self._render(parsed_rows=self._last_parsed_rows, allow_machine_lookup=True)
+            self._render(
+                parsed_rows=self._last_parsed_rows,
+                allow_machine_lookup=self._machine_state_loaded,
+            )
+            paste_text = self._paste.toPlainText()
+            from network.sas_serial_meters import build_bill_display_rows, parse_sas_bill_paste
+
+            bill_display = build_bill_display_rows(
+                bill_rows=parse_sas_bill_paste(paste_text),
+                paste_text=paste_text,
+                machine_state=self._machine_state,
+            )
+            if bill_display:
+                self._render_bills(bill_display, machine_state=self._machine_state)
         finally:
             self.ui.compare_btn.setEnabled(True)
             self.ui.compare_btn.setText("Compare")
@@ -1041,6 +1303,7 @@ class SasVerifyDialog(QDialog):
             QMessageBox.information(self, "SAS accounting verification", msg)
         finally:
             self._machine_state = {}
+            self._machine_state_loaded = False
             self._render(parsed_rows=self._last_parsed_rows, allow_machine_lookup=False)
             self.ui.compare_btn.setEnabled(True)
             self.ui.compare_btn.setText("Compare")
@@ -1054,7 +1317,7 @@ class SasVerifyDialog(QDialog):
         """
         raw = (s or "").strip()
         if not raw:
-            return "0"
+            return ""
         sign = "-" if raw.startswith("-") else ""
         body = raw[1:] if sign else raw
         if "." in body:
@@ -1185,6 +1448,8 @@ class SasVerifyDialog(QDialog):
                         item.setForeground(QColor("#b45309"))
                     else:
                         item.setForeground(QColor())
+        if self._last_bill_rows:
+            self._render_bills(machine_state=self._machine_state or None)
 
     def _render(self, *, parsed_rows: list[Sas6FRow], allow_machine_lookup: bool = True) -> None:
         self._refresh_2f_from_paste()
@@ -1215,7 +1480,7 @@ class SasVerifyDialog(QDialog):
                 meter_name = ""
                 code_6f, wire_id, igt_poll, igt_meter = rid, "", "", ""
             machine_v = ""
-            if allow_machine_lookup and self._machine_state:
+            if allow_machine_lookup and self._machine_state_loaded and self._machine_state:
                 try:
                     machine_v = (
                         getattr(self._vm, "get_gm2u_value_for_sas_code")(rid, self._machine_state) or ""
@@ -1235,16 +1500,27 @@ class SasVerifyDialog(QDialog):
             machine_missing = not machine_v
             sas_norm = self._normalize_int_for_compare(sas_v) if has_sas else ""
             mac_norm = self._normalize_int_for_compare(machine_v)
-            if machine_missing:
-                if allow_machine_lookup and has_sas and sas_norm == "0":
-                    machine_v = "0"
-                    mac_norm = "0"
-                    match = True
-                    status = "MATCH"
-                else:
-                    match = False
-                    status = "PENDING"
-            elif not has_sas:
+            if rid == "000B" and has_sas and machine_v:
+                from network.meter_comparator import align_bills_in_sas_credits
+
+                aligned = align_bills_in_sas_credits(sas_norm, mac_norm)
+                if aligned != sas_norm:
+                    sas_v = aligned
+                    sas_norm = self._normalize_int_for_compare(aligned)
+            # Cabinet XML often omits keys for zero meters; when SAS reads 0 treat as 0.
+            if (
+                machine_missing
+                and self._machine_state_loaded
+                and has_sas
+                and sas_norm == "0"
+            ):
+                machine_v = "0"
+                mac_norm = "0"
+                machine_missing = False
+            if not has_sas or not self._machine_state_loaded:
+                match = False
+                status = "PENDING"
+            elif machine_missing:
                 match = False
                 status = "PENDING"
             else:
@@ -1321,6 +1597,7 @@ class SasVerifyDialog(QDialog):
                 COL_MACHINE_VALUE,
                 meter_code=rid,
                 raw=mac_display_raw,
+                missing_display="—" if not machine_v else None,
                 tooltip="From cabinet gm2u / accounting XML.",
             )
             st = QTableWidgetItem(status)
@@ -1335,15 +1612,194 @@ class SasVerifyDialog(QDialog):
                 st.setForeground(Qt.GlobalColor.red)
             self.ui.table.setItem(row, COL_STATUS, st)
 
+    def _format_bill_dollars(self, amount_cents: int) -> str:
+        cents = max(0, int(amount_cents))
+        return f"${cents / 100.0:,.2f}"
+
+    def _format_bill_credits_as_dollars(self, credits_raw: str) -> str:
+        dollars = _credits_to_dollar_amount(credits_raw)
+        if dollars is None:
+            return credits_raw or "—"
+        return _format_dollar_amount(dollars, symbol=self._currency.symbol or "$")
+
+    def _bill_status_item(self, status: str) -> QTableWidgetItem:
+        st = QTableWidgetItem(status)
+        if status == "MATCH":
+            st.setForeground(Qt.GlobalColor.darkGreen)
+        elif status == "PENDING":
+            st.setForeground(Qt.GlobalColor.darkGray)
+        elif status not in ("—", ""):
+            f = st.font()
+            f.setBold(True)
+            st.setFont(f)
+            st.setForeground(Qt.GlobalColor.red)
+        return st
+
+    def _render_bills(
+        self,
+        rows: list | tuple | None = None,
+        *,
+        machine_state: dict[str, str] | None = None,
+    ) -> None:
+        from network.accounting_state_loader import (
+            cabinet_bill_reject_count,
+            cabinet_bill_stacker_amount_credits,
+            cabinet_bill_stacker_count,
+        )
+        from network.sas_serial_meters import SasBillDenomRow
+
+        bill_rows = list(rows if rows is not None else self._last_bill_rows)
+        self._last_bill_rows = bill_rows
+        state = machine_state if machine_state is not None else self._machine_state
+        self._bills_table.setRowCount(0)
+        reject_raw = cabinet_bill_reject_count(state or {})
+        if reject_raw:
+            self._bill_reject_label.setText(f"BILL REJECT COUNT — {reject_raw}")
+        else:
+            self._bill_reject_label.setText("BILL REJECT COUNT —")
+        if not bill_rows:
+            return
+
+        aggregate_only = (
+            len(bill_rows) == 1
+            and isinstance(bill_rows[0], SasBillDenomRow)
+            and bill_rows[0].source == "aggregate"
+        )
+
+        stacker_cnt_raw = cabinet_bill_stacker_count(state or {})
+        stacker_amt_raw = cabinet_bill_stacker_amount_credits(state or {})
+        has_cabinet_totals = bool(stacker_cnt_raw or stacker_amt_raw)
+
+        total_amount = 0
+        total_count = 0
+        for row in bill_rows:
+            if isinstance(row, SasBillDenomRow) and not row.enabled:
+                continue
+            if isinstance(row, SasBillDenomRow):
+                label = row.label
+                amount_cents = row.amount_cents
+                count = row.count
+                sas_cmd = row.sas_cmd_hex
+            else:
+                label = str(getattr(row, "label", ""))
+                amount_cents = int(getattr(row, "amount_cents", 0))
+                count = int(getattr(row, "count", 0))
+                sas_cmd = str(getattr(row, "sas_cmd_hex", getattr(row, "sas_cmd", "")))
+            r = self._bills_table.rowCount()
+            self._bills_table.insertRow(r)
+            self._bills_table.setItem(r, 0, QTableWidgetItem(label))
+            self._bills_table.setItem(r, 1, QTableWidgetItem(self._format_bill_dollars(amount_cents)))
+            self._bills_table.setItem(r, 2, QTableWidgetItem(str(count)))
+            self._bills_table.setItem(r, 3, QTableWidgetItem(str(sas_cmd).upper()))
+            self._bills_table.setItem(r, 4, QTableWidgetItem("—"))
+            self._bills_table.setItem(r, 5, self._bill_status_item("—"))
+            total_amount += amount_cents
+            total_count += count
+
+        if aggregate_only:
+            row = bill_rows[0]
+            if isinstance(row, SasBillDenomRow):
+                count = row.count
+                amount_cents = row.amount_cents
+            else:
+                count = int(getattr(row, "count", 0))
+                amount_cents = int(getattr(row, "amount_cents", 0))
+            sas_cnt_norm = self._normalize_int_for_compare(str(count))
+            mac_cnt_norm = (
+                self._normalize_int_for_compare(stacker_cnt_raw) if stacker_cnt_raw else "—"
+            )
+            sas_amt_norm = self._normalize_int_for_compare(str(amount_cents))
+            mac_amt_norm = self._normalize_int_for_compare(stacker_amt_raw or "")
+            count_ok = not stacker_cnt_raw or sas_cnt_norm == mac_cnt_norm
+            amount_ok = not stacker_amt_raw or sas_amt_norm == mac_amt_norm
+            if not has_cabinet_totals:
+                status = "PENDING"
+            elif count_ok and amount_ok:
+                status = "MATCH"
+            else:
+                status = "MISMATCH"
+            r = self._bills_table.rowCount() - 1
+            if r >= 0:
+                machine_display = mac_cnt_norm
+                if mac_cnt_norm != "—" and stacker_amt_raw:
+                    machine_display = f"{mac_cnt_norm} / {self._normalize_int_for_compare(stacker_amt_raw)}"
+                self._bills_table.setItem(r, 4, QTableWidgetItem(machine_display))
+                st_item = self._bill_status_item(status)
+                self._bills_table.setItem(r, 5, st_item)
+            return
+
+        r = self._bills_table.rowCount()
+        self._bills_table.insertRow(r)
+        total_label = QTableWidgetItem("TOTAL")
+        total_label.setForeground(QColor("#000000"))
+        font = total_label.font()
+        font.setBold(True)
+        total_label.setFont(font)
+        self._bills_table.setItem(r, 0, total_label)
+        total_amount_text = self._format_bill_dollars(total_amount)
+        if self._show_dollars and stacker_amt_raw:
+            machine_amount_text = self._format_bill_credits_as_dollars(stacker_amt_raw)
+        elif stacker_amt_raw:
+            machine_amount_text = self._normalize_int_for_compare(stacker_amt_raw)
+        else:
+            machine_amount_text = "—"
+        machine_count_text = (
+            self._normalize_int_for_compare(stacker_cnt_raw) if stacker_cnt_raw else "—"
+        )
+        total_status = "PENDING"
+        if has_cabinet_totals:
+            sas_cnt_norm = self._normalize_int_for_compare(str(total_count))
+            mac_cnt_norm = self._normalize_int_for_compare(machine_count_text)
+            sas_amt_norm = self._normalize_int_for_compare(str(total_amount))
+            mac_amt_norm = self._normalize_int_for_compare(stacker_amt_raw or "")
+            count_ok = not stacker_cnt_raw or sas_cnt_norm == mac_cnt_norm
+            amount_ok = not stacker_amt_raw or sas_amt_norm == mac_amt_norm
+            total_status = "MATCH" if count_ok and amount_ok else "MISMATCH"
+        machine_display = machine_count_text
+        if machine_count_text != "—" and machine_amount_text != "—":
+            machine_display = f"{machine_count_text} / {machine_amount_text}"
+        elif machine_amount_text != "—" and machine_count_text == "—":
+            machine_display = machine_amount_text
+        for col, text in (
+            (1, total_amount_text),
+            (2, str(total_count)),
+            (3, ""),
+            (4, machine_display),
+            (5, total_status),
+        ):
+            item = QTableWidgetItem(text)
+            item.setFont(font)
+            if col == 5:
+                item = self._bill_status_item(total_status)
+                item.setFont(font)
+            self._bills_table.setItem(r, col, item)
+
+    def _load_bills_from_paste(self, paste_text: str) -> None:
+        from network.sas_serial_meters import build_bill_display_rows, parse_sas_bill_paste
+
+        per_denom = parse_sas_bill_paste(paste_text)
+        rows = build_bill_display_rows(
+            bill_rows=per_denom,
+            paste_text=paste_text,
+            machine_state=self._machine_state or None,
+        )
+        if rows:
+            self._render_bills(rows)
+
     def _clear_all(self) -> None:
         """Reset the dialog: empty the paste box (upper) and the results table (bottom)."""
         self._paste.clear()
         self._table.clearContents()
         self._table.setRowCount(0)
+        self._bills_table.clearContents()
+        self._bills_table.setRowCount(0)
+        self._bill_reject_label.setText("BILL REJECT COUNT —")
         self._sas_2f_values = {}
         self._update_2f_column_visibility()
         self._last_parsed_rows = []
+        self._last_bill_rows = []
         self._machine_state = {}
+        self._machine_state_loaded = False
         self._paste.setFocus()
 
     def _name_for_code(self, rid: str) -> str:
@@ -1356,89 +1812,313 @@ class SasVerifyDialog(QDialog):
         except Exception:
             return ""
 
-    def _cell_text(self, row: int, col: int) -> str:
-        """Cell text flattened for TSV; rebuilds Meter Name if empty.
+    def _visible_table_columns(self, table: QTableWidget) -> list[int]:
+        return [c for c in range(table.columnCount()) if not table.isColumnHidden(c)]
 
-        Hex id columns use Excel text literals (``="0005"``) so leading zeros survive paste.
-        """
-        item = self._table.item(row, col)
+    def _flat_table_cell_text(self, text: str) -> str:
+        return (text or "").replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
+
+    def _generic_table_cell_text(
+        self,
+        table: QTableWidget,
+        row: int,
+        col: int,
+        *,
+        excel_text_cols: frozenset[int] = frozenset(),
+        text_resolver: Callable[[int, int, str], str] | None = None,
+    ) -> str:
+        item = table.item(row, col)
         text = item.text() if item else ""
-        if col == COL_METER_NAME and not text:
-            text = self._name_for_code(self._meter_code_for_row(row))
-        text = text.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
-        if col in _EXCEL_TEXT_COLS and text:
+        if text_resolver is not None:
+            text = text_resolver(row, col, text)
+        text = self._flat_table_cell_text(text)
+        if col in excel_text_cols and text:
             return f'="{text}"'
         return text
 
-    def _row_tsv(self, row: int) -> str:
-        cols = [c for c in range(COL_COUNT) if not self._table.isColumnHidden(c)]
-        return "\t".join(self._cell_text(row, c) for c in cols)
+    def _generic_table_row_tsv(
+        self,
+        table: QTableWidget,
+        row: int,
+        *,
+        excel_text_cols: frozenset[int] = frozenset(),
+        text_resolver: Callable[[int, int, str], str] | None = None,
+    ) -> str:
+        cols = self._visible_table_columns(table)
+        return "\t".join(
+            self._generic_table_cell_text(
+                table,
+                row,
+                c,
+                excel_text_cols=excel_text_cols,
+                text_resolver=text_resolver,
+            )
+            for c in cols
+        )
 
-    def _copy_all_meters_tsv(self) -> None:
-        if self._table.rowCount() == 0:
+    def _copy_table_all_tsv(
+        self,
+        table: QTableWidget,
+        headers: list[str],
+        *,
+        excel_text_cols: frozenset[int] = frozenset(),
+        text_resolver: Callable[[int, int, str], str] | None = None,
+    ) -> None:
+        if table.rowCount() == 0:
             return
-        header = "\t".join(self._table_headers_for_copy())
-        lines = [header] + [self._row_tsv(r) for r in range(self._table.rowCount())]
+        header = "\t".join(headers)
+        lines = [
+            header,
+            *(
+                self._generic_table_row_tsv(
+                    table,
+                    r,
+                    excel_text_cols=excel_text_cols,
+                    text_resolver=text_resolver,
+                )
+                for r in range(table.rowCount())
+            ),
+        ]
         QApplication.clipboard().setText("\n".join(lines))
 
-    def _copy_selected_row_tsv(self, row: int | None = None) -> None:
+    def _copy_table_row_tsv(
+        self,
+        table: QTableWidget,
+        headers: list[str],
+        row: int | None = None,
+        *,
+        excel_text_cols: frozenset[int] = frozenset(),
+        text_resolver: Callable[[int, int, str], str] | None = None,
+    ) -> None:
         if row is None or row < 0:
-            rows = sorted({idx.row() for idx in self._table.selectedIndexes()})
+            rows = sorted({idx.row() for idx in table.selectedIndexes()})
             if not rows:
                 return
             row = rows[0]
-        if row < 0 or row >= self._table.rowCount():
+        if row < 0 or row >= table.rowCount():
             return
-        header = "\t".join(self._table_headers_for_copy())
-        QApplication.clipboard().setText(f"{header}\n{self._row_tsv(row)}")
+        header = "\t".join(headers)
+        QApplication.clipboard().setText(
+            f"{header}\n{self._generic_table_row_tsv(table, row, excel_text_cols=excel_text_cols, text_resolver=text_resolver)}"
+        )
 
-    def _copy_selected_column_tsv(self, col: int) -> None:
-        if col < 0 or col >= COL_COUNT or self._table.isColumnHidden(col):
+    def _copy_table_column_tsv(
+        self,
+        table: QTableWidget,
+        headers: list[str],
+        col: int,
+        *,
+        excel_text_cols: frozenset[int] = frozenset(),
+        text_resolver: Callable[[int, int, str], str] | None = None,
+    ) -> None:
+        if col < 0 or col >= table.columnCount() or table.isColumnHidden(col):
             return
-        visible_cols = [c for c in range(COL_COUNT) if not self._table.isColumnHidden(c)]
-        headers = self._table_headers_for_copy()
+        visible_cols = self._visible_table_columns(table)
         try:
             header = headers[visible_cols.index(col)]
         except ValueError:
             return
-        lines = [header] + [
-            self._cell_text(r, col) for r in range(self._table.rowCount())
+        lines = [
+            header,
+            *(
+                self._generic_table_cell_text(
+                    table,
+                    r,
+                    col,
+                    excel_text_cols=excel_text_cols,
+                    text_resolver=text_resolver,
+                )
+                for r in range(table.rowCount())
+            ),
         ]
         QApplication.clipboard().setText("\n".join(lines))
 
-    def _on_table_context_menu(self, pos: QPoint) -> None:
-        if self._table.rowCount() == 0:
+    def _copy_table_selection_tsv(
+        self,
+        table: QTableWidget,
+        headers: list[str],
+        *,
+        excel_text_cols: frozenset[int] = frozenset(),
+        text_resolver: Callable[[int, int, str], str] | None = None,
+        fallback_all: Callable[[], None] | None = None,
+    ) -> None:
+        rows = sorted({idx.row() for idx in table.selectedIndexes()})
+        if not rows:
+            if fallback_all is not None:
+                fallback_all()
             return
-        idx = self._table.indexAt(pos)
+        header = "\t".join(headers)
+        lines = [
+            header,
+            *(
+                self._generic_table_row_tsv(
+                    table,
+                    r,
+                    excel_text_cols=excel_text_cols,
+                    text_resolver=text_resolver,
+                )
+                for r in rows
+            ),
+        ]
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def _accounting_copy_headers(self) -> list[str]:
+        return self._table_headers_for_copy()
+
+    def _accounting_cell_resolver(self, row: int, col: int, text: str) -> str:
+        if col == COL_METER_NAME and not text:
+            text = self._name_for_code(self._meter_code_for_row(row))
+        return text
+
+    def _bills_copy_headers(self) -> list[str]:
+        return list(_BILLS_TABLE_HEADERS)
+
+    def _show_table_copy_menu(
+        self,
+        table: QTableWidget,
+        pos: QPoint,
+        *,
+        all_label: str,
+        headers_fn: Callable[[], list[str]],
+        excel_text_cols: frozenset[int] = frozenset(),
+        text_resolver: Callable[[int, int, str], str] | None = None,
+    ) -> None:
+        if table.rowCount() == 0:
+            return
+        idx = table.indexAt(pos)
         row = idx.row() if idx.isValid() else -1
         col = idx.column() if idx.isValid() else -1
-        has_row = row >= 0 or bool(self._table.selectedIndexes())
-        has_col = col >= 0 and not self._table.isColumnHidden(col)
+        has_row = row >= 0 or bool(table.selectedIndexes())
+        visible_cols = self._visible_table_columns(table)
+        headers = headers_fn()
 
         menu = QMenu(self)
-        act_all = menu.addAction("Copy all meters")
-        act_all.triggered.connect(self._copy_all_meters_tsv)
-        act_row = menu.addAction("Copy selected row")
+        copy_menu = menu.addMenu("Copy")
+        act_all = copy_menu.addAction(all_label)
+        act_all.triggered.connect(
+            lambda _checked=False: self._copy_table_all_tsv(
+                table,
+                headers,
+                excel_text_cols=excel_text_cols,
+                text_resolver=text_resolver,
+            )
+        )
+        act_row = copy_menu.addAction("Copy selected row")
         act_row.setEnabled(has_row)
         if row >= 0:
-            act_row.triggered.connect(lambda _checked=False, r=row: self._copy_selected_row_tsv(r))
+            act_row.triggered.connect(
+                lambda _checked=False, r=row: self._copy_table_row_tsv(
+                    table,
+                    headers,
+                    r,
+                    excel_text_cols=excel_text_cols,
+                    text_resolver=text_resolver,
+                )
+            )
         else:
-            act_row.triggered.connect(lambda _checked=False: self._copy_selected_row_tsv(None))
-        act_col = menu.addAction("Copy selected column")
-        act_col.setEnabled(has_col)
-        if has_col:
-            act_col.triggered.connect(lambda _checked=False, c=col: self._copy_selected_column_tsv(c))
-        menu.exec(self._table.viewport().mapToGlobal(pos))
+            act_row.triggered.connect(
+                lambda _checked=False: self._copy_table_row_tsv(
+                    table,
+                    headers,
+                    None,
+                    excel_text_cols=excel_text_cols,
+                    text_resolver=text_resolver,
+                )
+            )
+        col_menu = copy_menu.addMenu("Copy column")
+        col_menu.setEnabled(bool(visible_cols))
+        for c in visible_cols:
+            try:
+                col_label = headers[visible_cols.index(c)]
+            except ValueError:
+                col_label = table.horizontalHeaderItem(c)
+                col_label = col_label.text() if col_label else f"Column {c + 1}"
+            act_col = col_menu.addAction(col_label)
+            act_col.setCheckable(True)
+            act_col.setChecked(c == col and col >= 0)
+            act_col.triggered.connect(
+                lambda _checked=False, column=c: self._copy_table_column_tsv(
+                    table,
+                    headers,
+                    column,
+                    excel_text_cols=excel_text_cols,
+                    text_resolver=text_resolver,
+                )
+            )
+        menu.exec(table.viewport().mapToGlobal(pos))
+
+    def _copy_all_meters_tsv(self) -> None:
+        self._copy_table_all_tsv(
+            self._table,
+            self._accounting_copy_headers(),
+            excel_text_cols=_EXCEL_TEXT_COLS,
+            text_resolver=self._accounting_cell_resolver,
+        )
+
+    def _copy_all_bills_tsv(self) -> None:
+        self._copy_table_all_tsv(self._bills_table, self._bills_copy_headers())
+
+    def _copy_selected_row_tsv(self, row: int | None = None) -> None:
+        self._copy_table_row_tsv(
+            self._table,
+            self._accounting_copy_headers(),
+            row,
+            excel_text_cols=_EXCEL_TEXT_COLS,
+            text_resolver=self._accounting_cell_resolver,
+        )
+
+    def _copy_selected_column_tsv(self, col: int) -> None:
+        self._copy_table_column_tsv(
+            self._table,
+            self._accounting_copy_headers(),
+            col,
+            excel_text_cols=_EXCEL_TEXT_COLS,
+            text_resolver=self._accounting_cell_resolver,
+        )
+
+    def _on_table_context_menu(self, pos: QPoint) -> None:
+        self._show_table_copy_menu(
+            self._table,
+            pos,
+            all_label="Copy all meters",
+            headers_fn=self._accounting_copy_headers,
+            excel_text_cols=_EXCEL_TEXT_COLS,
+            text_resolver=self._accounting_cell_resolver,
+        )
+
+    def _on_bills_table_context_menu(self, pos: QPoint) -> None:
+        self._show_table_copy_menu(
+            self._bills_table,
+            pos,
+            all_label="Copy all bills",
+            headers_fn=self._bills_copy_headers,
+        )
+
+    def _copy_focused_table_selection_tsv(self) -> None:
+        focus = QApplication.focusWidget()
+        if focus is self._bills_table or (
+            focus is not None and self._bills_table.isAncestorOf(focus)
+        ):
+            self._copy_bills_selection_tsv()
+            return
+        self._copy_selection_tsv()
 
     def _copy_selection_tsv(self) -> None:
         """Ctrl+C: copy selected rows as full TSV rows (all columns). Falls back to all."""
-        rows = sorted({idx.row() for idx in self._table.selectedIndexes()})
-        if not rows:
-            self._copy_all_meters_tsv()
-            return
-        header = "\t".join(self._table_headers_for_copy())
-        lines = [header] + [self._row_tsv(r) for r in rows]
-        QApplication.clipboard().setText("\n".join(lines))
+        self._copy_table_selection_tsv(
+            self._table,
+            self._accounting_copy_headers(),
+            excel_text_cols=_EXCEL_TEXT_COLS,
+            text_resolver=self._accounting_cell_resolver,
+            fallback_all=self._copy_all_meters_tsv,
+        )
+
+    def _copy_bills_selection_tsv(self) -> None:
+        self._copy_table_selection_tsv(
+            self._bills_table,
+            self._bills_copy_headers(),
+            fallback_all=self._copy_all_bills_tsv,
+        )
 
     def _copy_report(self) -> None:
         """Copy the report as tab-separated rows so it pastes cleanly into Excel cells.
@@ -1455,7 +2135,14 @@ class SasVerifyDialog(QDialog):
         lines.append("")  # blank spacer row before the table
         lines.append("\t".join(self._table_headers_for_copy()))
         for i in range(self._table.rowCount()):
-            lines.append(self._row_tsv(i))
+            lines.append(
+                self._generic_table_row_tsv(
+                    self._table,
+                    i,
+                    excel_text_cols=_EXCEL_TEXT_COLS,
+                    text_resolver=self._accounting_cell_resolver,
+                )
+            )
         QApplication.clipboard().setText("\n".join(lines))
 
     def mismatch_detected(self) -> bool:

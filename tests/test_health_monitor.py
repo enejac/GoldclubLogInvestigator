@@ -79,6 +79,70 @@ def test_get_remote_memory_stats_process_none_when_missing() -> None:
     assert stats["process_mb"] is None
 
 
+def test_is_onehand_running_true_and_false() -> None:
+    fake_ok = MagicMock()
+    fake_ok.returncode = 0
+    fake_ok.stdout = "ProcessId=4242\r\n\r\n"
+    fake_missing = MagicMock()
+    fake_missing.returncode = 0
+    fake_missing.stdout = "No Instance(s) Available.\r\n"
+    fake_err = MagicMock()
+    fake_err.returncode = 1
+    fake_err.stdout = ""
+
+    status_ok = health_monitor.OneHandStatus(running=True, smb_reachable=True)
+    status_missing = health_monitor.OneHandStatus(running=False, smb_reachable=True)
+    status_unreachable = health_monitor.OneHandStatus(running=None, smb_reachable=False)
+
+    with patch.object(health_monitor, "check_onehand_status", return_value=status_ok):
+        assert health_monitor.is_onehand_running("10.0.0.90") is True
+    with patch.object(health_monitor, "check_onehand_status", return_value=status_missing):
+        assert health_monitor.is_onehand_running("10.0.0.90") is False
+    with patch.object(health_monitor, "check_onehand_status", return_value=status_unreachable):
+        assert health_monitor.is_onehand_running("10.0.0.90") is None
+
+
+def test_check_onehand_status_uses_psexec_when_wmic_fails() -> None:
+    with patch.object(health_monitor, "cabinet_smb_reachable", return_value=True):
+        with patch.object(health_monitor, "_onehand_via_wmic", return_value=None):
+            with patch.object(health_monitor, "_onehand_via_psexec", return_value=True):
+                status = health_monitor.check_onehand_status("10.0.0.90")
+    assert status == health_monitor.OneHandStatus(running=True, smb_reachable=True)
+
+
+def test_check_onehand_status_unreachable_without_smb() -> None:
+    with patch.object(health_monitor, "cabinet_smb_reachable", return_value=False):
+        status = health_monitor.check_onehand_status("10.0.0.90")
+    assert status == health_monitor.OneHandStatus(running=None, smb_reachable=False)
+
+
+def test_onehand_via_psexec_parses_tasklist_output() -> None:
+    from automation import remote_exec
+
+    with patch.object(
+        remote_exec,
+        "psexec_run",
+        return_value=remote_exec.RemoteRunResult(
+            returncode=0,
+            stdout="RUNNING\r\n",
+            stderr="",
+        ),
+    ):
+        with patch.object(remote_exec, "resolve_psexec_path", return_value="C:\\tools\\psexec.exe"):
+            assert health_monitor._onehand_via_psexec("10.0.0.90") is True
+
+
+def test_onehand_warning_text() -> None:
+    assert "not running" in health_monitor.onehand_warning_text("10.0.0.90", running=False)
+    assert health_monitor.onehand_warning_text("10.0.0.90", running=True) == ""
+    assert "SMB/log share unreachable" in health_monitor.onehand_warning_text(
+        "10.0.0.90", running=None, smb_reachable=False
+    )
+    assert "reachable but" in health_monitor.onehand_warning_text(
+        "10.0.0.90", running=None, smb_reachable=True
+    )
+
+
 def test_is_probable_leak_threshold() -> None:
     assert is_probable_leak(None) is False
     assert is_probable_leak(2500.0) is False

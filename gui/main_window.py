@@ -46,6 +46,7 @@ from PySide6.QtGui import (
     QPalette,
     QPixmap,
     QShortcut,
+    QShowEvent,
 )
 from shiboken6 import Shiboken
 from PySide6.QtWidgets import (
@@ -322,6 +323,7 @@ class MainWindow(QMainWindow):
         self._incident_table_initial_column_fit_done = False
         self._incident_table_column_fit_scheduled = False
         self._incident_table_header_restored_from_settings = False
+        self._window_geometry_restored = False
 
         self._global_scan_start: datetime | None = None
         self._global_scan_end: datetime | None = None
@@ -375,7 +377,6 @@ class MainWindow(QMainWindow):
             self._fleet_heartbeat.start()
 
         self._load_connection_settings()
-        self._restore_window_geometry()
         self._wire_vm()
         self._try_restore_last_session_snapshot()
         self._refresh_game_analytics_dashboard()
@@ -3419,12 +3420,14 @@ class MainWindow(QMainWindow):
         }
 
     def _restore_window_geometry(self) -> None:
-        g = self._settings.value("mainwin/geometry")
-        if isinstance(g, QByteArray) and not g.isEmpty():
-            self.restoreGeometry(g)
-        st = self._settings.value("mainwin/windowState")
-        if isinstance(st, QByteArray) and not st.isEmpty():
-            self.restoreState(st)
+        SettingsManager.restore_main_window_geometry(self)
+
+    def showEvent(self, event: QShowEvent) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        if self._window_geometry_restored:
+            return
+        self._window_geometry_restored = True
+        self._restore_window_geometry()
 
     def _try_restore_last_session_snapshot(self) -> None:
         meta = self._vm.load_session_state()
@@ -3493,8 +3496,7 @@ class MainWindow(QMainWindow):
         return False
 
     def _persist_window_state_only(self) -> None:
-        self._settings.setValue("mainwin/geometry", self.saveGeometry())
-        self._settings.setValue("mainwin/windowState", self.saveState())
+        SettingsManager.save_main_window_geometry(self)
         self._settings.setValue(
             "mainwin/last_log_path",
             (self._path_edit.text() or "").strip(),
@@ -3521,12 +3523,12 @@ class MainWindow(QMainWindow):
             return
         self._shutdown_cleanup_started = True
         QApplication.instance().setQuitOnLastWindowClosed(False)
-        self.hide()
-        QTimer.singleShot(3000, self._force_exit_if_still_alive)
         SettingsManager.save_table_state(
             bytes(self._table.horizontalHeader().saveState())
         )
         self._persist_window_state_only()
+        self.hide()
+        QTimer.singleShot(3000, self._force_exit_if_still_alive)
         self._stop_live_watch_ui()
         if self._shutdown_force_quit:
             self._disconnect_active_ai_emitters()

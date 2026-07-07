@@ -1,0 +1,33 @@
+# Fixture for logic_validator / parse_log_file integration tests.
+# Credit-win lines intentionally omit a leading ISO timestamp so the first parsed
+# amount is the win value (see _extract_credit_amount in logic_validator.py).
+
+# --- HEALTHY: enter bonus, 3 spins, 3 credit wins (50/100/250), exit to Idle ---
+2026-01-15T10:00:01.000+00:00 INFO Themes\Slot\Roulette Change MachineState from Game.Idle to Game.RouletteBonus
+2026-01-15T10:00:02.000+00:00 INFO KeyType:Spin
+2026-01-15T10:00:03.000+00:00 INFO KeyType:Spin
+2026-01-15T10:00:04.000+00:00 INFO KeyType:Spin
+CreditWin awarded 50 to meter
+CreditWin awarded 100 to meter
+CreditWin awarded 250 to meter
+2026-01-15T10:00:10.000+00:00 INFO Change MachineState from Game.RouletteBonus to Game.Idle
+
+# --- SHORT SPIN: only 2 spins, then GAME STARTED (session ends early) ---
+2026-01-15T11:00:01.000+00:00 INFO Change MachineState from Game.Idle to Game.RouletteBonus
+2026-01-15T11:00:02.000+00:00 INFO KeyType:Spin
+2026-01-15T11:00:03.000+00:00 INFO KeyType:Spin
+2026-01-15T11:00:04.000+00:00 INFO *** GAME STARTED *** Game No. 42 Bet 1.00
+
+# --- MISSING CREDITS: 3 spins but a single credit line before exit ---
+2026-01-15T12:00:01.000+00:00 INFO Change MachineState from Game.Idle to Game.RouletteBonus
+2026-01-15T12:00:02.000+00:00 INFO KeyType:Spin
+2026-01-15T12:00:03.000+00:00 INFO KeyType:Spin
+2026-01-15T12:00:04.000+00:00 INFO KeyType:Spin
+CreditWin awarded 50 to meter
+2026-01-15T12:00:10.000+00:00 INFO Change MachineState from Game.RouletteBonus to Game.Idle
+
+# --- INTERRUPTED: still in bonus at EOF (3 spins, no credit wins, no exit) ---
+2026-01-15T13:00:01.000+00:00 INFO Change MachineState from Game.Idle to Game.RouletteBonus
+2026-01-15T13:00:02.000+00:00 INFO KeyType:Spin
+2026-01-15T13:00:03.000+00:00 INFO KeyType:Spin
+2026-01-15T13:00:04.000+00:00 INFO KeyType:Spin

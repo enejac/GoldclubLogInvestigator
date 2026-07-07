@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "description": "Bonus state labels, optional roulette math golden source, and log line markers for validation.",
+  "math": {
+    "startingSpins": 3,
+    "creditWins": [50, 100, 250]
+  },
+  "logValidation": {
+    "spinLineSubstrings": [
+      "KeyType:Spin",
+      "RouletteSpin",
+      "BonusSpin",
+      "SpinResult",
+      "WheelSpin"
+    ],
+    "creditWinLineSubstrings": [
+      "credit state increased",
+      "cashable credit state increased",
+      "CreditWin",
+      "credit win",
+      "won "
+    ]
+  },
+  "bonus_state_patterns": [
+    { "substring": "GoldenFrame", "display_label": "Golden Frame" },
+    { "substring": "Golden_Frame", "display_label": "Golden Frame" },
+    { "substring": "CreditWin", "display_label": "Credit Win" },
+    { "substring": "Credit_Win", "display_label": "Credit Win" },
+    { "substring": "RouletteBonus", "display_label": "Roulette Bonus" },
+    { "substring": "Roulette_Bonus", "display_label": "Roulette Bonus" },
+    { "substring": "FreeSpin", "display_label": "Free Spins" },
+    { "substring": "Free_Spin", "display_label": "Free Spins" },
+    { "substring": "PickBonus", "display_label": "Pick Bonus" },
+    { "substring": ".Bonus", "display_label": "Bonus" }
+  ]
+}

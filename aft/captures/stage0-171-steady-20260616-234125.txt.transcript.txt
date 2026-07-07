@@ -1,0 +1,891 @@
+==============================================================================
+STAGE 0 SAS BUS TRANSCRIPT (read-only sniff, direction-labeled)
+==============================================================================
+source dump : C:\Users\Ezbogar\GoldclubLogInvestigator\captures\stage0-171-steady-20260616-234125.txt
+  WDSNIFF mode=SNIFF (read-only copy; never diverts/injects/drops)
+  FILTER loopback and tcp and (tcp.SrcPort == 31100 or tcp.DstPort == 31100 or tcp.SrcPort == 31101 or tcp.DstPort == 31101 or tcp.SrcPort == 31150 or tcp.DstPort == 31150)
+  PORTS 31100,31101,31150
+  DURATION_MS 60000
+  DIRLEGEND S2C=CommCtrlSAS->Aurum(host-poll)  C2S=Aurum->CommCtrlSAS(slave-response)
+  START_WALL 2026-06-16 22:48:49.470 +01:00
+  OPEN ok
+  END_WALL 2026-06-16 22:49:49.505 +01:00
+  PACKETS 566
+  CLOSE ok
+  parsed PKT lines: 566
+
+------------------------------------------------------------------------------
+CONNECTION / CONTROL TIMELINE (SYN/FIN/RST -- bring-up & teardown evidence)
+------------------------------------------------------------------------------
+  (none -- steady-state, no connection changes during the window)
+
+------------------------------------------------------------------------------
+PAYLOAD FRAME FREQUENCY (by direction + decoded type)
+------------------------------------------------------------------------------
+  C2S  RT/exception 01            x283
+
+  payload-bearing flows (src->dst):
+    C2S  50208->31150     x283
+
+------------------------------------------------------------------------------
+SAS LONG POLLS / NON-TRIVIAL COMMANDS OBSERVED
+------------------------------------------------------------------------------
+  (none beyond general poll 80/81 + idle 00 in this window)
+
+------------------------------------------------------------------------------
+NON-TRIVIAL FRAMES (time-ordered; host polls paired with following responses)
+------------------------------------------------------------------------------
+  22:48:49.674 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:49.884 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:50.095 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:50.307 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:50.518 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:50.729 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:50.940 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:51.151 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:51.362 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:51.574 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:51.786 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:51.997 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:52.210 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:52.421 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:52.632 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:52.844 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:53.056 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:53.266 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:53.476 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:53.688 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:53.899 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:54.113 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:54.324 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:54.536 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:54.746 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:54.957 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:55.168 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:55.380 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:55.591 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:55.801 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:56.012 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:56.223 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:56.433 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:56.646 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:56.857 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:57.069 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:57.280 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:57.491 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:57.701 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:57.911 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:58.122 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:58.333 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:58.545 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:58.755 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:58.965 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:59.177 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:59.388 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:59.599 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:48:59.811 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:00.024 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:00.236 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:00.447 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:00.659 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:00.871 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:01.082 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:01.293 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:01.505 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:01.717 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:01.928 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:02.139 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:02.351 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:02.561 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:02.771 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:02.984 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:03.195 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:03.406 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:03.618 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:03.829 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:04.042 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:04.254 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:04.466 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:04.679 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:04.890 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:05.103 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:05.315 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:05.526 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:05.736 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:05.948 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:06.161 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:06.372 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:06.584 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:06.795 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:07.007 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:07.218 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:07.429 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:07.641 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:07.852 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:08.062 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:08.275 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:08.486 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:08.697 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:08.909 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:09.121 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:09.331 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:09.542 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:09.755 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:09.966 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:10.178 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:10.389 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:10.600 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:10.812 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:11.024 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:11.235 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:11.448 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:11.660 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:11.872 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:12.084 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:12.297 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:12.509 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:12.721 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:12.932 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:13.144 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:13.356 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:13.567 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:13.778 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:13.991 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:14.201 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:14.412 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:14.624 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:14.836 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:15.048 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:15.260 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:15.472 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:15.685 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:15.896 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:16.108 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:16.319 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:16.532 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:16.743 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:16.956 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:17.167 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:17.378 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:17.591 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:17.802 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:18.014 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:18.244 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:18.455 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:18.667 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:18.880 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:19.092 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:19.304 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:19.515 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:19.727 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:19.939 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:20.150 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:20.362 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:20.574 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:20.784 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:20.996 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:21.207 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:21.419 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:21.631 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:21.843 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:22.053 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:22.264 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:22.477 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:22.688 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:22.900 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:23.112 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:23.323 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:23.534 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:23.745 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:23.957 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:24.168 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:24.378 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:24.590 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:24.802 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:25.014 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:25.225 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:25.435 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:25.648 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:25.858 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:26.069 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:26.281 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:26.492 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:26.703 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:26.915 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:27.127 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:27.339 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:27.550 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:27.762 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:27.973 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:28.184 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:28.396 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:28.609 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:28.820 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:29.032 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:29.243 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:29.454 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:29.666 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:29.878 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:30.089 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:30.301 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:30.512 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:30.724 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:30.935 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:31.146 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:31.356 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:31.566 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:31.777 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:31.988 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:32.198 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:32.410 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:32.621 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:32.832 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:33.043 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:33.254 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:33.465 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:33.676 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:33.889 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:34.101 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:34.312 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:34.523 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:34.734 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:34.947 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:35.159 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:35.372 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:35.583 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:35.794 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:36.006 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:36.216 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:36.428 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:36.639 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:36.851 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:37.062 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:37.273 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:37.485 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:37.695 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:37.907 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:38.119 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:38.330 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:38.541 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:38.753 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:38.964 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:39.176 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:39.387 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:39.598 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:39.809 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:40.020 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:40.232 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:40.443 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:40.655 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:40.867 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:41.078 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:41.289 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:41.500 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:41.713 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:41.926 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:42.136 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:42.346 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:42.557 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:42.768 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:42.980 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:43.191 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:43.403 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:43.615 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:43.827 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:44.040 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:44.250 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:44.462 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:44.675 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:44.886 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:45.096 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:45.308 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:45.520 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:45.731 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:45.943 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:46.155 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:46.366 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:46.579 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:46.790 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:47.002 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:47.214 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:47.426 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:47.637 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:47.849 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:48.061 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:48.272 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:48.484 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:48.695 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:48.908 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:49.119 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+  22:49:49.331 SLAVE << [C2S] 50208->31150 flags=AP len=1
+           raw=01
+           RT/exception 01: 0x01 Slot door opened
+
+------------------------------------------------------------------------------
+STEADY-STATE SAMPLE (first 14 poll/response pairs, time-ordered)
+------------------------------------------------------------------------------
+

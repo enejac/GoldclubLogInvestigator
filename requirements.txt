@@ -1,0 +1,13 @@
+# Core CLI / engine
+# (stdlib only)
+SQLAlchemy>=2.0.0
+
+# Desktop GUI
+PySide6>=6.6.0
+opencv-python>=4.8.0
+pywin32>=306; sys_platform == 'win32'
+pyserial>=3.5
+
+# Optional AI (privacy-safe case-pack summary uses aggregates only)
+google-genai>=1.0.0
+google-generativeai>=0.8.0

@@ -1,0 +1,47 @@
+{
+  "schema": "sas-response-table/v1",
+  "generated_utc": "2026-06-16T12:33:34.419576+00:00",
+  "source_dump": ".\\captures\\stage0-90-bringup-20260616-141514.txt",
+  "source_header": [
+    "WDSNIFF mode=SNIFF (read-only copy; never diverts/injects/drops)",
+    "FILTER loopback and tcp and (tcp.SrcPort == 31100 or tcp.DstPort == 31100 or tcp.SrcPort == 31101 or tcp.DstPort == 31101 or tcp.SrcPort == 31150 or tcp.DstPort == 31150)",
+    "PORTS 31100,31101,31150",
+    "DURATION_MS 100000",
+    "DIRLEGEND S2C=CommCtrlSAS->Aurum(host-poll)  C2S=Aurum->CommCtrlSAS(slave-response)",
+    "START_WALL 2026-06-16 14:15:53.020 +01:00"
+  ],
+  "note": "Responses are verbatim slave replies observed on the reference cabinet. A responder MUST NOT answer any poll absent from this table, and MUST NOT synthesize bytes. CRC=OK marks a frame whose trailing 2 bytes pass CRC-16/KERMIT; single-byte polls/acks are NA.",
+  "packets_parsed": 996,
+  "distinct_polls": 2,
+  "entries": [
+    {
+      "poll_unframed_hex": "81",
+      "poll_raw_hex": "1B81",
+      "bridge_1b_framed": true,
+      "addr": null,
+      "cmd": null,
+      "poll_count": 221,
+      "polls_with_no_response": 169,
+      "distinct_responses": 1,
+      "responses": [
+        {
+          "hex": "00",
+          "count": 52,
+          "len": 1,
+          "crc": "NA"
+        }
+      ]
+    },
+    {
+      "poll_unframed_hex": "80",
+      "poll_raw_hex": "1B80",
+      "bridge_1b_framed": true,
+      "addr": null,
+      "cmd": null,
+      "poll_count": 221,
+      "polls_with_no_response": 221,
+      "distinct_responses": 0,
+      "responses": []
+    }
+  ]
+}

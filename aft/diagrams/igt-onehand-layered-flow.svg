@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="960" viewBox="0 0 1200 960" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <polygon points="0 0, 10 4, 0 8" fill="#333"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <polygon points="0 0, 10 4, 0 8" fill="#1565c0"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <polygon points="0 0, 10 4, 0 8" fill="#e65100"/>
+    </marker>
+    <style>
+      .title { font-size: 20px; font-weight: 700; fill: #1a1a1a; }
+      .subtitle { font-size: 12px; fill: #555; }
+      .lane-label { font-size: 11px; font-weight: 700; fill: #fff; }
+      .lane-bg { fill: #f5f5f5; stroke: #bdbdbd; stroke-width: 1; }
+      .box { fill: #fff; stroke: #424242; stroke-width: 1.5; rx: 6; }
+      .box-title { font-size: 13px; font-weight: 700; fill: #212121; }
+      .box-body { font-size: 11px; fill: #424242; }
+      .edge-label { font-size: 10px; fill: #1565c0; font-weight: 600; }
+      .edge-label-rev { font-size: 10px; fill: #2e7d32; font-weight: 600; }
+      .edge-label-inject { font-size: 10px; fill: #e65100; font-weight: 600; }
+      .legend { font-size: 10px; fill: #616161; }
+    </style>
+  </defs>
+
+  <!-- Header -->
+  <text x="24" y="32" class="title">IGT SAS Simulator ? OneHand.exe  Layered byte flow</text>
+  <text x="24" y="52" class="subtitle">Lab cabinet 10.0.0.90 (GST20664 / GCC_ST_20664_01)  verified AFT path</text>
+
+  <!-- Layer 1: Physical -->
+  <rect x="20" y="70" width="1160" height="110" class="lane-bg"/>
+  <rect x="20" y="70" width="130" height="110" fill="#5d4037"/>
+  <text x="30" y="100" class="lane-label">LAYER 1</text>
+  <text x="30" y="118" class="lane-label">Physical</text>
+  <rect x="170" y="88" width="200" height="74" class="box"/>
+  <text x="185" y="110" class="box-title">IGT SAS Tester</text>
+  <text x="185" y="128" class="box-body">SAS host UI</text>
+  <text x="185" y="144" class="box-body">General polls + 0x72 transfer</text>
+  <line x1="370" y1="125" x2="430" y2="125" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="375" y="118" class="edge-label">81 / 80 polls</text>
+  <text x="375" y="140" class="edge-label">01 72 45... transfer</text>
+  <rect x="440" y="88" width="220" height="74" class="box"/>
+  <text x="455" y="110" class="box-title">COM11 Serial</text>
+  <text x="455" y="128" class="box-body">921600 baud, RS-232 / MUX</text>
+  <text x="455" y="144" class="box-body">Addr 1, CRC-16/KERMIT</text>
+  <line x1="660" y1="125" x2="720" y2="125" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="730" y="88" width="200" height="74" class="box"/>
+  <text x="745" y="110" class="box-title">CommCtrlSAS.exe</text>
+  <text x="745" y="128" class="box-body">Serial endpoint</text>
+  <text x="745" y="144" class="box-body">(bridge process)</text>
+
+  <!-- Layer 2: Bridge framing -->
+  <rect x="20" y="190" width="1160" height="100" class="lane-bg"/>
+  <rect x="20" y="190" width="130" height="100" fill="#455a64"/>
+  <text x="30" y="220" class="lane-label">LAYER 2</text>
+  <text x="30" y="238" class="lane-label">Bridge</text>
+  <rect x="730" y="205" width="280" height="70" class="box"/>
+  <text x="745" y="227" class="box-title">CommCtrlSAS framing</text>
+  <text x="745" y="245" class="box-body">Prefix each SAS frame with 0x1B</text>
+  <text x="745" y="261" class="box-body">Serial SAS ? loopback TCP bytes</text>
+  <line x1="860" y1="275" x2="860" y2="300" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Layer 3: TCP loopback -->
+  <rect x="20" y="300" width="1160" height="130" class="lane-bg"/>
+  <rect x="20" y="300" width="130" height="130" fill="#1565c0"/>
+  <text x="30" y="330" class="lane-label">LAYER 3</text>
+  <text x="30" y="348" class="lane-label">TCP</text>
+  <text x="30" y="366" class="lane-label">Loopback</text>
+  <rect x="500" y="318" width="220" height="64" class="box"/>
+  <text x="515" y="340" class="box-title">:31150 host poll leg</text>
+  <text x="515" y="358" class="box-body">CommCtrlSAS ? Aurum ephemeral</text>
+  <text x="515" y="374" class="box-body">e.g. 1B80, 1B81, 1B017245&</text>
+  <line x1="720" y1="350" x2="780" y2="350" stroke="#1565c0" stroke-width="2" marker-end="url(#arrow-blue)"/>
+  <text x="725" y="342" class="edge-label">1B80 / 1B81</text>
+  <text x="725" y="368" class="edge-label">1B + 01 72 45...</text>
+  <rect x="790" y="318" width="220" height="64" class="box"/>
+  <text x="805" y="340" class="box-title">Aurum SAS messenger</text>
+  <text x="805" y="358" class="box-body">TCP client to :31150</text>
+  <line x1="900" y1="382" x2="900" y2="400" stroke="#2e7d32" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="500" y="392" width="220" height="28" class="box"/>
+  <text x="515" y="410" class="box-body">:31100 EGM reply leg  ?  1B00 ack / response</text>
+  <!-- WinDivert inject -->
+  <rect x="170" y="335" width="240" height="60" class="box" stroke="#e65100" stroke-width="2"/>
+  <text x="185" y="357" class="box-title" fill="#e65100">WinDivert inject (optional)</text>
+  <text x="185" y="375" class="box-body">In-stream on live :31150 flow</text>
+  <text x="185" y="389" class="box-body">Same 1B017245... at correct TCP SEQ</text>
+  <line x1="410" y1="365" x2="498" y2="350" stroke="#e65100" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#arrow-orange)"/>
+  <text x="415" y="358" class="edge-label-inject">joins Hop 2</text>
+
+  <!-- Layer 4: Aurum -->
+  <rect x="20" y="440" width="1160" height="150" class="lane-bg"/>
+  <rect x="20" y="440" width="130" height="150" fill="#6a1b9a"/>
+  <text x="30" y="470" class="lane-label">LAYER 4</text>
+  <text x="30" y="488" class="lane-label">Aurum</text>
+  <text x="30" y="506" class="lane-label">Services</text>
+  <rect x="170" y="458" width="250" height="70" class="box"/>
+  <text x="185" y="480" class="box-title">sasmsgr (SASControler1)</text>
+  <text x="185" y="498" class="box-body">Logs qGMID1:&lt;hex&gt; per frame</text>
+  <text x="185" y="514" class="box-body">e.g. qGMID1:0172450000...100000...</text>
+  <line x1="420" y1="493" x2="480" y2="493" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="490" y="458" width="280" height="114" class="box"/>
+  <text x="505" y="480" class="box-title">WAT2AFT engine</text>
+  <text x="505" y="498" class="box-body">1. requestTransfer</text>
+  <text x="505" y="514" class="box-body">2. authorizeTransfer</text>
+  <text x="505" y="530" class="box-body">3. commitTransfer (transferException=0)</text>
+  <text x="505" y="558" class="box-body">TRANSFER REQUEST FROM SERVER ? FINISHED</text>
+  <line x1="770" y1="515" x2="830" y2="515" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="840" y="468" width="320" height="94" class="box"/>
+  <text x="855" y="490" class="box-title">AFT state XML (disk)</text>
+  <text x="855" y="508" class="box-body">var\state\goldclub.aurum.services\</text>
+  <text x="855" y="524" class="box-body">GCMessenger\SASControler1\</text>
+  <text x="855" y="540" class="box-body">aftMostRecentTransaction_v*.xml</text>
+  <text x="855" y="556" class="box-body">History\aftTransactionHistory_*.xml</text>
+
+  <!-- Layer 5: OneHand -->
+  <rect x="20" y="600" width="1160" height="120" class="lane-bg"/>
+  <rect x="20" y="600" width="130" height="120" fill="#2e7d32"/>
+  <text x="30" y="630" class="lane-label">LAYER 5</text>
+  <text x="30" y="648" class="lane-label">OneHand</text>
+  <line x1="630" y1="572" x2="630" y2="618" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="490" y="628" width="280" height="76" class="box"/>
+  <text x="505" y="650" class="box-title">OneHand.exe</text>
+  <text x="505" y="668" class="box-body">GM2AU_aurumExecute</text>
+  <text x="505" y="684" class="box-body">Applies committed credit to game meter</text>
+  <text x="505" y="700" class="box-body">~150-230 ms after sasmsgr ingest</text>
+  <line x1="770" y1="666" x2="830" y2="666" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="775" y="658" class="edge-label">Cashless In: $X</text>
+  <text x="775" y="680" class="edge-label">credit state +N</text>
+
+  <!-- Layer 6: Logs -->
+  <rect x="20" y="730" width="1160" height="130" class="lane-bg"/>
+  <rect x="20" y="730" width="130" height="130" fill="#37474f"/>
+  <text x="30" y="760" class="lane-label">LAYER 6</text>
+  <text x="30" y="778" class="lane-label">Logs</text>
+  <text x="30" y="796" class="lane-label">(verify)</text>
+  <rect x="170" y="748" width="200" height="56" class="box"/>
+  <text x="185" y="770" class="box-title">sasmsgr log</text>
+  <text x="185" y="788" class="box-body">qGMID1: full 0x72 hex</text>
+  <rect x="390" y="748" width="200" height="56" class="box"/>
+  <text x="405" y="770" class="box-title">SlotLog</text>
+  <text x="405" y="788" class="box-body">Cashless In: $1,000.00</text>
+  <rect x="610" y="748" width="240" height="56" class="box"/>
+  <text x="625" y="770" class="box-title">OneHand TRANSACTION EVENTS</text>
+  <text x="625" y="788" class="box-body">Transfer IN $X (promo/cashable)</text>
+  <rect x="870" y="748" width="200" height="56" class="box"/>
+  <text x="885" y="770" class="box-title">OneHand GM2AU</text>
+  <text x="885" y="788" class="box-body">Withdraw successful GCC_ST_...</text>
+  <line x1="630" y1="704" x2="270" y2="748" stroke="#666" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <line x1="630" y1="704" x2="490" y2="748" stroke="#666" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <line x1="630" y1="704" x2="730" y2="748" stroke="#666" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <line x1="630" y1="704" x2="970" y2="748" stroke="#666" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+  <!-- Vertical flow connectors between layers -->
+  <line x1="830" y1="162" x2="830" y2="205" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="900" y1="400" x2="900" y2="458" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Legend -->
+  <rect x="20" y="880" width="1160" height="60" fill="#fafafa" stroke="#e0e0e0"/>
+  <text x="32" y="902" class="legend">Solid arrows = byte/data flow direction. Orange dashed = WinDivert AFT inject (Hop 2 only; no new TCP socket).</text>
+  <text x="32" y="920" class="legend">Money commits at WAT2AFT (Layer 4). OneHand (Layer 5) applies credit. Logs (Layer 6) prove success.</text>
+  <text x="32" y="936" class="legend">Source: aft/hops/README.md, protocol-raw-traffic.md, RUNBOOK.md</text>
+</svg>

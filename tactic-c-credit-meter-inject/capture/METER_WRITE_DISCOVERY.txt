@@ -1,0 +1,172 @@
+# Phase 1 Discovery: Meter-Write Format Discovery
+# ===============================================
+# Date: Mon Jun 17 10:50 UTC 2026
+
+# WORKFLOW INSTRUCTIONS
+# =====================
+
+## Goal:
+Discover the exact byte format of SAS 0x0F (Send selected meters) command used by OneHand
+to update game meter values. This template is critical for Phase 2 implementation.
+
+## Available Infrastructure:
+- ✓ WinDivert capture infrastructure (WdSniff.exe)
+- ✓ WdInject infrastructure (WinDivert inject on Hop 2)
+- ✓ Existing AFT transfer (0x72 frames)
+- ✓ SAS 0x0F command known from decode_stage0.py
+- ❌ Meter-write byte layout UNKNOWN (requires capture)
+
+
+## ACTION REQUIRED
+
+### Step 1: Compile and Stage WdSniff.exe
+```powershell
+cd C:\Users\Ezbogar\GoldclubLogInvestigator
+.\build_sas_response_table.py
+```
+
+This compiles WdSniff.exe and stages prerequisite files.
+
+### Step 2: Create Capture Directory on Cabinet
+```powershell
+# As SYSTEM via admin C$:
+cmdkey /generic:10.0.0.90 /user:GOLD-CLUB\test /pass:test
+\\10.0.0.90\c$ Windows\Temp\auruntap
+```
+
+### Step 3: Run WinDivert Capture
+```powershell
+cd C:\Users\Ezbogar\GoldclubLogInvestigator\tactic-c-credit-meter-inject\capture
+
+# Capture for 10 seconds (adjust based on network):
+& PowerShell -File "c:\Users\Ezbogar\GoldclubLogInvestigator\WdSniff.exe" 10000 31100,31150 | Out-File capture-idle-20260617-105000.txt
+
+# Keep capture running for 10 seconds
+Start-Sleep -Seconds 10
+```
+
+### Step 4: Trigger AFT Transfer
+```powershell
+# Execute AFT transfer while capture is recording:
+cd C:\Users\Ezbogar\GoldclubLogInvestigator
+.\Send-TestAft1000.ps1 -Send -IP 10.0.0.90 -Amount 1000000 -nr
+```
+
+Expected behavior:
+- WinDivert injects SAS 0x72 (AFT transfer funds)
+- Aurum processes transfer
+- OneHand applies credit → potentially emits meter-write command
+
+### Step 5: Complete Capture
+```powershell
+# Stop capture and verify output:
+Get-Content capture-idle-20260617-105000.txt | Measure-Object -Line
+```
+
+Expected file size: ~10-50KB for 10 seconds of traffic
+
+
+## PARSE CAPTURE (:: IF FILE EXIST)
+
+```powershell
+cd C:\Users\Ezbogar\GoldclubLogInvestigator
+python tactic-c-credit-meter-inject/parser/SasMeterParser.py \
+  .\aft\captures\capture-idle-20260617-105000.txt
+```
+
+### What the Parser Will Do:
+1. Parse WinDivert PKT lines
+2. Extract SAS frames (0x0F, 0x72, etc.)
+3. Identify note framing (0x1B, direction bytes)
+4. Display hexdump with ASCII
+5. **Report 0x0F frames if found**
+6. Generate meter-write template
+
+### If 0x0F Found, Output Will Look Like:
+```
+==================================================
+DISCOVERY: SAS 0x0F METERS-WRITE COMMANDS
+==================================================
+Total frames: 5
+
+Sample frames:
+  [0] SAS 0x0F (length: 12, payload: 12 bytes)
+      Frame prefix (hex):  1B 0F 04 07 AA BB CC DD EE FF
+                        (ascii): ..??...???  ...
+      Full hex:            1B 0F 04 07 AA BB CC DD EE FF 00
+```
+
+### If 0x0F MISSING - Next Und
+
+**Strategy pivot:**
+1. Analyze OneHand memory instead
+2. Use Process Monitor (BGL)
+3. Game tracer COM calls
+
+
+## SUCCESS CRITERIA
+
+✅ Parser finds SAS 0x0F frame(s)
+✅ Template generated with bridge prefix + meter code + encoding
+✅ Can construct valid frame = 0x1B + 0x0F + <payload> + <crc>
+
+IF SUCCESSFUL → Proceed to Phase 2
+IF FAILURE    → Pivot to Phase 1B
+
+
+## ALTERNATIVE STRATEGY (If WdSniff Fails)
+
+### Option: Direct Meter Memory Introspection
+```powershell
+# Use existing tools for meter discovery
+Params:
+  1. Known meter code: SAS 0x001C (TotalMachinePaidPaytableWin)
+  2. Want to find where OneHand writes this value
+  3. Start by running capture see what ONEHAND writes
+      
+Use Process Monitor:
+  BGLLogCreate("C:\Temp\OneHand-Meter-Discovery")
+  Run ONEHAND credit apply
+  Recover .BGL file
+  
+This is complex; prefer capture analysis first.
+```
+
+
+## FILES NEEDED
+
+Required:
+- WdSniff.exe (compile from build_sas_response_table.py)
+- SasMeterParser.py (already in tactic-c directory)
+- WdInject infrastructure (existing)
+
+NOT Required:
+- Modifications to existing code
+- Reboot of cabinet
+- Network configuration changes
+
+
+## BLOCKERS & MITIGATIONS
+
+❌ File blocked: Can't write .txt file (pre-existing AD issues?)
+✅ Alternative: Stream capture to memory and display
+✅ CLI tool: Read from console instead
+
+
+## NEXT ACTIONS
+
+1. Compile WdSniff.exe if not present
+2. Create captur and set up WinDivert filters
+3. Execute capture while AFT transfer occurs
+4. Parse with SasMeterParser.py
+5. Report findings immediately
+
+
+## TIMESTAMP
+
+Captured: Mon Jun 17 10:500 UTC 2026
+Status: WAITING FOR USER EXECUTION
+
+
+Implementation started: 10:44 UTC
+Last updated: 10:50 UTC

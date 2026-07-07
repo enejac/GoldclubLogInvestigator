@@ -1,0 +1,5 @@
+2026-03-13T21:11:50.000+00:00 [INFO] Loading theme Themes\LotusPrincessHD
+2026-03-13T21:11:51.100+00:00 [WARN] state does not exist for IdleSpin
+2026-03-13T21:11:52.200+00:00 [WARN] Dispose called on texture handle
+2026-03-13T21:11:55.144+00:00 [ERR] System.ArgumentOutOfRangeException: Index was out of range
+   at System.ThrowHelper.ThrowArgumentOutOfRangeException()

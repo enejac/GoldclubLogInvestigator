@@ -1,0 +1,27 @@
+﻿[
+    {
+        "Check":  "AFT_STATUS",
+        "Pass":  true,
+        "Detail":  "Status=FULL_TRANSFER_SUCCESSFUL (bonus: full/partial accepted)"
+    },
+    {
+        "Check":  "AFT_AMOUNT",
+        "Pass":  true,
+        "Detail":  "ObtainedTotal=1000.00 (cash=0.00 restr=0.00 nonRestr=1000.00) expected=1000.00 creditType=promo"
+    },
+    {
+        "Check":  "AFT_ASSET",
+        "Pass":  true,
+        "Detail":  "Asset=777 expected=777"
+    },
+    {
+        "Check":  "AFT_COMMIT_EXCEPTION",
+        "Pass":  true,
+        "Detail":  "CommitException=0"
+    },
+    {
+        "Check":  "SLOTLOG_CASHLESS_IN",
+        "Pass":  true,
+        "Detail":  "SlotLog $1,000.00"
+    }
+]

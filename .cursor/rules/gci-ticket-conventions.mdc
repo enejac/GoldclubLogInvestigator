@@ -1,0 +1,22 @@
+﻿---
+description: GCI defect tickets and known-issue docs — no WinDivert in ticket text
+globs: issues/**/*.md,data/known_issues.json
+alwaysApply: false
+---
+
+# GCI ticket conventions
+
+When writing or editing **GoldClub Investigator tickets** under `issues/` or catalog
+entries in `data/known_issues.json` (including text copied into Defect Ticket /
+case pack **Related tracking**):
+
+- **Do not mention WinDivert**, `Invoke-WinDivertAft.ps1`, `WdInject`, or
+  in-stream/kernel inject tooling.
+- Describe transfer/credit problems in **product/log terms**: sasmsgr, Aurum,
+  OneHand, SlotLog, WAT meters, Investigator correlation, lab QA.
+- Use neutral phrasing: "post-transfer credit verification", "automated credit
+  checks", "host-side SAS 0x72 transfer" — not inject driver names.
+
+Lab-only inject runbooks under `aft/` may still document WinDivert for operators;
+that content must not appear in Jira-style GCI tickets or `known_issues.json`
+`probableCause` strings.

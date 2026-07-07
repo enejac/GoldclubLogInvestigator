@@ -1,0 +1,8 @@
+﻿{
+    "RegistrationStatus":  "GAMING_MACHINE_NOT_REGISTERED",
+    "RegistrationKeyBase64":  "AAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    "TransferAllowedOnlyIfLocked":  "false",
+    "CashoutToHostControl":  "false",
+    "CashoutToHostCurrentlyEnabled":  "false",
+    "SourceFile":  "\\\\10.0.0.90\\c$\\Goldclub\\var\\state\\goldclub.aurum.services\\GCMessenger\\SASControler1\\GCC_ST_20664_01_aftCurrentSettings_v2.xml"
+}

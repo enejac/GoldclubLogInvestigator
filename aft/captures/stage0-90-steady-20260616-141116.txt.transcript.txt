@@ -1,0 +1,74 @@
+==============================================================================
+STAGE 0 SAS BUS TRANSCRIPT (read-only sniff, direction-labeled)
+==============================================================================
+source dump : C:\Users\Ezbogar\GoldclubLogInvestigator\captures\stage0-90-steady-20260616-141116.txt
+  WDSNIFF mode=SNIFF (read-only copy; never diverts/injects/drops)
+  FILTER loopback and tcp and (tcp.SrcPort == 31100 or tcp.DstPort == 31100 or tcp.SrcPort == 31101 or tcp.DstPort == 31101 or tcp.SrcPort == 31150 or tcp.DstPort == 31150)
+  PORTS 31100,31101,31150
+  DURATION_MS 45000
+  DIRLEGEND S2C=CommCtrlSAS->Aurum(host-poll)  C2S=Aurum->CommCtrlSAS(slave-response)
+  START_WALL 2026-06-16 14:11:58.644 +01:00
+  OPEN ok
+  END_WALL 2026-06-16 14:12:43.701 +01:00
+  PACKETS 676
+  CLOSE ok
+  parsed PKT lines: 676
+
+------------------------------------------------------------------------------
+CONNECTION / CONTROL TIMELINE (SYN/FIN/RST -- bring-up & teardown evidence)
+------------------------------------------------------------------------------
+  (none -- steady-state, no connection changes during the window)
+
+------------------------------------------------------------------------------
+PAYLOAD FRAME FREQUENCY (by direction + decoded type)
+------------------------------------------------------------------------------
+  S2C  General Poll 81            x113
+  C2S  RT/exception 00            x113
+  S2C  General Poll 80            x112
+
+  payload-bearing flows (src->dst):
+    S2C  31150->56616     x225
+    C2S  56615->31100     x113
+
+------------------------------------------------------------------------------
+SAS LONG POLLS / NON-TRIVIAL COMMANDS OBSERVED
+------------------------------------------------------------------------------
+  (none beyond general poll 80/81 + idle 00 in this window)
+
+------------------------------------------------------------------------------
+NON-TRIVIAL FRAMES (time-ordered; host polls paired with following responses)
+------------------------------------------------------------------------------
+  (none -- only general poll 80/81 + idle 00 seen)
+
+------------------------------------------------------------------------------
+STEADY-STATE SAMPLE (first 14 poll/response pairs, time-ordered)
+------------------------------------------------------------------------------
+  14:11:58.795 HOST  >> 1B81       General Poll 81  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:11:58.797 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:11:58.996 HOST  >> 1B80       General Poll 80  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:11:59.196 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:11:59.195 HOST  >> 1B81       General Poll 81  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:11:59.196 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:11:59.396 HOST  >> 1B80       General Poll 80  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:11:59.599 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:11:59.596 HOST  >> 1B81       General Poll 81  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:11:59.599 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:11:59.797 HOST  >> 1B80       General Poll 80  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:12:00.001 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:11:59.998 HOST  >> 1B81       General Poll 81  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:12:00.001 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:12:00.195 HOST  >> 1B80       General Poll 80  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:12:00.398 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:12:00.395 HOST  >> 1B81       General Poll 81  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:12:00.398 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:12:00.596 HOST  >> 1B80       General Poll 80  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:12:00.861 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:12:00.859 HOST  >> 1B81       General Poll 81  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:12:00.861 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:12:01.001 HOST  >> 1B80       General Poll 80  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:12:01.218 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:12:01.216 HOST  >> 1B81       General Poll 81  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:12:01.218 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+  14:12:01.395 HOST  >> 1B80       General Poll 80  (0x1B-framed; host general poll (alternating sync bit), EGM addr 01)
+  14:12:01.601 SLAVE << 00         RT/exception 00  (0x00 ACK / no activity (idle))
+

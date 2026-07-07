@@ -1,0 +1,44 @@
+{
+  "_meta": {
+    "description": "Physical button-deck map for the Goldclub EGM, captured from the live hardware loopback bus. Built for automated test-case implementation (driving/observing button events).",
+    "cabinet": "10.0.0.90 (lab)",
+    "capturedAt": "2026-06-05",
+    "source": "Read-only WinDivert sniff of localhost:30800 while each button was pressed once, in order. Raw capture: \\\\10.0.0.90\\c$\\Windows\\Temp\\wd\\dump.txt",
+    "keyboardXml": "\\\\10.0.0.90\\c$\\Goldclub\\slot\\hwdrivers\\Keyboard.xml"
+  },
+  "bus": {
+    "transport": "tcp",
+    "host": "127.0.0.1",
+    "port": 30800,
+    "comPort": "COM8",
+    "server": "CommCtrl.exe",
+    "client": "OneHand.exe",
+    "alsoCarries": "Dallas/iButton key events and keyboard input share this port (COM8 -> 30000 + COM*100 = 30800).",
+    "pressEvent": {
+      "direction": "server->client (CommCtrl -> OneHand)",
+      "unsolicited": true,
+      "frame": "<code>\\r\\n",
+      "encoding": "ASCII decimal digits followed by CRLF (0x0D 0x0A)",
+      "example": "Spin press = the bytes 32 37 31 0D 0A (\"271\\r\\n\")"
+    },
+    "otherTraffic": {
+      "polling": "client->server keep-alive/queries: CN, HP, ID, BL; server answers with a 3-digit status (700,701,703,704,708,181,...).",
+      "lampControl": "client->server 'YI <code> <state>' sets a button lamp on/off; server echoes <code>+499 (e.g. YI 271 1 -> 770). The YI 26x burst after a spin is the button-light chase, NOT a press.",
+      "pressVsStatus": "A genuine press is a bare button code (200-299 here) pushed by the server with no preceding YI request. Status/lamp-ack codes are 6xx/7xx."
+    },
+    "injectionNote": "A press can be injected by writing '<code>\\r\\n' into the server->client stream on this connection (same mechanism as DallasSplice.exe uses for the Dallas ROM). Build-independent: this is the real hardware path the retail game consumes, not the debug 'p' hotkey."
+  },
+  "buttons": [
+    { "name": "Spin",       "code": 271, "frameAscii": "271\r\n", "frameHex": "3237310D0A", "keyboardXmlName": "Spin",                "boundInGamepack": true,  "pressOrder": 1,  "tStamp": 35.343924 },
+    { "name": "MaxBet",     "code": 270, "frameAscii": "270\r\n", "frameHex": "3237300D0A", "keyboardXmlName": "MaxBet",              "boundInGamepack": true,  "pressOrder": 2,  "tStamp": 37.112853 },
+    { "name": "BetPlus",    "code": 268, "frameAscii": "268\r\n", "frameHex": "3236380D0A", "keyboardXmlName": "BetPlus",             "boundInGamepack": true,  "pressOrder": 3,  "tStamp": 38.639958 },
+    { "name": "BetMinus",   "code": 266, "frameAscii": "266\r\n", "frameHex": "3236360D0A", "keyboardXmlName": "BetMinus",            "boundInGamepack": true,  "pressOrder": 4,  "tStamp": 40.337366 },
+    { "name": "BetOne",     "code": 264, "frameAscii": "264\r\n", "frameHex": "3236340D0A", "keyboardXmlName": null,                  "boundInGamepack": false, "pressOrder": 5,  "tStamp": 41.894708 },
+    { "name": "Autoplay",   "code": 262, "frameAscii": "262\r\n", "frameHex": "3236320D0A", "keyboardXmlName": "WaitBonus",           "boundInGamepack": true,  "pressOrder": 6,  "tStamp": 43.641287 },
+    { "name": "Lines",      "code": 269, "frameAscii": "269\r\n", "frameHex": "3236390D0A", "keyboardXmlName": null,                  "boundInGamepack": false, "enabledInGamepack": false, "pressOrder": 7,  "tStamp": 45.189178, "note": "DISABLED in this gamepack (confirmed by user). Input is not reported on the bus in normal play; an isolated re-capture produced no traffic. The single 269 seen in the full sweep was a transient armed-state event that also emitted an out-of-range burst (277,278,280,281,283,284,285,286,288,289,291,292). Treat 269 as the nominal Lines code but expect no events in this gamepack - skip it in test cases." },
+    { "name": "MoreGames",  "code": 267, "frameAscii": "267\r\n", "frameHex": "3236370D0A", "keyboardXmlName": "MultiGameSelection", "boundInGamepack": true,  "pressOrder": 8,  "tStamp": 46.616880 },
+    { "name": "Service",    "code": 265, "frameAscii": "265\r\n", "frameHex": "3236350D0A", "keyboardXmlName": "Call",                "boundInGamepack": true,  "pressOrder": 9,  "tStamp": 49.053752 },
+    { "name": "Help",       "code": 263, "frameAscii": "263\r\n", "frameHex": "3236330D0A", "keyboardXmlName": "Help",                "boundInGamepack": true,  "pressOrder": 10, "tStamp": 51.248420 },
+    { "name": "Collect",    "code": 261, "frameAscii": "261\r\n", "frameHex": "3236310D0A", "keyboardXmlName": "Collect",             "boundInGamepack": true,  "pressOrder": 11, "tStamp": 52.886419 }
+  ]
+}

@@ -1,0 +1,6 @@
+﻿"Id","Severity","Status","Message"
+"AFT_SLOTLOG_RECONCILIATION","High","WARN","Successful AFT transfers vs SlotLog Cashless In events: AFT count/sum=15/14000000001, SlotLog relevant count/sum=15/14000900001."
+"DUPLICATE_HOST_REQUEST_ID","Critical","PASS","No duplicate hostRequestId values found in de-duplicated AFT history."
+"DUPLICATE_WAT_TRANSACTION_ID","Critical","PASS","No duplicate WAT transaction IDs found in de-duplicated AFT history."
+"NON_INCREMENTING_WAT_TRANSACTION_ID","High","PASS","WAT transaction IDs are strictly increasing in commit-time order."
+"SUCCESS_WHILE_UNREGISTERED","High","WARN","Current settings report GAMING_MACHINE_NOT_REGISTERED with 24 successful transfer(s) in history."

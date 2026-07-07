@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "description": "Known bug patterns for Log Investigator auto-triage. Swap TBD-GC-* keys for real Jira issue keys when available.",
+  "jira": {
+    "baseUrl": "https://your-domain.atlassian.net",
+    "projectKey": "GC"
+  },
+  "issues": [
+    {
+      "id": "GCI-AFT-001",
+      "name": "AFT transfer type naming mismatch",
+      "triggerPatterns": [
+        "AFT REQUESTED AND OBTAINED TRANSFER AMOUNTS MISMATCH",
+        "TRANSFER AMOUNTS MISMATCH",
+        "Withdraw successful GCC_ST_\\d+_01 .*\\(promo:0\\)",
+        "Withdraw successful GCC_ST_\\d+_01 .*\\(cashable:0\\)",
+        "Transfer IN \\$[\\d,]+\\.\\d{2}\\(promo:0\\)",
+        "Transfer IN \\$[\\d,]+\\.\\d{2}\\(cashable:0\\)",
+        "TRANSFER REQUEST FROM SERVER FINISHED:.*UNEXPECTED_ERROR"
+      ],
+      "severityFilter": null,
+      "probableCause": "Known issue GCI-AFT-001: AFT transfer bucket labels differ across sasmsgr, Aurum, OneHand (promo:0 / cashable:0 pool tags), SlotLog, and WAT meters. Use aft_transfer.correlate_aft_transfer or issues/GCI-AFT-001-transfer-type-naming.md. :0 is pool index, not amount.",
+      "jiraBugKey": "TBD-GC-XXXX",
+      "jiraTestKeys": ["TBD-GC-TC-XXXX", "TBD-GC-TC-YYYY"],
+      "localTicket": "issues/GCI-AFT-001-transfer-type-naming.md"
+    }
+  ]
+}

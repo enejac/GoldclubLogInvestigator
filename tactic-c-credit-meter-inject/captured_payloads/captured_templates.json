@@ -1,0 +1,127 @@
+{
+    "cabinet":  "10.0.0.90",
+    "machineId":  "GST20664",
+    "schemaVersion":  1,
+    "captures":  [
+                     {
+                         "id":  "aft-txn48",
+                         "method":  "cashless",
+                         "capturedAt":  "2026-06-17T08:45:08.364+01:00",
+                         "hex":  "017245000000000000000000000000000000100000000903000000000000000000000000000000000000000000001200657374205472616E73616374696F6E3438053020200C0000C6C7",
+                         "amountCents":  100000,
+                         "transferType":  "non-restricted",
+                         "asset":  777,
+                         "txnNumber":  48,
+                         "txnName":  "est Transaction48",
+                         "crcValid":  true
+                     },
+                     {
+                         "id":  "aft-txn49",
+                         "method":  "cashless",
+                         "capturedAt":  "2026-06-17T08:46:27.889+01:00",
+                         "hex":  "017245000000000000000000000000000000100000000903000000000000000000000000000000000000000000001200657374205472616E73616374696F6E3439053020200C00007946",
+                         "amountCents":  100000,
+                         "transferType":  "non-restricted",
+                         "asset":  777,
+                         "txnNumber":  49,
+                         "txnName":  "est Transaction49",
+                         "crcValid":  true
+                     },
+                     {
+                         "id":  "aft-txn50",
+                         "method":  "cashless",
+                         "capturedAt":  "2026-06-17T09:03:39.500+01:00",
+                         "hex":  "017245000000000100000000000000000000000000000903000000000000000000000000000000000000000000001200657374205472616E73616374696F6E3530053020200C00003760",
+                         "amountCents":  1000000,
+                         "transferType":  "cashable",
+                         "asset":  777,
+                         "txnNumber":  50,
+                         "txnName":  "est Transaction50",
+                         "crcValid":  true
+                     },
+                     {
+                         "id":  "aft-txn51",
+                         "method":  "cashless",
+                         "capturedAt":  "2026-06-17T09:04:48.109+01:00",
+                         "hex":  "017245000000000100000000000000000000000000000903000000000000000000000000000000000000000000001200657374205472616E73616374696F6E3531053020200C000088E1",
+                         "amountCents":  1000000,
+                         "transferType":  "cashable",
+                         "asset":  777,
+                         "txnNumber":  51,
+                         "txnName":  "est Transaction51",
+                         "crcValid":  true
+                     },
+                     {
+                         "id":  "aft-txn52",
+                         "method":  "cashless",
+                         "capturedAt":  "2026-06-17T09:14:02.920+01:00",
+                         "hex":  "017245000000000100000000000000000000000000000903000000000000000000000000000000000000000000001200657374205472616E73616374696F6E3532053020200C0000586B",
+                         "amountCents":  1000000,
+                         "transferType":  "cashable",
+                         "asset":  777,
+                         "txnNumber":  52,
+                         "txnName":  "est Transaction52",
+                         "crcValid":  true
+                     },
+                     {
+                         "id":  "aft-txn53",
+                         "method":  "cashless",
+                         "capturedAt":  "2026-06-17T09:27:30.731+01:00",
+                         "hex":  "017245000000000100000000000000000000000000000903000000000000000000000000000000000000000000001200657374205472616E73616374696F6E3533053020200C0000E7EA",
+                         "amountCents":  1000000,
+                         "transferType":  "cashable",
+                         "asset":  777,
+                         "txnNumber":  53,
+                         "txnName":  "est Transaction53",
+                         "crcValid":  true
+                     },
+                     {
+                         "id":  "aft-txn54",
+                         "method":  "cashless",
+                         "capturedAt":  "2026-06-17T09:29:25.737+01:00",
+                         "hex":  "017245000000000100000000000000000000000000000903000000000000000000000000000000000000000000001200657374205472616E73616374696F6E3534053020200C0000E976",
+                         "amountCents":  1000000,
+                         "transferType":  "cashable",
+                         "asset":  777,
+                         "txnNumber":  54,
+                         "txnName":  "est Transaction54",
+                         "crcValid":  true
+                     },
+                     {
+                         "id":  "aft-txn55",
+                         "method":  "cashless",
+                         "capturedAt":  "2026-06-17T09:31:42.373+01:00",
+                         "hex":  "017245000000000100000000000000000000000000000903000000000000000000000000000000000000000000001200657374205472616E73616374696F6E3535053020200C000056F7",
+                         "amountCents":  1000000,
+                         "transferType":  "cashable",
+                         "asset":  777,
+                         "txnNumber":  55,
+                         "txnName":  "est Transaction55",
+                         "crcValid":  true
+                     },
+                     {
+                         "id":  "aft-txn56",
+                         "method":  "cashless",
+                         "capturedAt":  "2026-06-17T11:47:01.665+01:00",
+                         "hex":  "017245000000010000000000000000000000000000000903000000000000000000000000000000000000000000001200657374205472616E73616374696F6E3536053020200C000023A3",
+                         "amountCents":  100000000,
+                         "transferType":  "cashable",
+                         "asset":  777,
+                         "txnNumber":  56,
+                         "txnName":  "est Transaction56",
+                         "crcValid":  true
+                     },
+                     {
+                         "id":  "aft-txn57",
+                         "method":  "cashless",
+                         "capturedAt":  "2026-06-17T12:39:36.707+01:00",
+                         "hex":  "017245000000000000000000000000000000100000000903000000000000000000000000000000000000000000001200657374205472616E73616374696F6E3537053020200C0000893B",
+                         "amountCents":  100000,
+                         "transferType":  "non-restricted",
+                         "asset":  777,
+                         "txnNumber":  57,
+                         "txnName":  "est Transaction57",
+                         "crcValid":  true
+                     }
+                 ]
+}

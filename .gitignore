@@ -1,0 +1,23 @@
+# Local SQLite store (GUI History / sync)
+goldclub_investigator.db
+goldclub_investigator.db-*
+
+# Last GUI session snapshot (local path + incidents)
+last_session.json
+
+# Local AFT injector transaction counter
+.aft-windivert-next-transaction.json
+
+# Local AFT injector per-IP transport preference (WinRM vs PsExec)
+.aft-windivert-transport.json
+
+# Python / build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+build/
+build-stage0/
+*.egg-info/
+py-to-exe/.build-venv/
+automation_runs/

@@ -1,0 +1,24 @@
+---
+description: Lab cabinet mgconfig.xml — re-add InactivitySecondsToGameSelector after slot/themes upgrades
+alwaysApply: true
+---
+
+# Multigamer `mgconfig.xml` (lab share)
+
+On the **lab cabinet** share, multigamer config lives at:
+
+`\\10.0.0.90\c$\Goldclub\slot\themes\mgconfig.xml`
+
+Root element: `<Multigamer>…</Multigamer>`.
+
+## Non-default setting to restore after upgrades
+
+New or upgraded **slot/themes** drops may ship **without** this element. After deploying a new version, **re-insert** it if missing (values may vary; `0` was used to disable the timeout):
+
+```xml
+  <InactivitySecondsToGameSelector>0</InactivitySecondsToGameSelector>
+```
+
+Reasonable placement: as a sibling near other top-level UI settings, e.g. immediately after `<ShowAllLines>true</ShowAllLines>`.
+
+When the user asks to update this file or fix game-selector inactivity behavior on that share, use the path above and verify the line is present.

@@ -1,0 +1,54 @@
+﻿[
+    {
+        "Id":  "AFT_SLOTLOG_RECONCILIATION",
+        "Severity":  "High",
+        "Status":  "PASS",
+        "Message":  "Successful AFT transfers vs SlotLog Cashless In events: AFT count/sum=0/0, SlotLog relevant count/sum=0/0.",
+        "Details":  {
+                        "AftSuccessfulCount":  0,
+                        "AftObtainedCashable":  0,
+                        "ComparedSlotLogDate":  "2026-06-14",
+                        "SlotLogCashlessInMatchingAmountCount":  0,
+                        "SlotLogCashlessInMatchingAmountSum":  0,
+                        "SlotLogPath":  "\\\\10.0.0.90\\c$\\Goldclub\\var\\log\\SlotLog\\2026-06-14.log"
+                    }
+    },
+    {
+        "Id":  "DUPLICATE_HOST_REQUEST_ID",
+        "Severity":  "Critical",
+        "Status":  "PASS",
+        "Message":  "No duplicate hostRequestId values found in de-duplicated AFT history.",
+        "Details":  [
+
+                    ]
+    },
+    {
+        "Id":  "DUPLICATE_WAT_TRANSACTION_ID",
+        "Severity":  "Critical",
+        "Status":  "PASS",
+        "Message":  "No duplicate WAT transaction IDs found in de-duplicated AFT history.",
+        "Details":  [
+
+                    ]
+    },
+    {
+        "Id":  "NON_INCREMENTING_WAT_TRANSACTION_ID",
+        "Severity":  "High",
+        "Status":  "PASS",
+        "Message":  "WAT transaction IDs are strictly increasing in commit-time order.",
+        "Details":  [
+
+                    ]
+    },
+    {
+        "Id":  "SUCCESS_WHILE_UNREGISTERED",
+        "Severity":  "High",
+        "Status":  "WARN",
+        "Message":  "Current settings report GAMING_MACHINE_NOT_REGISTERED with 9 successful transfer(s) in history.",
+        "Details":  {
+                        "RegistrationStatus":  "GAMING_MACHINE_NOT_REGISTERED",
+                        "RegistrationKey":  "AAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                        "SuccessfulTransferCount":  9
+                    }
+    }
+]

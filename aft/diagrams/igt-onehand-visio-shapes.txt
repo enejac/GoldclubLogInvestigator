@@ -1,0 +1,174 @@
+﻿================================================================================
+IGT SAS → OneHand layered flow — Visio shape text (copy ONE block at a time)
+Cabinet: 10.0.0.90 (GST20664 / GCC_ST_20664_01)
+================================================================================
+Build top-to-bottom. Use Basic Flowchart rectangles. Paste each TITLE + BODY into
+a shape. Paste CONNECTOR labels onto arrow text (Insert > Text on connector).
+
+--------------------------------------------------------------------------------
+LAYER 1 — PHYSICAL
+--------------------------------------------------------------------------------
+
+[SHAPE 1]
+TITLE: IGT SAS Tester
+BODY:
+SAS host (simulator UI)
+Sends general polls and AFT 0x72 transfer
+Lab: IGT SAS tester connected to cabinet
+
+ARROW LABEL (→ next shape):
+81 / 80 general polls (link sync)
+01 72 45… AFT transfer funds
+
+[SHAPE 2]
+TITLE: COM11 Serial Link
+BODY:
+RS-232 / MUX @ 921600 baud
+Gaming machine address 1
+CRC-16/KERMIT framing
+
+ARROW LABEL (→ next shape):
+Raw SAS bytes on wire
+
+[SHAPE 3]
+TITLE: CommCtrlSAS.exe (serial side)
+BODY:
+Serial endpoint on cabinet
+Receives host polls + 0x72
+Bridges to loopback TCP
+
+--------------------------------------------------------------------------------
+LAYER 2 — BRIDGE FRAMING
+--------------------------------------------------------------------------------
+
+[SHAPE 4]
+TITLE: CommCtrlSAS Bridge Framing
+BODY:
+Adds 0x1B prefix before each SAS frame
+Serial SAS → loopback TCP stream
+One 0x1B byte per bridge frame
+
+ARROW LABEL (→ TCP layer):
+1B + SAS payload
+Examples: 1B80, 1B81, 1B017245…
+
+--------------------------------------------------------------------------------
+LAYER 3 — TCP LOOPBACK
+--------------------------------------------------------------------------------
+
+[SHAPE 5]
+TITLE: TCP :31150 (host poll leg)
+BODY:
+CommCtrlSAS:31150 → Aurum:<ephemeral>
+Outbound host polls + transfer frames
+WinDivert watches this port for inject
+
+ARROW LABEL (→ Aurum):
+1B80 / 1B81 (polls)
+1B + 01 72 45… (AFT transfer)
+
+[SHAPE 6 — OPTIONAL SIDE]
+TITLE: WinDivert Inject (optional)
+BODY:
+Invoke-WinDivertAft.ps1 / WdInject.exe
+Injects into EXISTING :31150 flow
+Correct TCP SEQ — not a new socket
+
+ARROW LABEL (→ :31150 leg):
+1B017245… (same as tester 0x72)
+Joins at Hop 2 only
+
+[SHAPE 7]
+TITLE: Aurum SAS Messenger (TCP client)
+BODY:
+GoldClub.Aurum.Services
+Connects to CommCtrlSAS :31150 / :31100
+Decodes 0x1B-framed SAS stream
+
+ARROW LABEL (reply leg ←):
+1B00 idle ack / slave response on :31100
+
+--------------------------------------------------------------------------------
+LAYER 4 — AURUM SERVICES
+--------------------------------------------------------------------------------
+
+[SHAPE 8]
+TITLE: sasmsgr log ingest
+BODY:
+Folder: GoldClub.Aurum.Services sasmsgr of SASControler1
+Line format: qGMID1:<hex>
+Full 0x72 packet hex = transfer seen
+
+ARROW LABEL (→ WAT2AFT):
+Parsed SAS 0x72 transfer
+
+[SHAPE 9]
+TITLE: WAT2AFT Engine
+BODY:
+Inside GoldClub.Aurum.Services
+1. requestTransfer
+2. authorizeTransfer
+3. commitTransfer (transferException=0)
+TRANSFER REQUEST FROM SERVER STARTED/FINISHED
+
+ARROW LABEL (→ XML):
+Committed transaction state
+
+[SHAPE 10]
+TITLE: AFT State XML (disk)
+BODY:
+var\state\goldclub.aurum.services\
+GCMessenger\SASControler1\
+aftMostRecentTransaction_v*.xml
+History\aftTransactionHistory_*.xml
+
+--------------------------------------------------------------------------------
+LAYER 5 — ONEHAND
+--------------------------------------------------------------------------------
+
+[SHAPE 11]
+TITLE: OneHand.exe
+BODY:
+Game client — OneHand.AurumEGM
+GM2AU_aurumExecute
+Applies committed credit to meter
+Typical delay: ~150–230 ms after ingest
+
+ARROW LABEL (→ logs):
+Cashless In: $X
+Aurum promo/cashable credit state increased to N
+
+--------------------------------------------------------------------------------
+LAYER 6 — LOGS (VERIFICATION)
+--------------------------------------------------------------------------------
+
+[SHAPE 12]
+TITLE: sasmsgr log
+BODY:
+qGMID1:017245… full packet hex
+Proves frame reached Aurum
+
+[SHAPE 13]
+TITLE: SlotLog
+BODY:
+OneHand.AurumEGM - Cashless In: $1,000.00
+Aurum promo credit state increased to 100000
+
+[SHAPE 14]
+TITLE: OneHand TRANSACTION EVENTS
+BODY:
+Transfer IN $X (promo/cashable)
+
+[SHAPE 15]
+TITLE: OneHand GM2AU
+BODY:
+Withdraw successful GCC_ST_20664_01 in N(promo:0)…
+
+--------------------------------------------------------------------------------
+EXAMPLE BYTE TRAIL (one $1,000 promo transfer)
+--------------------------------------------------------------------------------
+Hop 1 serial:  81 → 80 → 01 72 45 … 10 00 00 (non-restricted) … asset 777 … CRC
+Hop 2 TCP:     1B80 → 1B81 → 1B017245… → 1B017202FF… (interrogate)
+Hop 3 log:     qGMID1:017245000000000000000000000000000000100000000903…
+Hop 4 XML:     transferStatus=FULL_TRANSFER_SUCCESSFUL, obtainedNonRestrictedAmount=100000
+Hop 5 game:    Cashless In: $1,000.00, credit state increased to 100000

@@ -1,0 +1,35 @@
+---
+description: Validate parsing against production logs under var\log (multiple subfolders on lab share)
+alwaysApply: true
+---
+
+# Reference log location
+
+When adding or changing log parsing, severity rules, machine-id extraction, or timeline behavior, **verify against real lines** from:
+
+`\\10.0.0.90\c$\Goldclub\var\log`
+
+Logs are organized in **subfolders** (not a single flat directory). Examples on the lab cabinet:
+
+- `SlotLog` — main slot / OneHand client style lines
+- `GoldClub.Aurum.Services` (and related `… SASControler1`, `sasmsgr …` folders)
+- `OneHand` (and event splits: `OneHand GAME EVENTS`, `OneHand TRANSACTION EVENTS`, etc.)
+- `Bootstrap`, `CommCtrl`, `HardwareSetup`, `AurumConfigurer`, and others
+
+Pick one or more subfolders relevant to the feature (e.g. **SlotLog** + **GoldClub.Aurum.Services** for cabinet id and Aurum paths). For **environment fingerprint** (`Spawning v…`), use **`GoldClub.Logging.LogDaemon`** logs.
+
+Typical daily files: `YYYY-MM-DD.log` (ISO date, often large multi‑MB text files). Names may vary by subsystem.
+
+## Observed format (validated on SlotLog; similar patterns may appear elsewhere)
+
+- **Timestamp**: `2026-03-15T00:00:00.551+00:00` (ISO‑8601 with offset) or occasionally `2026-03-12 14:57:08` without `T`.
+- **Level**: `INFO`, `WARN`, `ERROR` (two spaces after level is common).
+- **Context**: bracketed area e.g. `[SlotMachine]`, `[Loading Game]`, then `Namespace.Class - message`.
+- **Themes**: paths like `Themes\TutankhamenGSBHW\config_SetClear.xml` or `Themes\PR2_LotusPrincessHD\...`.
+- **Machine / cabinet id**: often **`GST#####` inside URIs** on INFO lines, e.g. `msgrUri:http://GST20664:50011/SASControler1` — may appear **thousands of lines into** a file, not only at the top.
+
+## LogDaemon / environment fingerprint (validated)
+
+- Example: `Logging::Log() Spawning v1.2.1 ...` (optional `clr=…` and `os=…` on the same line when present).
+
+If the share is unreachable in an environment, keep behavior aligned with the above and document any assumption.

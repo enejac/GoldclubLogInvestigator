@@ -138,9 +138,14 @@ def test_onehand_warning_text() -> None:
     assert "SMB/log share unreachable" in health_monitor.onehand_warning_text(
         "10.0.0.90", running=None, smb_reachable=False
     )
-    assert "reachable but" in health_monitor.onehand_warning_text(
+    assert "remote WMIC/PsExec query failed" in health_monitor.onehand_warning_text(
         "10.0.0.90", running=None, smb_reachable=True
     )
+    assert health_monitor.onehand_warning_text(
+        "10.0.0.90", running=None, smb_reachable=True, com_meters_ok=True
+    ) == ""
+    assert health_monitor.is_valid_remote_cabinet_ip("0.0.0.0") is False
+    assert health_monitor.is_valid_remote_cabinet_ip("10.0.0.90") is True
 
 
 def test_is_probable_leak_threshold() -> None:

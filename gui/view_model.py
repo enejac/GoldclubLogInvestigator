@@ -223,9 +223,9 @@ SAS_6F_METER_ALIASES: dict[str, list[str]] = {
     "0007": ["TotalGamesLost", "totalgameslost", "gameslost"],
     # 000B: bills-in. Prefer composite keys from gm2au DeviceClass="meters"/"cabinet" buckets.
     "000B": [
-        "TotalCreditsFromBills",
-        # Real cabinet key (verified on lab cabinet): note acceptor stacker total.
+        # Real cabinet key (verified on lab cabinet): note acceptor stacker total (credits).
         "notesInStackerAmt",
+        "TotalCreditsFromBills",
         "meters_billinamt",
         "meters_totalbillsin",
         "cabinet_billinamt",
@@ -1967,16 +1967,6 @@ class IncidentViewModel(QObject):
             except Exception:
                 return 0
 
-        try:
-            import sys as _sys
-
-            _sys.__stdout__.write(
-                f"[UI-ALIAS] Searching for SAS {code} using aliases: {aliases}\n"
-            )
-            _sys.__stdout__.flush()
-        except Exception:
-            pass
-
         # SPECIAL CASE: SAS 0004 (Total Cancelled Credits)
         # Observed on this cabinet/firmware the SAS aggregate equals:
         #   0003 HandPaidCancelled + 0016 TicketOut + 0018 CashlessOut.
@@ -2021,16 +2011,6 @@ class IncidentViewModel(QObject):
             def _finish_coin_out(base_int: int) -> str:
                 if bonus_cashable_in > 0:
                     combined = base_int + bonus_cashable_in
-                    try:
-                        import sys as _sys
-
-                        _sys.__stdout__.write(
-                            "[UI-ALIAS] CoinOut adjusted with bonus_cashableinamt: "
-                            f"{base_int} + {bonus_cashable_in} = {combined}\n"
-                        )
-                        _sys.__stdout__.flush()
-                    except Exception:
-                        pass
                     return _scale_0001_raw(str(combined))
                 return _scale_0001_raw(str(base_int))
 
@@ -2088,16 +2068,6 @@ class IncidentViewModel(QObject):
             bucket_keys = [norm_key(n) for n in bucket_names]
             if any(str(machine_state.get(k, "")).strip() != "" for k in bucket_keys):
                 total = sum(_safe_int(machine_state.get(k)) for k in bucket_keys)
-                try:
-                    import sys as _sys
-
-                    _sys.__stdout__.write(
-                        f"[UI-ALIAS] SAS {code} aggregate WAT "
-                        f"({'+'.join(bucket_names)}) = {total}\n"
-                    )
-                    _sys.__stdout__.flush()
-                except Exception:
-                    pass
                 return str(total)
             if "watcashableinamt" in machine_state or "wattransferincnt" in machine_state:
                 return "0"
@@ -2108,27 +2078,17 @@ class IncidentViewModel(QObject):
         # if we otherwise cannot resolve a value for this SAS code.
         fallback_1000: str | None = None
         if code == "0017":
-            try:
-                import sys as _sys
-
-                for k, v in (machine_state or {}).items():
-                    nk = norm_key(str(k))
-                    if str(v).strip() == "1000":
-                        if fallback_1000 is None:
-                            # Keep fallback constrained to cashable transfer-like keys only.
-                            if (
-                                "cashable" in nk
-                                or "transferin" in nk
-                                or "watin" in nk
-                                or "aft" in nk
-                            ) and ("promo" not in nk):
-                                fallback_1000 = "1000"
-                        _sys.__stdout__.write(
-                            f"[UI-DEBUG] Found potential match for SAS 0017: Key '{k}' = 1000\n"
-                        )
-                _sys.__stdout__.flush()
-            except Exception:
-                pass
+            for k, v in (machine_state or {}).items():
+                nk = norm_key(str(k))
+                if str(v).strip() == "1000":
+                    if fallback_1000 is None:
+                        if (
+                            "cashable" in nk
+                            or "transferin" in nk
+                            or "watin" in nk
+                            or "aft" in nk
+                        ) and ("promo" not in nk):
+                            fallback_1000 = "1000"
 
         # SPECIAL CASE: Games Won — missing gameswon on multigamer cabinets means 0 wins.
         if code == "0006":
@@ -2176,18 +2136,6 @@ class IncidentViewModel(QObject):
             if "watcashableinamt" in machine_state or "wattransferincnt" in machine_state:
                 return "0"
 
-        # Debug: help diagnose cabinets that store handpay/cancelled in shared keys.
-        if code in {"0004", "0023"}:
-            try:
-                import sys as _sys
-
-                _sys.__stdout__.write(
-                    f"[UI-DEBUG] SAS {code} checking 'cancelledcredits': {machine_state.get('cancelledcredits')}\n"
-                )
-                _sys.__stdout__.flush()
-            except Exception:
-                pass
-
         # Denomination scaling:
         # - Machine-side meters in gm2* are often stored in base units (e.g., cents, x100).
         # - SAS 6F values are typically displayed/compared in credits.
@@ -2221,15 +2169,6 @@ class IncidentViewModel(QObject):
                 continue
             v = machine_state.get(nk)
             if v is not None:
-                try:
-                    import sys as _sys
-
-                    _sys.__stdout__.write(
-                        f"[UI-ALIAS] MATCH FOUND! SAS {code} -> Alias '{a}' (norm='{nk}') = {v}\n"
-                    )
-                    _sys.__stdout__.flush()
-                except Exception:
-                    pass
                 return scale_machine_value_for_code(code, str(v))
         # No match found in XML/state.
         if code == "0017" and fallback_1000 is not None:

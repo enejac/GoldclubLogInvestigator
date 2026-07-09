@@ -87,7 +87,12 @@ def resolve_scan_path(
             )
         is_remote = True
     else:
-        path = (local_path or "").strip() or DEFAULT_LOCAL_LOG_ROOT
+        path = (local_path or "").strip()
+        if not path:
+            from network.goldclub_paths import discover_portable_scan_roots
+
+            discovered = discover_portable_scan_roots()
+            path = discovered[0] if discovered else DEFAULT_LOCAL_LOG_ROOT
         is_remote = False
 
     try:

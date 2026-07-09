@@ -36,6 +36,7 @@ DEFAULT_PORT_WAIT_S = 12.0
 DEFAULT_PORT_RETRY_DELAY_S = 0.45
 DEFAULT_FORCE_CAPTURE_WAIT_S = 15.0
 DEFAULT_FORCE_LINK_SYNC_S = 6.0
+DEFAULT_FAST_LINK_SYNC_S = 1.2
 # Windows executables that commonly hold the host SAS COM port open.
 _IGT_COM_BLOCKER_EXE_NAMES: tuple[str, ...] = (
     "SASTest.exe",
@@ -46,15 +47,18 @@ _IGT_COM_BLOCKER_EXE_NAMES: tuple[str, ...] = (
 )
 # sastest.ini [SAS Protocols] Wakeup Delay = 2, Poll Rate = 200 (ms)
 DEFAULT_WAKEUP_DELAY_S = 2.0
+DEFAULT_FAST_WAKEUP_DELAY_S = 0.35
 DEFAULT_LINK_SYNC_S = 3.0
 DEFAULT_LINK_POLL_INTERVAL_S = 0.2
 DEFAULT_RESPONSE_TIMEOUT_S = 15.0
 DEFAULT_RESPONSE_IDLE_MS = 350
 DEFAULT_AUTO_PROBE_RESPONSE_S = 15.0
-# Lab COM4: IGT raw @ 19200 is the only path that returns real 6F meter data.
+# Lab COM4: raw @ 19200 + RTS=on is the usual IGT-host path; then MUX @ 921600.
 AUTO_WIRE_BAUD_RTS_COMBOS: tuple[tuple[str, int, bool], ...] = (
-    ("raw", 19200, False),
     ("raw", 19200, True),
+    ("raw", 19200, False),
+    ("mux", 921600, True),
+    ("mux", 921600, False),
 )
 # Legacy 2-tuple view for callers/tests.
 AUTO_WIRE_BAUD_COMBOS: tuple[tuple[str, int], ...] = tuple(
@@ -187,6 +191,128 @@ def format_serial_ports_message(ports: list[SerialPortInfo]) -> str:
     return "Available COM ports:\n" + "\n".join(lines)
 
 
+def sas_com_blocker_process_names() -> tuple[str, ...]:
+    """Windows executables that commonly hold the host SAS COM port open."""
+    return _IGT_COM_BLOCKER_EXE_NAMES
+
+
+def find_running_sas_com_blockers() -> list[str]:
+    """Return IGT SAS tester process image names currently running (best effort)."""
+    if sys.platform != "win32":
+        return []
+    found: list[str] = []
+    for exe in _IGT_COM_BLOCKER_EXE_NAMES:
+        try:
+            proc = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {exe}", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            if exe.lower() in (proc.stdout or "").lower():
+                found.append(exe)
+        except Exception:
+            continue
+    return found
+
+
+def probe_com_port_available(
+    port: str,
+    *,
+    baud: int = DEFAULT_SAS_COM_BAUD,
+    wire_mode: str = DEFAULT_WIRE_MODE,
+) -> tuple[bool, str]:
+    """Return whether the SAS host COM port can be opened exclusively (not held by another app)."""
+    port_name = normalize_com_port(port) or DEFAULT_SAS_COM_PORT
+    serial_module = _require_pyserial()
+    mode = (wire_mode or DEFAULT_WIRE_MODE).strip().lower()
+    parity = (
+        serial_module.PARITY_NONE
+        if mode == "mux"
+        else serial_module.PARITY_SPACE
+    )
+    blockers = find_running_sas_com_blockers()
+    try:
+        ser = serial_module.Serial(
+            **_serial_open_kwargs(
+                serial_module,
+                port=port_name,
+                baud=int(baud),
+                parity=parity,
+                exclusive=True,
+            )
+        )
+        ser.close()
+        return True, f"{port_name} is available for SAS host polling"
+    except Exception as exc:
+        if blockers:
+            who = ", ".join(blockers)
+            return False, (
+                f"{port_name} is in use ({who}). "
+                "Leave the IGT SAS tester running or close it so auto-poll can open the port."
+            )
+        if _is_retryable_serial_error(exc):
+            return False, f"{port_name} is in use or unavailable ({exc})"
+        return False, f"Could not probe {port_name}: {exc}"
+
+
+def run_sas_general_poll_loop(
+    ser,
+    *,
+    wire: SasWire | None = None,
+    address: int = DEFAULT_SAS_ADDRESS,
+    poll_interval_s: float = DEFAULT_LINK_POLL_INTERVAL_S,
+    stop_event=None,
+) -> None:
+    """IGT-tester-style alternating 80/81 general polls until ``stop_event`` is set."""
+    if wire is None:
+        wire = SasWire(ser, mode=DEFAULT_WIRE_MODE)
+    polls = _general_poll_alternation(address)
+    idx = 0
+    while stop_event is None or not stop_event.is_set():
+        wire.send_general_poll(polls[idx % 2])
+        idx += 1
+        time.sleep(max(0.05, float(poll_interval_s)))
+        waiting = int(getattr(ser, "in_waiting", 0) or 0)
+        if waiting:
+            try:
+                ser.read(waiting)
+            except Exception:
+                pass
+
+
+def open_sas_poll_keeper_serial(
+    port: str,
+    *,
+    baud: int = DEFAULT_SAS_COM_BAUD,
+    wire_mode: str = DEFAULT_WIRE_MODE,
+    rts: bool = False,
+    wakeup_delay_s: float = DEFAULT_WAKEUP_DELAY_S,
+):
+    """Open COM for sustained SAS general polling (IGT tester host role)."""
+    serial_module = _require_pyserial()
+    port_name = normalize_com_port(port) or DEFAULT_SAS_COM_PORT
+    mode = (wire_mode or DEFAULT_WIRE_MODE).strip().lower()
+    parity = (
+        serial_module.PARITY_NONE
+        if mode == "mux"
+        else serial_module.PARITY_SPACE
+    )
+    ser = serial_module.Serial(
+        **_serial_open_kwargs(
+            serial_module,
+            port=port_name,
+            baud=int(baud),
+            parity=parity,
+            exclusive=True,
+        )
+    )
+    _configure_serial_port(ser, wire_mode=mode, rts=rts)
+    _wakeup_serial(ser, delay_s=wakeup_delay_s)
+    return ser, port_name, SasWire(ser, mode=mode)
+
+
 def _is_retryable_serial_error(exc: BaseException) -> bool:
     if isinstance(exc, PermissionError):
         return True
@@ -210,9 +336,9 @@ def _format_serial_open_error(
     stuck_note = ""
     if last_exc is not None and _is_retryable_serial_error(last_exc):
         stuck_note = (
-            f"\n\nWindows reports the port is busy (often another app, or a meter fetch "
-            f"that was interrupted before COM was released). Close IGT SAS tester, wait a "
-            f"few seconds, then restart this app if the error persists.\n"
+            f"\n\nWindows reports {req} is busy or unavailable. "
+            f"Close IGT SAS tester or any app using that COM port, wait a few seconds, "
+            f"then click Get Meters again.\n"
         )
     msg = (
         f"Could not open {req} for SAS meter fetch.\n\n"
@@ -345,7 +471,9 @@ class SasMeterFetchResult:
     port_used: str = ""
     wire_mode: str = ""
     baud: int = 0
-    bill_rows: tuple = ()  # tuple[SasBillDenomRow, ...] — filled after bill LP fetch
+    rts: bool = False
+    bill_rows: tuple = ()  # tuple[SasBillDenomRow, ...] — bill-in LP fetch
+    bill_out_rows: tuple = ()  # tuple[SasBillDenomRow, ...] — bill-out (placeholder / future LP)
 
 
 def _extract_6f_response_frame(raw: bytes, *, address: int = DEFAULT_SAS_ADDRESS) -> bytes:
@@ -495,14 +623,10 @@ def _general_poll_alternation(address: int = DEFAULT_SAS_ADDRESS) -> tuple[int, 
 
 
 def _gp_response_is_stable(rx: bytes) -> bool:
-    """True when RX looks like a clean general-poll reply (not warmup garbage)."""
+    """True when RX shows the EGM/MUX answered (any non-idle byte)."""
     if not rx:
         return False
-    if all(b == 0 for b in rx):
-        return True
-    if len(rx) == 1 and rx[0] not in (0x8C, 0x01):
-        return True
-    return False
+    return any(b != 0 for b in rx)
 
 
 def _establish_sas_link(
@@ -538,7 +662,12 @@ def _establish_sas_link(
                     return True, last_rx
             else:
                 stable = 0
-    return saw_rx and stable >= need_stable, last_rx
+    if saw_rx and stable >= need_stable:
+        return True, last_rx
+    # Any non-idle RX means the link is alive even if cadence was irregular.
+    if saw_rx and last_rx and any(b != 0 for b in last_rx):
+        return True, last_rx
+    return False, last_rx
 
 
 def _read_6f_response(
@@ -601,8 +730,8 @@ def _format_no_response_error(
         )
     else:
         extra = (
-            f"\n\nNo bytes were received{batch_note}. The SAS link may still be offline — "
-            "confirm the MUX cable, cabinet power, and that nothing else is polling this COM port."
+            f"\n\nNo bytes were received{batch_note}. "
+            f"{port_used} is not blocked — the SAS link is offline or the wrong COM port was selected."
         )
     timing = (
         f"waited {elapsed_s:.1f}s of {timeout_s:.1f}s"
@@ -722,10 +851,11 @@ def _open_serial_with_retry(
         else serial_module.PARITY_SPACE
     )
     if force_capture:
-        force_release_com_port_blockers(wait_s=2.0)
+        wait_s = max(float(wait_s), DEFAULT_FORCE_CAPTURE_WAIT_S)
     deadline = time.monotonic() + max(0.5, float(wait_s))
     last_exc: BaseException | None = None
     nudged = False
+    blockers_killed = False
     while time.monotonic() < deadline:
         available = enumerate_serial_ports()
         target = pick_sas_com_port(requested, available)
@@ -760,8 +890,9 @@ def _open_serial_with_retry(
         except Exception as exc:  # noqa: BLE001
             if _is_retryable_serial_error(exc):
                 last_exc = exc
-                if force_capture:
+                if force_capture and not blockers_killed:
                     force_release_com_port_blockers(wait_s=1.0)
+                    blockers_killed = True
                 time.sleep(retry_delay_s)
                 continue
             raise
@@ -785,9 +916,11 @@ def _format_link_silent_error(
         f"{_LINK_SILENT_MARKER} on {port_used} "
         f"(no RX during {sync_s:.1f}s sync, baud {baud}, wire {wire_mode}, "
         f"RTS={'on' if rts else 'off'}).{rx_note}\n\n"
-        f"The COM port opened, but the EGM/MUX returned 0 bytes to general polls.\n"
-        f"• Close IGT SAS tester completely (it must release {port_used})\n"
-        f"• Cabinet powered on and SAS/MUX cable seated\n"
+        f"{port_used} opened successfully — nothing else is holding the port.\n"
+        f"The EGM/MUX simply returned 0 bytes to general polls. Check:\n"
+        f"• Correct COM port (SAS host cable / MUX, not another USB serial device)\n"
+        f"• Cabinet powered on; OneHand / Aurum / CommCtrl running\n"
+        f"• SAS/MUX cable seated; game not stuck in a dead link state\n"
         f"• Run: python scripts/probe_com4.py {port_used}\n"
         f"• If IGT SAS tester also shows no RX on this port, the link is offline"
     )
@@ -821,12 +954,30 @@ def fetch_meters_over_serial(
     auto_baud: bool = True,
     auto_wire: bool = True,
     force_capture: bool = True,
+    skip_bill_polls: bool = True,
+    fast_capture: bool = False,
+    cached_profile: tuple[str, int, bool] | None = None,
 ) -> SasMeterFetchResult:
     if force_capture:
         port_wait_s = max(float(port_wait_s), DEFAULT_FORCE_CAPTURE_WAIT_S)
-        link_sync_s = max(float(link_sync_s), DEFAULT_FORCE_LINK_SYNC_S)
-    if auto_baud and auto_wire:
-        combos: tuple[tuple[str, int, bool], ...] = AUTO_WIRE_BAUD_RTS_COMBOS
+        if fast_capture:
+            link_sync_s = min(
+                max(float(link_sync_s), DEFAULT_FAST_LINK_SYNC_S),
+                DEFAULT_FORCE_LINK_SYNC_S,
+            )
+            wakeup_delay_s = min(float(wakeup_delay_s), DEFAULT_FAST_WAKEUP_DELAY_S)
+        else:
+            link_sync_s = max(float(link_sync_s), DEFAULT_FORCE_LINK_SYNC_S)
+    if cached_profile:
+        mode_key, baud_try, rts_try = cached_profile
+        combos: tuple[tuple[str, int, bool], ...] = (
+            ((mode_key or DEFAULT_WIRE_MODE).strip().lower(), int(baud_try), bool(rts_try)),
+        )
+        combos += tuple(
+            c for c in AUTO_WIRE_BAUD_RTS_COMBOS if c not in combos
+        )
+    elif auto_baud and auto_wire:
+        combos = AUTO_WIRE_BAUD_RTS_COMBOS
     elif auto_baud:
         mode_key = (wire_mode or DEFAULT_WIRE_MODE).strip().lower()
         combos = tuple((mode_key, b, False) for b in DEFAULT_SAS_BAUD_CANDIDATES)
@@ -859,6 +1010,8 @@ def fetch_meters_over_serial(
                 wire_mode=mode_key,
                 rts=rts_try,
                 force_capture=force_capture,
+                skip_bill_polls=skip_bill_polls,
+                fast_capture=fast_capture,
             )
         except RuntimeError as exc:
             last_err = exc
@@ -872,8 +1025,16 @@ def fetch_meters_over_serial(
             raise
     if last_err is not None:
         detail = "\n".join(f"  • {line}" for line in attempt_notes)
+        port_norm = normalize_com_port(port) or port
+        all_link_silent = all(_LINK_SILENT_MARKER in line for line in attempt_notes)
+        prefix = ""
+        if all_link_silent:
+            prefix = (
+                f"{port_norm} opened on every attempt — the port is not held by another app.\n"
+                f"The EGM/MUX returned no bytes (link offline, wrong COM, or cabinet not running).\n\n"
+            )
         raise RuntimeError(
-            f"SAS meter fetch failed on {normalize_com_port(port) or port} after trying "
+            f"{prefix}SAS meter fetch failed on {port_norm} after trying "
             f"{len(combos)} wire/baud setting(s).\n\n{detail}"
         ) from last_err
     raise RuntimeError("SAS meter fetch failed")
@@ -893,6 +1054,8 @@ def _fetch_meters_once(
     wire_mode: str = DEFAULT_WIRE_MODE,
     rts: bool = False,
     force_capture: bool = False,
+    skip_bill_polls: bool = True,
+    fast_capture: bool = False,
 ) -> SasMeterFetchResult:
     serial = _require_pyserial()
     mode_key = (wire_mode or DEFAULT_WIRE_MODE).strip().lower()
@@ -916,11 +1079,14 @@ def _fetch_meters_once(
     paste_lines: list[str] = []
     if force_capture:
         paste_lines.append(
-            "; Force COM capture: exclusive open, IGT tester stop, 15s port retry, 6s GP sync"
+            "; Force COM capture: exclusive open, IGT tester stop, port retry, GP sync"
+            + (" (fast)" if fast_capture else "")
+            + ("; 6F only (bill LPs skipped)" if skip_bill_polls else "")
         )
     first_tx = b""
     last_rx = b""
     bill_rows: tuple = ()
+    bill_out_rows = catalog_bill_out_rows()
     try:
         _wakeup_serial(ser, delay_s=wakeup_delay_s)
         link_ok, sync_rx = _establish_sas_link(
@@ -968,18 +1134,21 @@ def _fetch_meters_once(
             paste_lines.append(format_sas_traffic_line("RX<=", rx))
             if batch_index + 1 < len(batches):
                 time.sleep(0.05)
-        bill_result = fetch_bill_meters_in_session(
-            ser,
-            wire,
-            address=address,
-            timeout_s=DEFAULT_BILL_POLL_TIMEOUT_S,
-            commands=SAS_BILL_STANDARD_DENOMINATIONS,
-        )
-        if bill_result.paste_lines:
-            paste_lines.append("")
-            paste_lines.append("; --- Bill-in long polls ($31-$45, enabled only) ---")
-            paste_lines.extend(bill_result.paste_lines)
-        bill_rows = bill_result.rows
+        if not skip_bill_polls:
+            time.sleep(DEFAULT_POST_6F_BILL_DELAY_S)
+            bill_result = fetch_bill_meters_in_session(
+                ser,
+                wire,
+                address=address,
+                timeout_s=DEFAULT_BILL_POLL_TIMEOUT_S,
+                commands=SAS_BILL_STANDARD_DENOMINATIONS,
+            )
+            if bill_result.paste_lines:
+                paste_lines.append("")
+                paste_lines.append("; --- Bill-in long polls ($31-$45, enabled only) ---")
+                paste_lines.extend(bill_result.paste_lines)
+            bill_rows = bill_result.rows
+            bill_out_rows = catalog_bill_out_rows()
     finally:
         ser.close()
     paste = "\n".join(paste_lines)
@@ -990,7 +1159,9 @@ def _fetch_meters_once(
         port_used=port_used,
         wire_mode=mode_key,
         baud=int(baud),
+        rts=bool(rts),
         bill_rows=bill_rows,
+        bill_out_rows=bill_out_rows,
     )
 
 
@@ -1021,7 +1192,10 @@ SAS_BILL_IN_DENOMINATIONS: tuple[tuple[int, str, int], ...] = (
 
 # Default COM fetch: standard US bill acceptor denoms ($1-$100) only.
 SAS_BILL_STANDARD_DENOMINATIONS: tuple[tuple[int, str, int], ...] = SAS_BILL_IN_DENOMINATIONS[:7]
-DEFAULT_BILL_POLL_TIMEOUT_S = 2.5
+# Bill-out uses the same face values; per-denom hopper LPs are not on all EGMs (table shows zeros until supported).
+SAS_BILL_OUT_DENOMINATIONS: tuple[tuple[int, str, int], ...] = SAS_BILL_STANDARD_DENOMINATIONS
+DEFAULT_BILL_POLL_TIMEOUT_S = 1.25
+DEFAULT_POST_6F_BILL_DELAY_S = 0.15
 
 
 @dataclass(frozen=True, slots=True)
@@ -1034,6 +1208,7 @@ class SasBillDenomRow:
     amount_cents: int
     sas_code: str = ""
     source: str = "lp"
+    direction: str = "in"  # "in" | "out"
 
     @property
     def sas_cmd_hex(self) -> str:
@@ -1137,6 +1312,70 @@ def parse_6f_meter_values_from_paste(paste_text: str) -> dict[str, str]:
     return merged
 
 
+def infer_aggregate_bill_face_cents(
+    amount_cents: int,
+    count: int,
+    *,
+    catalog: tuple[tuple[int, str, int], ...] = SAS_BILL_STANDARD_DENOMINATIONS,
+) -> int | None:
+    """When stacker/000B totals map to one catalog denomination, return its face value."""
+    amt = int(amount_cents)
+    cnt = max(0, int(count))
+    if amt <= 0:
+        return None
+    faces = [face for _, _, face in catalog]
+    for try_cnt in ([cnt] if cnt > 0 else []) + [1]:
+        matches = [face for face in faces if face * try_cnt == amt]
+        if len(matches) == 1:
+            return matches[0]
+    # Some EGMs report 000B in whole dollars (5 = $5.00, not 500 credits).
+    if cnt <= 1 and amt < max(faces, default=0):
+        scaled = amt * 100
+        matches = [face for face in faces if face == scaled]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def expand_aggregate_bill_to_catalog(
+    agg: SasBillDenomRow,
+    *,
+    direction: str = "in",
+    catalog: tuple[tuple[int, str, int], ...] = SAS_BILL_STANDARD_DENOMINATIONS,
+) -> tuple[SasBillDenomRow, ...]:
+    """Expand a single 000B aggregate row into the full catalog, attributing when unique."""
+    display = merge_bill_rows_with_catalog((), catalog, direction=direction)
+    amount = int(agg.amount_cents)
+    count = int(agg.count)
+    face = infer_aggregate_bill_face_cents(amount, count, catalog=catalog)
+    if face is None and count <= 0:
+        face = infer_aggregate_bill_face_cents(amount, 1, catalog=catalog)
+    if face is None:
+        return display
+    if count <= 0:
+        count = 1
+    line_amount = face * count
+    rows: list[SasBillDenomRow] = []
+    for row in display:
+        if row.face_cents == face:
+            rows.append(
+                SasBillDenomRow(
+                    sas_cmd=row.sas_cmd,
+                    label=row.label,
+                    face_cents=face,
+                    enabled=True,
+                    count=count,
+                    amount_cents=line_amount,
+                    sas_code=agg.sas_code,
+                    source="aggregate",
+                    direction=direction,
+                )
+            )
+        else:
+            rows.append(row)
+    return tuple(rows)
+
+
 def build_aggregate_bill_rows(
     *,
     paste_text: str = "",
@@ -1192,8 +1431,102 @@ def build_aggregate_bill_rows(
             amount_cents=amount_credits,
             sas_code="000B",
             source="aggregate",
+            direction="in",
         ),
     )
+
+
+def paste_has_bill_lp_attempts(paste_text: str) -> bool:
+    """True when pasted traffic includes bill-in LP polls ($31-$37)."""
+    text = paste_text or ""
+    if re.search(r"(?i)Bill-in long polls", text):
+        return True
+    return bool(re.search(r"(?i)TX\s*>=\s*01\s+3[1-7]\b", text))
+
+
+def merge_bill_rows_with_catalog(
+    responded: tuple[SasBillDenomRow, ...] | list[SasBillDenomRow],
+    catalog: tuple[tuple[int, str, int], ...] = SAS_BILL_STANDARD_DENOMINATIONS,
+    *,
+    direction: str = "in",
+) -> tuple[SasBillDenomRow, ...]:
+    """Always return one row per catalog denomination (zeros when LP had no RX)."""
+    by_cmd = {int(r.sas_cmd): r for r in responded if r.sas_cmd}
+    rows: list[SasBillDenomRow] = []
+    for cmd, label, face_cents in catalog:
+        hit = by_cmd.get(cmd)
+        if hit is not None and hit.enabled:
+            rows.append(
+                SasBillDenomRow(
+                    sas_cmd=cmd,
+                    label=label,
+                    face_cents=face_cents,
+                    enabled=True,
+                    count=hit.count,
+                    amount_cents=hit.amount_cents,
+                    sas_code=hit.sas_code,
+                    source=hit.source,
+                    direction=direction,
+                )
+            )
+        else:
+            rows.append(
+                SasBillDenomRow(
+                    sas_cmd=cmd,
+                    label=label,
+                    face_cents=face_cents,
+                    enabled=False,
+                    count=0,
+                    amount_cents=0,
+                    source="missing" if hit is None else hit.source,
+                    direction=direction,
+                )
+            )
+    return tuple(rows)
+
+
+def catalog_bill_out_rows(
+    catalog: tuple[tuple[int, str, int], ...] = SAS_BILL_OUT_DENOMINATIONS,
+) -> tuple[SasBillDenomRow, ...]:
+    """Placeholder bill-out rows (per-denom hopper polls not yet wired on this EGM path)."""
+    return merge_bill_rows_with_catalog((), catalog, direction="out")
+
+
+def build_bill_rows_from_cabinet_note_meters(
+    machine_state: dict[str, object] | None,
+) -> tuple[SasBillDenomRow, ...]:
+    """Map DeviceManagerData note curInCnt/curInAmt rows to SAS bill-in catalog rows."""
+    from network.accounting_state_loader import extract_cabinet_bill_note_meters
+
+    by_face = extract_cabinet_bill_note_meters(machine_state or {})
+    if not by_face:
+        return ()
+    rows: list[SasBillDenomRow] = []
+    for cmd, label, face_cents in SAS_BILL_STANDARD_DENOMINATIONS:
+        data = by_face.get(face_cents)
+        if not data:
+            continue
+        count = int(data.get("count") or 0)
+        amount_cents = int(data.get("amount_cents") or 0)
+        if count <= 0 and amount_cents <= 0:
+            continue
+        if amount_cents <= 0 and count > 0:
+            amount_cents = count * face_cents
+        if count <= 0 and amount_cents > 0 and face_cents > 0:
+            count = amount_cents // face_cents
+        rows.append(
+            SasBillDenomRow(
+                sas_cmd=cmd,
+                label=label,
+                face_cents=face_cents,
+                enabled=True,
+                count=count,
+                amount_cents=amount_cents,
+                source="cabinet",
+                direction="in",
+            )
+        )
+    return tuple(rows)
 
 
 def build_bill_display_rows(
@@ -1202,11 +1535,142 @@ def build_bill_display_rows(
     paste_text: str = "",
     machine_state: dict[str, object] | None = None,
 ) -> tuple[SasBillDenomRow, ...]:
-    per_denom = tuple(row for row in (bill_rows or ()) if row.enabled)
-    if per_denom:
-        return per_denom
-    return build_aggregate_bill_rows(paste_text=paste_text, machine_state=machine_state)
+    """Bill-in table rows: SAS LP/paste, else cabinet curMeter notes, else 000B aggregate."""
+    from_paste = parse_sas_bill_paste(paste_text)
+    responded = tuple(bill_rows or ()) + from_paste
+    if responded or paste_has_bill_lp_attempts(paste_text):
+        return merge_bill_rows_with_catalog(responded, direction="in")
+    cabinet_rows = build_bill_rows_from_cabinet_note_meters(machine_state)
+    if cabinet_rows:
+        return merge_bill_rows_with_catalog(cabinet_rows, direction="in")
+    agg = build_aggregate_bill_rows(paste_text=paste_text, machine_state=machine_state)
+    if agg:
+        return agg
+    return merge_bill_rows_with_catalog((), direction="in")
 
+
+def build_bill_out_display_rows(
+    *,
+    bill_rows: tuple[SasBillDenomRow, ...] | list[SasBillDenomRow] | None = None,
+) -> tuple[SasBillDenomRow, ...]:
+    """Bill-out table rows: full catalog (zeros until hopper/dispenser LPs are supported)."""
+    if bill_rows:
+        return merge_bill_rows_with_catalog(bill_rows, SAS_BILL_OUT_DENOMINATIONS, direction="out")
+    return catalog_bill_out_rows()
+
+
+# --- Coin panels (COIN IN / OUT / TO DROP BOX / TO HOPPER) -----------------------
+
+SAS_COIN_CATALOG: tuple[tuple[str, int], ...] = (
+    ("$0.01", 1),
+    ("$0.05", 5),
+    ("$0.10", 10),
+    ("$0.25", 25),
+    ("$0.50", 50),
+    ("$1.00", 100),
+)
+
+COIN_PANEL_SPECS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...]]] = {
+    "in": ("0000", ("coinin", "gamecoinin", "totalcoinin"), ("curincnt", "coinincnt")),
+    "out": ("0001", ("coinout", "totalcoinout", "gamecoinout"), ("coinoutcnt", "curoutcnt")),
+    "drop": ("0002", ("curtodropamt", "cointodropboxamt", "totaltodrop"), ("curtodropcnt", "cointodropboxcnt")),
+    "hopper": ("", ("cointohopperamt", "hoppercoinoutamt", "hopperoutamt"), ("cointohoppercnt", "hoppercoinoutcnt")),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class SasCoinDenomRow:
+    label: str
+    face_cents: int
+    count: int = 0
+    amount_cents: int = 0
+    source: str = "catalog"
+    panel: str = "in"
+
+
+def _norm_map_lookup(state: dict[str, object], keys: tuple[str, ...]) -> str:
+    if not state or not keys:
+        return ""
+    norm: dict[str, str] = {}
+    for k, v in state.items():
+        nk = re.sub(r"[^a-z0-9]+", "", str(k).lower())
+        if nk:
+            norm[nk] = str(v).strip()
+    for key in keys:
+        nk = re.sub(r"[^a-z0-9]+", "", key.lower())
+        if nk in norm and norm[nk]:
+            return norm[nk]
+    return ""
+
+
+def coin_credits_raw_to_amount_cents(raw: str) -> int:
+    """Convert SAS/cabinet credit integer (100 credits = $1) to amount column cents."""
+    text = (raw or "").strip()
+    if not text:
+        return 0
+    if "." in text:
+        try:
+            return int(round(float(text) * 100))
+        except ValueError:
+            return 0
+    if not re.fullmatch(r"\d+", text):
+        return 0
+    return int(text)
+
+
+def catalog_coin_panel_rows(panel: str) -> tuple[SasCoinDenomRow, ...]:
+    return tuple(
+        SasCoinDenomRow(label=label, face_cents=face_cents, panel=panel)
+        for label, face_cents in SAS_COIN_CATALOG
+    )
+
+
+def build_coin_panel_display_rows(
+    panel: str,
+    *,
+    machine_state: dict[str, object] | None = None,
+    sas_raw_for_code: str = "",
+) -> tuple[tuple[SasCoinDenomRow, ...], dict[str, int] | None]:
+    """
+    Coin panel body rows (full denomination catalog) plus optional aggregate TOTAL.
+
+    Per-denom coin LPs are not wired on all EGMs; when only cabinet/SAS totals exist,
+    the table shows the catalog with zeros and TOTAL from the aggregate meter.
+    """
+    rows = catalog_coin_panel_rows(panel)
+    spec = COIN_PANEL_SPECS.get(panel)
+    if not spec:
+        return rows, None
+    sas_code, amount_keys, count_keys = spec
+    raw_amt = _norm_map_lookup(machine_state or {}, amount_keys)
+    if not raw_amt and sas_raw_for_code:
+        raw_amt = str(sas_raw_for_code).strip()
+    if not raw_amt or raw_amt == "0":
+        return rows, None
+    amount_cents = coin_credits_raw_to_amount_cents(raw_amt)
+    count_raw = _norm_map_lookup(machine_state or {}, count_keys)
+    count = int(count_raw) if count_raw and count_raw.isdigit() else 0
+    if sas_code:
+        return rows, {"amount_cents": amount_cents, "count": count, "sas_code": sas_code}
+    return rows, {"amount_cents": amount_cents, "count": count}
+
+
+def build_all_coin_panel_rows(
+    *,
+    machine_state: dict[str, object] | None = None,
+    sas_values: dict[str, str] | None = None,
+) -> dict[str, tuple[tuple[SasCoinDenomRow, ...], dict[str, int] | None]]:
+    sas_values = sas_values or {}
+    out: dict[str, tuple[tuple[SasCoinDenomRow, ...], dict[str, int] | None]] = {}
+    for panel in COIN_PANEL_SPECS:
+        spec = COIN_PANEL_SPECS[panel]
+        sas_code = spec[0]
+        out[panel] = build_coin_panel_display_rows(
+            panel,
+            machine_state=machine_state,
+            sas_raw_for_code=sas_values.get(sas_code, "") if sas_code else "",
+        )
+    return out
 
 def _resync_link_before_bill_polls(
     ser,
@@ -1214,11 +1678,11 @@ def _resync_link_before_bill_polls(
     *,
     address: int = DEFAULT_SAS_ADDRESS,
 ) -> None:
-    """Brief GP cadence after heavy 6F batches so simple bill LPs can answer."""
+    """GP cadence after heavy 6F batches so simple bill LPs can answer."""
     polls = _general_poll_alternation(address)
     for idx in range(4):
         wire.send_general_poll(polls[idx % 2])
-        time.sleep(0.2)
+        time.sleep(0.12)
         _read_after_poll(ser, idle_ms=60)
     _ensure_space_rx(ser)
     try:
@@ -1243,6 +1707,7 @@ def fetch_bill_meters_in_session(
     _resync_link_before_bill_polls(ser, wire, address=address)
 
     for cmd, label, face_cents in catalog:
+        _prime_before_long_poll(wire, address=address)
         tx = build_simple_long_poll(address=address, cmd=cmd)
         _ensure_space_rx(ser)
         try:
@@ -1257,14 +1722,16 @@ def fetch_bill_meters_in_session(
             overall_timeout_s=per_poll_timeout,
         )
         if not rx:
-            _ensure_space_rx(ser)
-            wire.send_frame(tx)
-            rx, rx_raw, _elapsed = _read_simple_meter_response(
-                ser,
-                address=address,
-                cmd=cmd,
-                overall_timeout_s=per_poll_timeout,
-            )
+            cleaned = rx_raw.strip(b"\x00")
+            if cleaned:
+                _prime_before_long_poll(wire, address=address)
+                wire.send_frame(tx)
+                rx, rx_raw, _elapsed = _read_simple_meter_response(
+                    ser,
+                    address=address,
+                    cmd=cmd,
+                    overall_timeout_s=per_poll_timeout,
+                )
 
         if rx:
             count = parse_bill_in_response_frame(rx, address=address, cmd=cmd) or 0
@@ -1276,6 +1743,7 @@ def fetch_bill_meters_in_session(
                     enabled=True,
                     count=count,
                     amount_cents=count * face_cents,
+                    direction="in",
                 )
             )
             paste_lines.append(format_sas_traffic_line("TX>=", tx))
@@ -1290,7 +1758,7 @@ def fetch_bill_meters_in_session(
                     preview += " …"
                 hint += f" partial: {preview.split(' ', 1)[-1]}"
             paste_lines.append(hint)
-        time.sleep(0.05)
+        time.sleep(0.08)
 
     return SasBillMeterFetchResult(rows=tuple(rows), paste_lines=tuple(paste_lines))
 

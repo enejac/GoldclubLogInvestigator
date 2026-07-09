@@ -17,6 +17,17 @@ _LAB_USER = r"GOLD-CLUB\test"
 _LAB_PASS = "test"
 
 _WMIC_LINE_RE = re.compile(r"^([A-Za-z]+)=(.*)$")
+_INVALID_REMOTE_CABINET_IPS: frozenset[str] = frozenset(
+    {"0.0.0.0", "127.0.0.1", "255.255.255.255"}
+)
+
+
+def is_valid_remote_cabinet_ip(ip_address: str) -> bool:
+    """False for blank/loopback/broadcast — not valid WMIC/PsExec cabinet targets."""
+    ip = (ip_address or "").strip()
+    if not ip or ip in _INVALID_REMOTE_CABINET_IPS:
+        return False
+    return bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip))
 
 
 def _parse_wmic_value_block(text: str) -> dict[str, int]:
@@ -213,11 +224,39 @@ def _onehand_via_psexec(ip: str) -> bool | None:
     return None
 
 
+def _onehand_via_local_process() -> bool:
+    """True when OneHand.exe is running on this Windows machine (USB/on-cabinet runs)."""
+    if os.name != "nt":
+        return False
+    run_kw: dict = {
+        "capture_output": True,
+        "text": True,
+        "timeout": 8,
+        "check": False,
+    }
+    run_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        proc = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq OneHand.exe", "/NH"],
+            **run_kw,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "onehand.exe" in (proc.stdout or "").lower()
+
+
+def check_onehand_status_local() -> OneHandStatus:
+    """Local process probe for Investigator running on the EGM or from USB."""
+    return OneHandStatus(running=_onehand_via_local_process(), smb_reachable=True)
+
+
 def check_onehand_status(ip_address: str) -> OneHandStatus | None:
     """Probe cabinet reachability, then OneHand via WMIC with PsExec fallback."""
     ip = (ip_address or "").strip()
     if not ip or os.name != "nt":
         return None
+    if not is_valid_remote_cabinet_ip(ip):
+        return check_onehand_status_local()
     smb = cabinet_smb_reachable(ip)
     if not smb:
         return OneHandStatus(running=None, smb_reachable=False)
@@ -245,28 +284,40 @@ def onehand_warning_text(
     *,
     running: bool | None,
     smb_reachable: bool | None = None,
+    com_meters_ok: bool = False,
 ) -> str:
     """Human-readable warning for UI when OneHand is down or not verified."""
-    ip = (ip_address or "").strip() or "the cabinet"
+    if com_meters_ok:
+        return ""
+    ip = (ip_address or "").strip()
+    if ip == "local":
+        label = "this EGM"
+    elif ip:
+        label = ip
+    else:
+        label = "the cabinet"
     if running is True:
         return ""
     if running is False:
         return (
             f"<b style='color:#b45309;'>Warning:</b> "
-            f"<code>OneHand.exe</code> is <b>not running</b> on <b>{ip}</b>. "
+            f"<code>OneHand.exe</code> is <b>not running</b> on <b>{label}</b>. "
             f"The SAS host link often returns no RX until the game client is started "
             f"on the EGM (Aurum / CommCtrl stack)."
         )
     if smb_reachable is False:
+        if not is_valid_remote_cabinet_ip(ip_address):
+            return ""
         return (
             f"<b style='color:#92400e;'>Warning:</b> "
-            f"Could not reach cabinet <b>{ip}</b> "
+            f"Could not reach cabinet <b>{label}</b> "
             f"(SMB/log share unreachable — check lab network and credentials)."
         )
     return (
         f"<b style='color:#92400e;'>Warning:</b> "
-        f"Cabinet <b>{ip}</b> is reachable but <code>OneHand.exe</code> could not be verified "
-        f"(remote process query failed)."
+        f"Could not verify <code>OneHand.exe</code> on <b>{label}</b> "
+        f"(remote WMIC/PsExec query failed). "
+        f"If <b>Get Meters</b> returned SAS data, the link is fine — ignore this banner."
     )
 
 

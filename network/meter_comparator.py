@@ -83,6 +83,11 @@ def align_bills_in_sas_credits(sas_value: str, machine_credits: str) -> str:
 
     Some EGMs report bills-in in whole dollars (``6`` = $6) while GoldClub cabinet
     state stores ``notesInStackerAmt`` in credits (``600`` = $6 at 100 credits/$).
+
+    Lab cabinet (GST20664): SAS ``000B`` can read ``209`` (whole dollars) while
+    ``notesInStackerAmt`` is ``20960`` credits ($209.60). Treat as aligned when
+    ``machine // 100 == sas`` and the sub-dollar remainder is at least 60 credits
+    (avoids false positives like ``6`` vs ``601`` = $6.01).
     """
     s = _compare_intish(sas_value)
     m = _compare_intish(machine_credits)
@@ -92,7 +97,27 @@ def align_bills_in_sas_credits(sas_value: str, machine_credits: str) -> str:
         return str(s)
     if s * 100 == m:
         return str(m)
+    if s > 0 and m // 100 == s:
+        remainder = m - s * 100
+        # Sub-dollar variance in credits (e.g. 20960 = $209 + 60¢).
+        if remainder >= 60:
+            return str(m)
+        # Large whole-dollar SAS totals with cent precision on cabinet
+        # (e.g. SAS 1769 vs notesInStackerAmt 176930 = $1769.30). Keep the
+        # small-total guard (6 vs 601) by requiring SAS whole dollars >= 100.
+        if s >= 100 and 0 <= remainder < 100:
+            return str(m)
     return str(s)
+
+
+def bills_in_meters_match(sas_value: str, machine_value: str) -> bool:
+    """Return True when SAS 000B and cabinet bills-in totals are equivalent."""
+    aligned = align_bills_in_sas_credits(sas_value, machine_value)
+    s = _compare_intish(sas_value)
+    m = _compare_intish(machine_value)
+    if s is None or m is None:
+        return False
+    return _compare_intish(aligned) == m
 
 
 def _extract_sas_meters(sas_path: str) -> dict[str, int]:

@@ -12,13 +12,15 @@ import sys
 import threading
 import traceback
 
-from PySide6.QtCore import QObject, QSettings, QThread, QThreadPool, Signal, Qt, QPoint, QTimer
-from PySide6.QtGui import QAction, QColor, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QObject, QSettings, QThread, QThreadPool, Signal, Qt, QPoint, QTimer
+from PySide6.QtGui import QAction, QColor, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
+    QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
     QMenuBar,
     QPushButton,
     QLineEdit,
+    QSizePolicy,
     QSplitter,
     QTabWidget,
     QTableWidget,
@@ -39,6 +42,7 @@ from PySide6.QtWidgets import (
 from pathlib import Path
 
 from config_manager import SettingsManager
+from gui.palette_adapt import surface_is_light
 
 # --- EGM currency / dollar display (100 credits = $1 on USD cabinets) ---
 SAS_VERIFY_MONETARY_CODES = frozenset({
@@ -203,21 +207,252 @@ _VERIFY_TABLE_COLUMNS: tuple[tuple[int, str], ...] = (
 _SAS_VERIFY_SETTINGS_GROUP = "SasVerifyDialog"
 _KEY_COM_PORT = "com_port"
 _KEY_COM_BAUD = "com_baud"
+_KEY_COM_WIRE = "com_wire_mode"
+_KEY_COM_RTS = "com_rts"
 # Bump when default column layout changes so saved prefs reset once.
 _SAS_VERIFY_COLUMN_PREFS_VERSION = 2
 _KEY_COLUMN_PREFS_VERSION = "column_prefs_version"
 _DEFAULT_HIDDEN_VERIFY_COLUMNS = frozenset({COL_WIRE_ID, COL_SAS_2F_VALUE})
 
-# Bills tab (View -> meter tabs -> Bills).
-_BILLS_COL_COUNT = 6
-_BILLS_TABLE_HEADERS: tuple[str, ...] = (
-    "Bill",
-    "Amount",
-    "Count",
-    "SAS",
-    "Machine",
-    "Status",
+# Meter tabs (EGM accounting UI order — View -> Meter tabs).
+TAB_ACCOUNTING = 0
+TAB_GAME = 1
+TAB_MASTER = 2
+TAB_BILLS = 3
+TAB_COINS = 4
+TAB_TRANSFER = 5
+TAB_SECURITY = 6
+_METER_TAB_NAMES: tuple[str, ...] = (
+    "Accounting",
+    "Game",
+    "Master",
+    "Bills",
+    "Coins",
+    "Transfer",
+    "Security",
 )
+# Tabs that show the shared SAS verify grid (View -> Columns applies).
+_METER_COLUMN_TABS = frozenset({
+    TAB_ACCOUNTING,
+})
+_METER_CODES_GAME = frozenset({"0005", "0006", "0007", "0000", "0001", "001C", "001D"})
+_METER_CODES_COINS = frozenset({"0000", "0001"})
+_METER_CODES_TRANSFER = frozenset({
+    "0080", "0082", "0084", "0086", "0088",
+    "00A0", "00A2", "00A4", "00B8", "00BA", "00BC",
+})
+_METER_CODES_SECURITY = frozenset({"0005", "0006", "0007"})
+
+# Bills tab (View -> meter tabs -> Bills) — matches cabinet meter UI: BILL | AMOUNT | COUNT.
+_BILLS_TABLE_COLUMN_COUNT = 3
+_BILLS_COL_BILL = 0
+_BILLS_COL_AMOUNT = 1
+_BILLS_COL_COUNT_IDX = 2
+_BILLS_TABLE_HEADERS: tuple[str, ...] = (
+    "BILL",
+    "AMOUNT",
+    "COUNT",
+)
+_BILLS_CATALOG_ROW_COUNT = 7
+
+# Coins tab — 2x2 COIN IN / OUT / TO DROP BOX / TO HOPPER (EGM global meter UI).
+_COINS_TABLE_COLUMN_COUNT = 3
+_COINS_COL_COIN = 0
+_COINS_COL_AMOUNT = 1
+_COINS_COL_COUNT_IDX = 2
+_COINS_TABLE_HEADERS: tuple[str, ...] = (
+    "COIN",
+    "AMOUNT",
+    "COUNT",
+)
+_COINS_CATALOG_ROW_COUNT = 6
+_COINS_PANELS: tuple[tuple[str, str], ...] = (
+    ("in", "COIN IN"),
+    ("out", "COIN OUT"),
+    ("drop", "COIN TO DROP BOX"),
+    ("hopper", "COIN TO HOPPER"),
+)
+
+# Master tab — EGM-style TOTAL CREDIT / HANDPAY OUT / WAGERED layout.
+MASTER_CREDIT_IN_CODES: tuple[str, ...] = ("000B", "0000", "0017", "0015", "0023")
+MASTER_CREDIT_OUT_CODES: tuple[str, ...] = ("006E", "0001", "0003", "0016", "0018")
+MASTER_HANDPAY_CODES: tuple[str, ...] = ("0003", "0002", "001F", "0020", "001D")
+MASTER_CANCELLED_CODE = "0004"
+MASTER_WAGERED_CODES: tuple[str, ...] = ("001C", "00A4", "00A2")
+MASTER_TRACKED_CODES: tuple[str, ...] = (
+    *MASTER_CREDIT_IN_CODES,
+    *MASTER_CREDIT_OUT_CODES,
+    *MASTER_HANDPAY_CODES,
+    MASTER_CANCELLED_CODE,
+    *MASTER_WAGERED_CODES,
+)
+MASTER_CREDIT_IN_ROWS: tuple[tuple[str, str], ...] = (
+    ("Bill In", "000B"),
+    ("Coin In", "0000"),
+    ("Remote In", "0017"),
+    ("Ticket In", "0015"),
+    ("Handpay In", "0023"),
+)
+MASTER_CREDIT_OUT_ROWS: tuple[tuple[str, str], ...] = (
+    ("Bill out", "006E"),
+    ("Coin Out", "0001"),
+    ("Handpay Out", "0003"),
+    ("Ticket Out", "0016"),
+    ("Remote Out", "0018"),
+)
+MASTER_JACKPOT_SUB_ROWS: tuple[tuple[str, str], ...] = (
+    ("Win Limit Jackpot", "001F"),
+    ("External Bonus", "0020"),
+    ("Progressive", "001D"),
+)
+MASTER_WAGERED_ROWS: tuple[tuple[str, str], ...] = (
+    ("Cashable wagered", "001C"),
+    ("Promotional wagered", "00A4"),
+    ("Non Cashable wagered", "00A2"),
+)
+
+# Transfer tab — TICKET / CASHLESS panels (matches EGM accounting UI).
+TRANSFER_TICKET_IN_CODE = "0015"
+TRANSFER_TICKET_OUT_CODE = "0016"
+TRANSFER_CASHLESS_IN_CODE = "0017"
+TRANSFER_CASHLESS_OUT_CODE = "0018"
+TRANSFER_TICKET_IN_BUCKETS: tuple[tuple[str, str], ...] = (
+    ("Cashable", "0080"),
+    ("Non-Cashable", "0082"),
+    ("Promotional", "0084"),
+)
+TRANSFER_TICKET_OUT_BUCKETS: tuple[tuple[str, str], ...] = (
+    ("Cashable", "0086"),
+    ("Non-Cashable", "0088"),
+    ("Promotional", ""),
+)
+TRANSFER_CASHLESS_IN_BUCKETS: tuple[tuple[str, str], ...] = (
+    ("Cashable", "00A0"),
+    ("Non-Cashable", "00A2"),
+    ("Promotional", "00A4"),
+)
+TRANSFER_CASHLESS_OUT_BUCKETS: tuple[tuple[str, str], ...] = (
+    ("Cashable", "00B8"),
+    ("Non-Cashable", "00BA"),
+    ("Promotional", "00BC"),
+)
+TRANSFER_PROMO_TICKET_OUT_STATE_KEYS: tuple[str, ...] = (
+    "voucherpromooutamt",
+    "voucher_promoOutAmt",
+)
+TRANSFER_BUCKET_COUNT_KEYS: dict[str, tuple[str, ...]] = {
+    "0080": ("vouchercashableincnt", "regularcashableticketincnt"),
+    "0082": ("vouchernoncashincnt", "restrictedticketincnt"),
+    "0084": ("voucherpromoincnt", "nonrestrictedticketincnt"),
+    "0086": ("vouchercashableoutcnt", "regularcashableticketoutcnt"),
+    "0088": ("vouchernoncashoutcnt", "restrictedticketoutcnt"),
+    "00A0": ("watcashableincnt",),
+    "00A2": ("watnoncashincnt",),
+    "00A4": ("watpromoincnt",),
+    "00B8": ("watcashableoutcnt",),
+    "00BA": ("watnoncashoutcnt",),
+    "00BC": ("watpromooutcnt",),
+}
+TRANSFER_COUNT_STATE_KEYS: dict[str, tuple[str, ...]] = {
+    "ticket:in": ("ticketincnt", "voucherticketincnt", "totalvoucherincnt"),
+    "ticket:out": ("ticketoutcnt", "voucherticketoutcnt", "totalvoucheroutcnt"),
+    "ticket:accepted": (
+        "ticketacceptedcnt",
+        "voucheracceptedcnt",
+        "ticketsacceptedcnt",
+        "voucherticketacceptedcnt",
+    ),
+    "ticket:printed": (
+        "ticketprintedcnt",
+        "voucherprintedcnt",
+        "ticketsprintedcnt",
+        "voucherticketprintedcnt",
+    ),
+    "cashless:in": ("wattransferincnt", "transferincnt", "afttransferincnt"),
+    "cashless:out": ("wattransferoutcnt", "transferoutcnt", "afttransferoutcnt"),
+    "cashless:transfers_in": ("wattransferincnt", "transferincnt", "transfersincnt"),
+    "cashless:transfers_out": ("wattransferoutcnt", "transferoutcnt", "transfersoutcnt"),
+}
+TRANSFER_TRACKED_AMOUNT_CODES: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        c
+        for c in (
+            TRANSFER_TICKET_IN_CODE,
+            TRANSFER_TICKET_OUT_CODE,
+            TRANSFER_CASHLESS_IN_CODE,
+            TRANSFER_CASHLESS_OUT_CODE,
+            *(code for _, code in TRANSFER_TICKET_IN_BUCKETS if code),
+            *(code for _, code in TRANSFER_TICKET_OUT_BUCKETS if code),
+            *(code for _, code in TRANSFER_CASHLESS_IN_BUCKETS),
+            *(code for _, code in TRANSFER_CASHLESS_OUT_BUCKETS),
+        )
+        if c
+    )
+)
+
+# Security tab — Door Open Count / Games Since (gm2au cabinet meters on lab .90).
+SECURITY_DOOR_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Note Door", ("notedooropens", "noteDoorOpens")),
+    ("Drop Door", ("dropdooropens", "dropDoorOpens")),
+    ("Hopper Door", ("hopperdooropens", "hopperDoorOpens")),
+    ("Logic Door", ("logicdooropens", "logicDoorOpens")),
+    ("Auxiliary Door", ("auxdooropens", "auxDoorOpens")),
+    ("Cabinet Door", ("cabinetdooropens", "cabinetDoorOpens")),
+)
+SECURITY_GAMES_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Initialized", ("gamessinceinit", "gamesSinceInit")),
+    ("Power Reset", ("gamessincepowerreset", "gamesSincePowerReset")),
+    ("Door Closed", ("gamessincedoorclosed", "gamesSinceDoorClosed")),
+)
+
+# Game tab — Performance Meters / Residual Credit (EGM accounting UI).
+GAME_PLAYED_STATE_KEYS: tuple[str, ...] = ("gamesplayed", "gamebaseplays")
+GAME_WON_STATE_KEYS: tuple[str, ...] = ("gameswon",)
+GAME_LOST_STATE_KEYS: tuple[str, ...] = ("gameslost", "totalgameslost")
+GAME_BET_CODE = "0000"
+GAME_WIN_CODE = "0001"
+GAME_GAME_WIN_CODE = "001C"
+GAME_PROG_WIN_CODE = "001D"
+GAME_BONUS_WIN_STATE_KEYS: tuple[str, ...] = (
+    "scattercoinout",
+    "addscattercoinout",
+    "bonuswin",
+)
+GAME_SAS_BONUS_STATE_KEYS: tuple[str, ...] = ("sasbonuswin",)
+GAME_PROG_WIN_STATE_KEYS: tuple[str, ...] = ("progwin",)
+GAME_RESIDUAL_PLAYED_KEYS: tuple[str, ...] = (
+    "residualcreditplays",
+    "residualcreditgamesplayed",
+)
+GAME_RESIDUAL_WON_KEYS: tuple[str, ...] = (
+    "residualcreditwon",
+    "residualcreditgameswon",
+)
+GAME_RESIDUAL_LOST_KEYS: tuple[str, ...] = (
+    "residualcreditlost",
+    "residualcreditgameslost",
+)
+GAME_RESIDUAL_COIN_IN_KEYS: tuple[str, ...] = ("residualcreditcoinin",)
+GAME_RESIDUAL_COIN_OUT_KEYS: tuple[str, ...] = ("residualcreditcoinout",)
+GAME_RESIDUAL_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Played", GAME_RESIDUAL_PLAYED_KEYS),
+    ("Won", GAME_RESIDUAL_WON_KEYS),
+    ("Lost", GAME_RESIDUAL_LOST_KEYS),
+    ("Coin In", GAME_RESIDUAL_COIN_IN_KEYS),
+    ("Coin Out", GAME_RESIDUAL_COIN_OUT_KEYS),
+)
+GAME_THEME_TOTAL = "Total"
+
+_GAME_SAS_AMOUNT_STATE_KEYS: dict[str, tuple[str, ...]] = {
+    "0000": ("coinin", "gamecoinin"),
+    "0001": ("coinout", "totalcoinout"),
+    "001C": ("basegamecoinout", "bggamecoinout", "coinout"),
+    "001D": ("progwin", "progscattercoinout"),
+}
+
+
+def game_amount_state_keys_for_sas_code(code: str) -> tuple[str, ...]:
+    return _GAME_SAS_AMOUNT_STATE_KEYS.get((code or "").strip().upper(), ())
 
 
 def default_verify_column_visible(col: int) -> bool:
@@ -448,6 +683,417 @@ def _extract_unc_host(scan_root: str) -> str:
     return extract_ip_from_path(s)
 
 
+def should_skip_cabinet_reload(
+    *,
+    scan_root: str,
+    loaded_scan_root: str,
+    machine_state_loaded: bool,
+) -> bool:
+    """True when cabinet XML for *scan_root* is already in memory."""
+    sr = (scan_root or "").strip()
+    if not machine_state_loaded or not sr:
+        return False
+    return sr == (loaded_scan_root or "").strip()
+
+
+def meter_fetch_display_action(
+    *,
+    cached_result: object | None,
+    fetch_running: bool,
+    user_already_applied: bool = False,
+) -> str:
+    """Get Meters action: ``apply`` | ``wait`` | ``capture``."""
+    if fetch_running:
+        return "wait"
+    if cached_result is not None and not user_already_applied:
+        return "apply"
+    return "capture"
+
+
+def format_bill_amount_display(amount_cents: int) -> str:
+    """Amount column: dollars without ``$`` (e.g. ``208.00``)."""
+    cents = max(0, int(amount_cents))
+    return f"{cents / 100.0:.2f}"
+
+
+def format_bill_reject_count_label(count: str | None) -> str:
+    """Footer under BILL IN: ``BILL REJECT COUNT 0``."""
+    raw = (count or "").strip()
+    return f"BILL REJECT COUNT {raw}" if raw else "BILL REJECT COUNT"
+
+
+def prepare_bill_table_body_rows(
+    bill_rows: list | tuple,
+    *,
+    direction: str = "in",
+) -> tuple[list, dict[str, int] | None]:
+    """
+    Expand aggregate-only fallback to the full denomination catalog (zeros per row).
+
+    Returns ``(body_rows, aggregate_totals)`` where *aggregate_totals* is set only
+    for the single-row 000B fallback path.
+    """
+    from network.sas_serial_meters import (
+        SAS_BILL_OUT_DENOMINATIONS,
+        SasBillDenomRow,
+        expand_aggregate_bill_to_catalog,
+        infer_aggregate_bill_face_cents,
+        merge_bill_rows_with_catalog,
+    )
+
+    rows = list(bill_rows or ())
+    if (
+        len(rows) == 1
+        and isinstance(rows[0], SasBillDenomRow)
+        and rows[0].source == "aggregate"
+    ):
+        agg = rows[0]
+        catalog = SAS_BILL_OUT_DENOMINATIONS if direction == "out" else None
+        if catalog is not None:
+            display = expand_aggregate_bill_to_catalog(agg, direction="out", catalog=catalog)
+        else:
+            display = expand_aggregate_bill_to_catalog(agg, direction="in")
+        if infer_aggregate_bill_face_cents(int(agg.amount_cents), int(agg.count)) is not None:
+            return list(display), None
+        return list(display), {
+            "count": int(agg.count),
+            "amount_cents": int(agg.amount_cents),
+        }
+    return rows, None
+
+
+def verify_bills_table_spec(
+    *,
+    column_count: int,
+    headers: tuple[str, ...],
+    vertical_header_hidden: bool,
+    row_count: int | None = None,
+) -> list[str]:
+    """Self-check Bills table layout; empty list means the spec is satisfied."""
+    issues: list[str] = []
+    if column_count != _BILLS_TABLE_COLUMN_COUNT:
+        issues.append(f"expected {_BILLS_TABLE_COLUMN_COUNT} columns, got {column_count}")
+    if headers != _BILLS_TABLE_HEADERS:
+        issues.append(f"headers must be {_BILLS_TABLE_HEADERS!r}, got {headers!r}")
+    if not vertical_header_hidden:
+        issues.append("vertical row header must be hidden")
+    if row_count is not None and row_count != _BILLS_CATALOG_ROW_COUNT + 1:
+        issues.append(
+            f"expected {_BILLS_CATALOG_ROW_COUNT + 1} rows (denoms + TOTAL), got {row_count}"
+        )
+    return issues
+
+
+def verify_coins_table_spec(
+    *,
+    column_count: int,
+    headers: tuple[str, ...],
+    vertical_header_hidden: bool,
+    row_count: int | None = None,
+) -> list[str]:
+    """Self-check Coins table layout; empty list means the spec is satisfied."""
+    issues: list[str] = []
+    if column_count != _COINS_TABLE_COLUMN_COUNT:
+        issues.append(f"expected {_COINS_TABLE_COLUMN_COUNT} columns, got {column_count}")
+    if headers != _COINS_TABLE_HEADERS:
+        issues.append(f"headers must be {_COINS_TABLE_HEADERS!r}, got {headers!r}")
+    if not vertical_header_hidden:
+        issues.append("vertical row header must be hidden")
+    if row_count is not None and row_count != _COINS_CATALOG_ROW_COUNT + 1:
+        issues.append(
+            f"expected {_COINS_CATALOG_ROW_COUNT + 1} rows (denoms + TOTAL), got {row_count}"
+        )
+    return issues
+
+
+def bills_group_box_stylesheet(*, light: bool) -> str:
+    if light:
+        return (
+            "QGroupBox { font-weight: bold; border: 1px solid #b0b0b0; margin-top: 14px; "
+            "padding-top: 8px; }"
+            "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; "
+            "padding: 2px 12px; background-color: #c8d4e0; color: #1a1a1a; }"
+        )
+    return (
+        "QGroupBox { font-weight: bold; border: 1px solid #555555; margin-top: 14px; "
+        "padding-top: 8px; }"
+        "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; "
+        "padding: 2px 12px; background-color: #3a4550; }"
+    )
+
+
+def bills_table_stylesheet(*, light: bool) -> str:
+    """Compact BILL IN/OUT tables — matches Master tab density."""
+    if light:
+        return (
+            "QTableWidget { gridline-color: #c0c0c0; background: #ffffff; font-size: 9pt; }"
+            "QTableWidget::item { padding: 0px 4px; }"
+            "QHeaderView::section { background-color: #c8d4e0; color: #1a1a1a; "
+            "font-weight: bold; font-size: 9pt; border: 1px solid #c0c0c0; "
+            "padding: 2px 4px; }"
+        )
+    return (
+        "QTableWidget { gridline-color: #555555; font-size: 9pt; }"
+        "QTableWidget::item { padding: 0px 4px; }"
+        "QHeaderView::section { background-color: #3a4550; font-weight: bold; "
+        "font-size: 9pt; border: 1px solid #555555; padding: 2px 4px; }"
+    )
+
+
+def meter_panel_group_box_stylesheet(*, light: bool) -> str:
+    return bills_group_box_stylesheet(light=light)
+
+
+def master_tab_group_box_stylesheet(*, light: bool) -> str:
+    """Compact EGM-style group boxes for the Master tab."""
+    if light:
+        return (
+            "QGroupBox { font-weight: bold; font-size: 9pt; border: 1px solid #b0b0b0; "
+            "margin-top: 6px; padding: 2px 6px 4px 6px; }"
+            "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; "
+            "padding: 1px 8px; background-color: #c8d4e0; color: #1a1a1a; }"
+        )
+    return (
+        "QGroupBox { font-weight: bold; font-size: 9pt; border: 1px solid #555555; "
+        "margin-top: 6px; padding: 2px 6px 4px 6px; }"
+        "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; "
+        "padding: 1px 8px; background-color: #3a4550; }"
+    )
+
+
+def master_cancelled_row_stylesheet(*, light: bool) -> str:
+    border = "#b0b0b0" if light else "#555555"
+    bg = "#f5f5f5" if light else "#2a2a2a"
+    return (
+        f"QGroupBox {{ border: 1px solid {border}; margin-top: 4px; padding: 2px 6px; "
+        f"background: {bg}; font-size: 9pt; }}"
+        "QGroupBox::title { subcontrol-origin: margin; left: 0px; padding: 0px; "
+        "width: 0px; height: 0px; }"
+    )
+
+
+def lookup_normalized_machine_value(state: dict[str, str], *keys: str) -> str:
+    """Find the first matching value in *state* using normalized key names."""
+    if not state or not keys:
+        return ""
+    norm: dict[str, str] = {}
+    for k, v in state.items():
+        nk = re.sub(r"[^a-z0-9]+", "", str(k).lower())
+        if nk:
+            norm[nk] = str(v).strip()
+    for key in keys:
+        nk = re.sub(r"[^a-z0-9]+", "", key.lower())
+        if nk in norm and norm[nk]:
+            return norm[nk]
+    return ""
+
+
+def format_transfer_count_display(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return "0"
+    cleaned = text.replace(",", "")
+    if re.fullmatch(r"\d+", cleaned):
+        return str(int(cleaned))
+    return text
+
+
+def meter_tabs_stylesheet() -> str:
+    """Center meter category tabs (Accounting / Game / …) like the EGM UI."""
+    return "QTabWidget::tab-bar { alignment: center; }"
+
+
+def meter_subpanel_form_layout() -> QFormLayout:
+    """Compact label/value form; caller wraps with ``center_layout_in_group_box``."""
+    form = QFormLayout()
+    form.setContentsMargins(0, 0, 0, 0)
+    form.setVerticalSpacing(0)
+    form.setHorizontalSpacing(8)
+    form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+    form.setLabelAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
+    form.setFormAlignment(
+        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+    )
+    return form
+
+
+def center_layout_in_group_box(box: QGroupBox, inner: QLayout) -> None:
+    """Place *inner* centered horizontally and vertically inside *box*."""
+    holder = QWidget()
+    holder.setLayout(inner)
+    outer = QVBoxLayout(box)
+    outer.setContentsMargins(4, 8, 4, 8)
+    outer.addStretch(1)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    row.addWidget(holder)
+    row.addStretch(1)
+    outer.addLayout(row)
+    outer.addStretch(1)
+
+
+def center_widget_in_panel(layout: QVBoxLayout, widget: QWidget) -> None:
+    """Center *widget* in a tab panel (horizontal + vertical)."""
+    layout.addStretch(1)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    row.addWidget(widget)
+    row.addStretch(1)
+    layout.addLayout(row)
+    layout.addStretch(1)
+
+
+def center_table_in_group_box(box: QGroupBox, table: QTableWidget) -> None:
+    """Center a compact meter table inside a group box."""
+    outer = QVBoxLayout(box)
+    outer.setContentsMargins(4, 8, 4, 8)
+    outer.addStretch(1)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    row.addWidget(table)
+    row.addStretch(1)
+    outer.addLayout(row)
+    outer.addStretch(1)
+
+
+def format_master_amount_display(raw: str, *, symbol: str = "$") -> str:
+    """Master tab currency: always ``$208.00`` (two decimals, zero -> ``$0.00``)."""
+    text = (raw or "").strip() or "0"
+    dollars = _credits_to_dollar_amount(text)
+    if dollars is None:
+        return "—"
+    return f"{symbol}{dollars:.2f}"
+
+
+def master_dollar_amount(raw: str) -> float:
+    dollars = _credits_to_dollar_amount((raw or "").strip() or "0")
+    return float(dollars) if dollars is not None else 0.0
+
+
+def compute_master_summary(values: dict[str, str]) -> dict[str, float | None]:
+    """Derived Master-tab totals from raw meter strings."""
+    credit_in = sum(master_dollar_amount(values.get(c, "0")) for c in MASTER_CREDIT_IN_CODES)
+    credit_out = sum(master_dollar_amount(values.get(c, "0")) for c in MASTER_CREDIT_OUT_CODES)
+    total = credit_in - credit_out
+    inout_pct = (credit_out / credit_in * 100.0) if credit_in > 0 else None
+    return {
+        "credit_in": credit_in,
+        "credit_out": credit_out,
+        "total_credit": total,
+        "inout_pct": inout_pct,
+    }
+
+
+def format_signed_dollar_amount(amount: float, *, symbol: str = "$") -> str:
+    if amount < 0:
+        return f"-{symbol}{abs(amount):.2f}"
+    return f"{symbol}{amount:.2f}"
+
+
+def format_game_pct_display(value: float | None) -> str:
+    if value is None:
+        return "—"
+    return f"{value:.2f}%"
+
+
+def compute_game_summary(
+    *,
+    played_raw: str,
+    won_raw: str,
+    lost_raw: str,
+    bet_raw: str,
+    win_raw: str,
+) -> dict[str, float | int | None]:
+    """Derived Game-tab counters and yield from raw meter strings."""
+    played = int(format_transfer_count_display(played_raw))
+    won = int(format_transfer_count_display(won_raw))
+    lost_text = format_transfer_count_display(lost_raw)
+    if lost_text and lost_text != "0":
+        lost = int(lost_text)
+    elif played or won:
+        lost = max(played - won, 0)
+    else:
+        lost = 0
+    bet = master_dollar_amount(bet_raw)
+    win = master_dollar_amount(win_raw)
+    bet_minus_win = bet - win
+    yield_pct = (win / bet * 100.0) if bet > 0 else None
+    hold_pct = ((bet - win) / bet * 100.0) if bet > 0 else None
+    return {
+        "played": played,
+        "won": won,
+        "lost": lost,
+        "bet": bet,
+        "win": win,
+        "bet_minus_win": bet_minus_win,
+        "yield_pct": yield_pct,
+        "hold_pct": hold_pct,
+    }
+
+
+def verify_game_tab_spec(
+    *,
+    group_titles: tuple[str, ...],
+    perf_label_keys: frozenset[str],
+    residual_label_keys: frozenset[str],
+    has_yield_chart: bool,
+) -> list[str]:
+    """Self-check Game tab structure against the cabinet reference layout."""
+    issues: list[str] = []
+    expected_titles = ("Performance Meters", "Residual Credit Removal Feature", "Machine Yield Chart")
+    for title in expected_titles:
+        if title not in group_titles:
+            issues.append(f"missing group box {title!r}")
+    expected_perf = frozenset(
+        {
+            "played",
+            "won",
+            "lost",
+            "bet",
+            "win",
+            "game_win",
+            "bonus_win",
+            "sas_bonus",
+            "prog_win",
+            "bet_minus_win",
+            "yield",
+            "hold",
+        }
+    )
+    missing_perf = expected_perf - perf_label_keys
+    if missing_perf:
+        issues.append(f"missing performance labels: {sorted(missing_perf)}")
+    expected_residual = frozenset(k.lower().replace(" ", "_") for k, _ in GAME_RESIDUAL_ROWS)
+    missing_residual = expected_residual - residual_label_keys
+    if missing_residual:
+        issues.append(f"missing residual labels: {sorted(missing_residual)}")
+    if not has_yield_chart:
+        issues.append("Machine Yield Chart panel required")
+    return issues
+
+
+def verify_master_tab_spec(
+    *,
+    group_titles: tuple[str, ...],
+    value_label_codes: frozenset[str],
+    has_credit_section_totals: bool,
+) -> list[str]:
+    """Self-check Master tab structure against the cabinet reference layout."""
+    issues: list[str] = []
+    expected_titles = ("TOTAL CREDIT", "HANDPAY OUT", "WAGERED CREDITS")
+    for title in expected_titles:
+        if title not in group_titles:
+            issues.append(f"missing group box {title!r}")
+    missing = frozenset(MASTER_TRACKED_CODES) - value_label_codes
+    if missing:
+        issues.append(f"missing value labels for codes: {sorted(missing)}")
+    if not has_credit_section_totals:
+        issues.append("Credit In / Credit Out section totals required")
+    return issues
+
+
 class CompareWorker(QObject):
     finished = Signal(object)  # dict[str, str] or error string
     error = Signal(str)
@@ -464,18 +1110,20 @@ class CompareWorker(QObject):
             # during initialization or module import.
             from network.scanner_utils import is_smb_alive
             from network.accounting_state_loader import load_machine_accounting_state_pure
+            from network.goldclub_paths import layout_requires_smb, resolve_goldclub_layout
 
-            # Robust IP extraction: prefer scan_root, fall back to explicit target_ip.
+            layout = resolve_goldclub_layout(self._scan_root)
             host = _extract_unc_host(self._scan_root) or self._target_ip
             try:
                 sys.__stdout__.write(
                     f"\n[WORKER-THREAD] Thread started (py_tid={threading.get_ident()}) "
-                    f"for host='{host}' scan_root='{self._scan_root}'\n"
+                    f"for host='{host}' scan_root='{self._scan_root}' "
+                    f"layout={layout.kind.value if layout else 'none'}\n"
                 )
                 sys.__stdout__.flush()
             except Exception:
                 pass
-            if host and not is_smb_alive(host, timeout=1.0):
+            if layout_requires_smb(layout) and host and not is_smb_alive(host, timeout=1.0):
                 try:
                     sys.__stdout__.write(f"[WORKER-THREAD] SMB Check FAILED for {host}\n")
                     sys.__stdout__.flush()
@@ -485,7 +1133,7 @@ class CompareWorker(QObject):
                 self.finished.emit({})
                 return
             try:
-                sys.__stdout__.write(f"[WORKER-THREAD] SMB Alive. Handing off to pure loader.\n")
+                sys.__stdout__.write(f"[WORKER-THREAD] Loading cabinet state (local/USB/UNC).\n")
                 sys.__stdout__.flush()
             except Exception:
                 pass
@@ -531,10 +1179,21 @@ class MeterFetchWorker(QObject):
     finished = Signal(object)  # SasMeterFetchResult
     error = Signal(str)
 
-    def __init__(self, *, com_port: str, com_baud: int) -> None:
+    def __init__(
+        self,
+        *,
+        com_port: str,
+        com_baud: int,
+        skip_bill_polls: bool = True,
+        fast_capture: bool = False,
+        cached_profile: tuple[str, int, bool] | None = None,
+    ) -> None:
         super().__init__(None)
         self._com_port = (com_port or "").strip()
         self._com_baud = int(com_baud)
+        self._skip_bill_polls = skip_bill_polls
+        self._fast_capture = fast_capture
+        self._cached_profile = cached_profile
 
     def run(self) -> None:
         try:
@@ -544,6 +1203,9 @@ class MeterFetchWorker(QObject):
                 port=self._com_port,
                 baud=self._com_baud,
                 force_capture=True,
+                skip_bill_polls=self._skip_bill_polls,
+                fast_capture=self._fast_capture,
+                cached_profile=self._cached_profile,
             )
             self.finished.emit(result)
         except Exception as exc:  # noqa: BLE001
@@ -569,13 +1231,31 @@ class SasVerifyDialog(QDialog):
         self._onehand_check_ip = ""
         self._onehand_check_pending = False
         self._last_parsed_rows: list[Sas6FRow] = []
-        self._last_bill_rows: list = []
+        self._last_bill_in_rows: list = []
+        self._last_bill_out_rows: list = []
         self._sas_2f_values: dict[str, str] = {}
         self._currency = EgmCurrency()
         self._show_dollars = False
         self._column_actions: dict[int, QAction] = {}
+        self._columns_menu: QMenu | None = None
+        self._prefetch_started = False
+        self._cached_meter_result: object | None = None
+        self._meter_fetch_error: str | None = None
+        self._meter_fetch_user_clicked_apply = False
+        self._loaded_cabinet_scan_root = ""
+        self._cabinet_compare_prefetch = False
+        self._meter_fetch_prefetch = False
+        self._accept_worker_signals = True
+        self._last_displayed_paste_fingerprint = ""
 
         self.setWindowTitle("SAS accounting verification")
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        self.setMinimumSize(800, 560)
         self.resize(1180, 780)
 
         root = QVBoxLayout(self)
@@ -583,7 +1263,9 @@ class SasVerifyDialog(QDialog):
         root.addWidget(self._build_view_menu_bar())
         root.addWidget(
             QLabel(
-                "Get Meters reads SAS over COM, then loads cabinet values from Scan root. "
+                "Cabinet values prefetch when this dialog opens. "
+                "Click Get Meters to capture or review serial SAS data; "
+                "click again to refresh from COM. "
                 "Or paste TX/RX and click Compare."
             )
         )
@@ -620,12 +1302,20 @@ class SasVerifyDialog(QDialog):
         scan_row.addWidget(self._com_port_combo)
         self._btn_get_meters = QPushButton("Get Meters")
         self._btn_get_meters.setToolTip(
-            "Poll extended meters over COM (IGT 6F batches), paste TX/RX, then load Machine "
-            "values from Scan root (DeviceManagerData.xml on the cabinet)."
+            "Capture SAS 6F meters over COM (IGT five polls). "
+            "Capture starts in the background when this dialog opens. "
+            "Bill LPs ($31-$37) are skipped for speed; Bills tab uses 6F 000B + cabinet stacker."
         )
         self._btn_get_meters.clicked.connect(self._on_get_meters_clicked)
         scan_row.addWidget(self._btn_get_meters)
         root.addLayout(scan_row)
+
+        self._prefetch_status_label = QLabel("")
+        self._prefetch_status_label.setWordWrap(True)
+        self._prefetch_status_label.setStyleSheet(
+            "QLabel { color: #475569; padding: 2px 0; }"
+        )
+        root.addWidget(self._prefetch_status_label)
 
         self._onehand_warning = QLabel("")
         self._onehand_warning.setWordWrap(True)
@@ -641,76 +1331,89 @@ class SasVerifyDialog(QDialog):
         self._onehand_check_timer.setSingleShot(True)
         self._onehand_check_timer.setInterval(450)
         self._onehand_check_timer.timeout.connect(self._run_onehand_check)
-        self._scan_root_edit.textChanged.connect(self._schedule_onehand_check)
+        self._scan_root_edit.textChanged.connect(self._on_scan_root_edit_changed)
 
         self._paste = QTextEdit()
         self._paste.setPlaceholderText("Paste TX>= / RX<= lines here…")
         self._paste.setMinimumHeight(56)
         self._paste.setMaximumHeight(160)
 
-        self._table = QTableWidget(0, COL_COUNT)
-        self._table.setHorizontalHeaderLabels(
-            [
-                "6F Code",
-                "Wire ID",
-                "IGT $2F",
-                "IGT Meter",
-                "Meter Name",
-                "SAS (6F)",
-                "SAS ($2F)",
-                "Machine",
-                "Status",
-            ]
-        )
-        self._table.setColumnWidth(COL_6F_CODE, 72)
-        self._table.setColumnWidth(COL_WIRE_ID, 72)
-        self._table.setColumnWidth(COL_IGT_POLL, 64)
-        self._table.setColumnWidth(COL_IGT_METER, 88)
-        self._table.setColumnWidth(COL_METER_NAME, 280)
+        self._table = self._make_verify_table_widget()
+        self._verify_tables: tuple[QTableWidget, ...] = (self._table,)
+        self._master_value_labels: dict[str, QLabel] = {}
+        self._master_value_label_codes: dict[str, str] = {}
+        self._master_credit_in_total: QLabel | None = None
+        self._master_credit_out_total: QLabel | None = None
+        self._game_perf_labels: dict[str, QLabel] = {}
+        self._game_residual_labels: dict[str, QLabel] = {}
+        self._game_residual_state_keys: dict[str, tuple[str, ...]] = {}
+        self._game_yield_chart_label: QLabel | None = None
+        self._game_theme_combo: QComboBox | None = None
+        self._game_paytable_combo: QComboBox | None = None
+        self._theme_perf_by_paytable: dict[str, dict[str, dict[str, str]]] = {}
+        self._game_catalog_folders: dict[str, str] = {}
+        self._game_theme_ids: list[str] = []
+        self._transfer_amount_labels: dict[str, QLabel] = {}
+        self._transfer_count_labels: dict[str, QLabel] = {}
+        self._transfer_amount_codes: dict[str, str] = {}
+        self._transfer_count_key_ids: dict[str, str] = {}
+        self._transfer_promo_out_keys: tuple[str, ...] = TRANSFER_PROMO_TICKET_OUT_STATE_KEYS
+        self._security_value_labels: dict[str, QLabel] = {}
+        self._security_state_keys: dict[str, tuple[str, ...]] = {}
+        self._game_tab = self._build_game_tab()
+        self._master_tab = self._build_master_tab()
+        self._transfer_tab = self._build_transfer_tab()
+        self._security_tab = self._build_security_tab()
         self._load_column_visibility_prefs()
         self._apply_column_visibility()
-        self._table.horizontalHeader().setStretchLastSection(True)
-        # Allow selecting whole rows so Ctrl+C never drops the Meter Name column.
-        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._table.setMinimumHeight(320)
-        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._table.customContextMenuRequested.connect(self._on_table_context_menu)
+        for tbl in self._verify_tables:
+            tbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            tbl.customContextMenuRequested.connect(
+                lambda pos, t=tbl: self._on_verify_table_context_menu(t, pos)
+            )
 
-        self._bills_table = QTableWidget(0, 6)
-        self._bills_table.setHorizontalHeaderLabels(
-            ["Bill", "Amount", "Count", "SAS", "Machine", "Status"]
-        )
-        self._bills_table.setColumnWidth(0, 96)
-        self._bills_table.setColumnWidth(1, 96)
-        self._bills_table.setColumnWidth(2, 72)
-        self._bills_table.setColumnWidth(3, 52)
-        self._bills_table.setColumnWidth(4, 72)
-        self._bills_table.setColumnWidth(5, 88)
-        self._bills_table.horizontalHeader().setStretchLastSection(True)
-        self._bills_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._bills_table.setMinimumHeight(240)
+        bills_in_box = QGroupBox("BILL IN")
+        self._bills_table = self._make_bills_table_widget()
         self._bills_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._bills_table.customContextMenuRequested.connect(self._on_bills_table_context_menu)
-        self._bill_reject_label = QLabel("BILL REJECT COUNT —")
-        bills_box = QGroupBox("BILL IN")
-        bills_layout = QVBoxLayout(bills_box)
-        bills_layout.addWidget(self._bills_table)
-        bills_layout.addWidget(self._bill_reject_label)
+        self._bills_table.customContextMenuRequested.connect(self._on_bills_in_table_context_menu)
+        center_table_in_group_box(bills_in_box, self._bills_table)
+        bills_out_box = QGroupBox("BILL OUT")
+        self._bills_out_table = self._make_bills_table_widget()
+        self._bills_out_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._bills_out_table.customContextMenuRequested.connect(self._on_bills_out_table_context_menu)
+        center_table_in_group_box(bills_out_box, self._bills_out_table)
+        self._bill_reject_label = QLabel(format_bill_reject_count_label(None))
+        self._bill_reject_label.setContentsMargins(4, 2, 4, 0)
+        bills_row = QHBoxLayout()
+        bills_row.setContentsMargins(4, 4, 4, 0)
+        bills_row.setSpacing(6)
+        bills_row.addWidget(bills_in_box, stretch=1)
+        bills_row.addWidget(bills_out_box, stretch=1)
         bills_tab = QWidget()
         bills_tab_layout = QVBoxLayout(bills_tab)
         bills_tab_layout.setContentsMargins(0, 0, 0, 0)
-        bills_tab_layout.addWidget(bills_box)
-        bills_hint = QLabel(
-            "Per-denom bill counts use SAS $31–$37 when the EGM answers those polls. "
-            "If not, Total Bills In falls back to SAS 6F 000B and cabinet "
-            "notesInStackerCnt/Amt from DeviceManagerData."
-        )
-        bills_hint.setWordWrap(True)
-        bills_tab_layout.addWidget(bills_hint)
+        bills_tab_layout.addLayout(bills_row)
+        self._bill_reject_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        bills_tab_layout.addWidget(self._bill_reject_label)
+        self._bills_in_box = bills_in_box
+        self._bills_out_box = bills_out_box
+
+        self._coin_tables: dict[str, QTableWidget] = {}
+        self._coin_boxes: dict[str, QGroupBox] = {}
+        coins_tab = self._build_coins_tab()
+        self._apply_meter_panel_styles()
 
         self._meter_tabs = QTabWidget()
-        self._meter_tabs.addTab(self._table, "Accounting")
-        self._meter_tabs.addTab(bills_tab, "Bills")
+        self._meter_tabs.setStyleSheet(meter_tabs_stylesheet())
+        self._meter_tabs.addTab(self._table, _METER_TAB_NAMES[TAB_ACCOUNTING])
+        self._meter_tabs.addTab(self._game_tab, _METER_TAB_NAMES[TAB_GAME])
+        self._meter_tabs.addTab(self._master_tab, _METER_TAB_NAMES[TAB_MASTER])
+        self._meter_tabs.addTab(bills_tab, _METER_TAB_NAMES[TAB_BILLS])
+        self._meter_tabs.addTab(coins_tab, _METER_TAB_NAMES[TAB_COINS])
+        self._meter_tabs.addTab(self._transfer_tab, _METER_TAB_NAMES[TAB_TRANSFER])
+        self._meter_tabs.addTab(self._security_tab, _METER_TAB_NAMES[TAB_SECURITY])
+        self._meter_tabs.currentChanged.connect(self._on_meter_tab_changed)
+        self._on_meter_tab_changed(self._meter_tabs.currentIndex())
 
         self._content_split = QSplitter(Qt.Orientation.Vertical)
         self._content_split.addWidget(self._paste)
@@ -726,7 +1429,7 @@ class SasVerifyDialog(QDialog):
         # Ctrl+C copies FULL rows (all columns) as TSV from whichever meter tab has focus.
         copy_sc = QShortcut(QKeySequence.StandardKey.Copy, self._meter_tabs)
         copy_sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        copy_sc.activated.connect(self._copy_focused_table_selection_tsv)
+        copy_sc.activated.connect(self._copy_focused_table_row_tsv)
 
         row = QHBoxLayout()
         row.addStretch(1)
@@ -764,7 +1467,649 @@ class SasVerifyDialog(QDialog):
             app.aboutToQuit.connect(lambda: self._stop_onehand_check_thread(wait_ms=500))
 
     def _cabinet_ip_from_scan_root(self) -> str:
-        return _extract_unc_host(self._scan_root_edit.text() or self._scan_root)
+        from network.health_monitor import is_valid_remote_cabinet_ip
+
+        raw = _extract_unc_host(self._scan_root_edit.text() or self._scan_root)
+        return raw if is_valid_remote_cabinet_ip(raw) else ""
+
+    def _onehand_check_uses_local(self) -> bool:
+        from network.goldclub_paths import GoldclubLayoutKind, resolve_goldclub_layout
+
+        sr = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        if not sr:
+            return True
+        layout = resolve_goldclub_layout(sr)
+        if layout and layout.kind in (
+            GoldclubLayoutKind.USB_EXPORT,
+            GoldclubLayoutKind.LOCAL_CABINET,
+        ):
+            return True
+        return not self._cabinet_ip_from_scan_root()
+
+    @staticmethod
+    def _make_verify_table_widget() -> QTableWidget:
+        table = QTableWidget(0, COL_COUNT)
+        table.setHorizontalHeaderLabels(
+            [
+                "6F Code",
+                "Wire ID",
+                "IGT $2F",
+                "IGT Meter",
+                "Meter Name",
+                "SAS (6F)",
+                "SAS ($2F)",
+                "Machine",
+                "Status",
+            ]
+        )
+        table.setColumnWidth(COL_6F_CODE, 72)
+        table.setColumnWidth(COL_WIRE_ID, 72)
+        table.setColumnWidth(COL_IGT_POLL, 64)
+        table.setColumnWidth(COL_IGT_METER, 88)
+        table.setColumnWidth(COL_METER_NAME, 280)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setMinimumHeight(320)
+        return table
+
+    def _build_game_tab(self) -> QWidget:
+        """EGM-style Performance Meters / Residual Credit / Yield chart layout."""
+        body = QWidget()
+        root = QVBoxLayout(body)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(4)
+
+        filter_row = QHBoxLayout()
+        filter_row.setContentsMargins(0, 0, 0, 0)
+        filter_row.setSpacing(6)
+        self._game_theme_combo = QComboBox()
+        self._game_theme_combo.addItem(GAME_THEME_TOTAL)
+        theme_font = self._game_theme_combo.font()
+        theme_font.setPointSize(9)
+        self._game_theme_combo.setFont(theme_font)
+        self._game_theme_combo.setMinimumWidth(180)
+        self._game_theme_combo.setMaximumWidth(280)
+        self._game_theme_combo.currentIndexChanged.connect(self._on_game_theme_filter_changed)
+        filter_row.addWidget(self._game_theme_combo)
+        self._game_paytable_combo = QComboBox()
+        self._game_paytable_combo.addItem(GAME_THEME_TOTAL)
+        self._game_paytable_combo.setEnabled(False)
+        pay_font = self._game_paytable_combo.font()
+        pay_font.setPointSize(9)
+        self._game_paytable_combo.setFont(pay_font)
+        self._game_paytable_combo.setMinimumWidth(120)
+        self._game_paytable_combo.setMaximumWidth(180)
+        self._game_paytable_combo.currentIndexChanged.connect(self._on_game_paytable_filter_changed)
+        filter_row.addWidget(self._game_paytable_combo)
+        denom_combo = QComboBox()
+        denom_combo.addItem(GAME_THEME_TOTAL)
+        denom_combo.setEnabled(False)
+        denom_font = denom_combo.font()
+        denom_font.setPointSize(9)
+        denom_combo.setFont(denom_font)
+        denom_combo.setMaximumWidth(140)
+        filter_row.addWidget(denom_combo)
+        root.addLayout(filter_row)
+
+        content = QHBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(6)
+
+        def _row_label(text: str, *, indent: bool = False, bold: bool = False) -> QLabel:
+            lbl = QLabel(text)
+            if indent:
+                lbl.setContentsMargins(10, 0, 0, 0)
+            font = lbl.font()
+            font.setPointSize(9)
+            font.setBold(bold)
+            lbl.setFont(font)
+            lbl.setMinimumHeight(18)
+            lbl.setMaximumHeight(20)
+            return lbl
+
+        def _value_label(*, bold: bool = False) -> QLabel:
+            lbl = QLabel("—")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            font = lbl.font()
+            font.setPointSize(9)
+            font.setBold(bold)
+            lbl.setFont(font)
+            lbl.setMinimumHeight(18)
+            lbl.setMaximumHeight(20)
+            return lbl
+
+        def _perf_row(
+            form: QFormLayout,
+            title: str | QLabel,
+            key: str,
+            *,
+            bold_value: bool = False,
+        ) -> None:
+            lbl = _value_label(bold=bold_value)
+            self._game_perf_labels[key] = lbl
+            form.addRow(title, lbl)
+
+        perf = QGroupBox("Performance Meters")
+        perf_form = meter_subpanel_form_layout()
+        _perf_row(perf_form, _row_label("Games Played"), "played")
+        _perf_row(perf_form, _row_label("Games Won"), "won")
+        _perf_row(perf_form, _row_label("Games Lost"), "lost")
+        _perf_row(perf_form, _row_label("Bet"), "bet")
+        _perf_row(perf_form, _row_label("Win", bold=True), "win", bold_value=True)
+        _perf_row(perf_form, _row_label("Game Win", indent=True), "game_win")
+        _perf_row(perf_form, _row_label("Bonus Win", indent=True), "bonus_win")
+        _perf_row(perf_form, _row_label("SAS Bonus Win", indent=True), "sas_bonus")
+        _perf_row(perf_form, _row_label("Progr. Win", indent=True), "prog_win")
+        _perf_row(perf_form, _row_label("Bet - Win", bold=True), "bet_minus_win", bold_value=True)
+        _perf_row(perf_form, _row_label("Machine Yield", bold=True), "yield", bold_value=True)
+        _perf_row(perf_form, _row_label("Machine Hold", bold=True), "hold", bold_value=True)
+        center_layout_in_group_box(perf, perf_form)
+
+        residual = QGroupBox("Residual Credit Removal Feature")
+        residual_form = meter_subpanel_form_layout()
+        for label, state_keys in GAME_RESIDUAL_ROWS:
+            key = label.lower().replace(" ", "_")
+            val = _value_label()
+            self._game_residual_labels[key] = val
+            self._game_residual_state_keys[key] = state_keys
+            residual_form.addRow(_row_label(label), val)
+        center_layout_in_group_box(residual, residual_form)
+
+        left_inner = QVBoxLayout()
+        left_inner.setContentsMargins(0, 0, 0, 0)
+        left_inner.setSpacing(4)
+        left_inner.addWidget(perf)
+        left_inner.addWidget(residual)
+        left_panel = QWidget()
+        left_panel.setLayout(left_inner)
+
+        chart_box = QGroupBox("Machine Yield Chart")
+        chart_layout = QVBoxLayout(chart_box)
+        chart_layout.setContentsMargins(8, 8, 8, 8)
+        self._game_yield_chart_label = QLabel("—")
+        self._game_yield_chart_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chart_font = self._game_yield_chart_label.font()
+        chart_font.setPointSize(22)
+        chart_font.setBold(True)
+        self._game_yield_chart_label.setFont(chart_font)
+        chart_layout.addStretch(1)
+        chart_layout.addWidget(self._game_yield_chart_label)
+        chart_layout.addStretch(1)
+
+        self._game_perf_box = perf
+        self._game_residual_box = residual
+        self._game_chart_box = chart_box
+
+        content.addWidget(left_panel, stretch=1)
+        content.addWidget(chart_box, stretch=1)
+        root.addLayout(content, stretch=1)
+        return body
+
+    def _build_master_tab(self) -> QWidget:
+        """EGM-style Master summary matching cabinet meter UI layout."""
+        body = QWidget()
+        body.setObjectName("masterTabBody")
+        outer = QHBoxLayout(body)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(6)
+
+        def _value_label(*, bold: bool = False) -> QLabel:
+            lbl = QLabel("—")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            lbl.setMinimumHeight(18)
+            lbl.setMaximumHeight(20)
+            font = lbl.font()
+            font.setPointSize(9)
+            font.setBold(bold)
+            lbl.setFont(font)
+            return lbl
+
+        def _section_label(html: str) -> QLabel:
+            lbl = QLabel(html)
+            font = lbl.font()
+            font.setPointSize(9)
+            font.setBold(True)
+            lbl.setFont(font)
+            lbl.setMinimumHeight(18)
+            lbl.setMaximumHeight(20)
+            return lbl
+
+        def _sub_label(text: str) -> QLabel:
+            lbl = QLabel(text)
+            lbl.setContentsMargins(10, 0, 0, 0)
+            font = lbl.font()
+            font.setPointSize(9)
+            lbl.setFont(font)
+            lbl.setMinimumHeight(18)
+            lbl.setMaximumHeight(20)
+            return lbl
+
+        def _row(
+            form: QFormLayout,
+            title: str | QLabel,
+            key: str,
+            code: str,
+            *,
+            bold_value: bool = False,
+        ) -> None:
+            lbl = _value_label(bold=bold_value)
+            self._master_value_labels[key] = lbl
+            self._master_value_label_codes[key] = code
+            form.addRow(title, lbl)
+
+        credit = QGroupBox("TOTAL CREDIT")
+        credit_form = meter_subpanel_form_layout()
+        self._master_credit_in_total = _value_label(bold=True)
+        credit_form.addRow(_section_label("Credit In"), self._master_credit_in_total)
+        for title, code in MASTER_CREDIT_IN_ROWS:
+            _row(credit_form, _sub_label(title), f"in:{code}", code)
+        self._master_credit_out_total = _value_label(bold=True)
+        credit_form.addRow(_section_label("Credit Out"), self._master_credit_out_total)
+        for title, code in MASTER_CREDIT_OUT_ROWS:
+            _row(credit_form, _sub_label(title), f"out:{code}", code)
+        self._master_total_credit = _value_label(bold=True)
+        credit_form.addRow(_section_label("Total Credit"), self._master_total_credit)
+        self._master_inout_pct = _value_label(bold=True)
+        credit_form.addRow(_section_label("TOTAL IN-OUT %"), self._master_inout_pct)
+        center_layout_in_group_box(credit, credit_form)
+
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(4)
+
+        handpay = QGroupBox("HANDPAY OUT")
+        hp_form = meter_subpanel_form_layout()
+        _row(hp_form, _section_label("Cancelled Credits"), "hp:0003", "0003", bold_value=True)
+        _row(hp_form, _section_label("Total Jackpot"), "hp:0002", "0002", bold_value=True)
+        for title, code in MASTER_JACKPOT_SUB_ROWS:
+            _row(hp_form, _sub_label(title), f"hp:{code}", code)
+        center_layout_in_group_box(handpay, hp_form)
+        right.addWidget(handpay, stretch=1)
+
+        cancelled = QGroupBox("")
+        cancelled.setFlat(True)
+        c_form = meter_subpanel_form_layout()
+        _row(c_form, _section_label("Total Cancelled Credits"), "cancelled:0004", MASTER_CANCELLED_CODE)
+        center_layout_in_group_box(cancelled, c_form)
+        right.addWidget(cancelled, stretch=1)
+
+        wagered = QGroupBox("WAGERED CREDITS")
+        w_form = meter_subpanel_form_layout()
+        for title, code in MASTER_WAGERED_ROWS:
+            row_title = _sub_label(title)
+            row_title.setContentsMargins(0, 0, 0, 0)
+            _row(w_form, row_title, f"wager:{code}", code)
+        center_layout_in_group_box(wagered, w_form)
+        right.addWidget(wagered, stretch=1)
+
+        self._master_credit_box = credit
+        self._master_handpay_box = handpay
+        self._master_cancelled_box = cancelled
+        self._master_wagered_box = wagered
+
+        outer.addWidget(credit, stretch=1)
+        outer.addLayout(right, stretch=1)
+        return body
+
+    def _build_coins_tab(self) -> QWidget:
+        """EGM-style 2x2 COIN IN / OUT / TO DROP BOX / TO HOPPER panels."""
+        body = QWidget()
+        grid = QGridLayout(body)
+        grid.setContentsMargins(4, 4, 4, 4)
+        grid.setSpacing(6)
+        panel_positions = (
+            ("in", 0, 0),
+            ("out", 0, 1),
+            ("drop", 1, 0),
+            ("hopper", 1, 1),
+        )
+        titles = dict(_COINS_PANELS)
+        for panel_id, row, col in panel_positions:
+            box = QGroupBox(titles[panel_id])
+            table = self._make_coins_table_widget()
+            center_table_in_group_box(box, table)
+            self._coin_tables[panel_id] = table
+            self._coin_boxes[panel_id] = box
+            grid.addWidget(box, row, col)
+        return body
+
+    def _build_transfer_tab(self) -> QWidget:
+        """EGM-style TICKET / CASHLESS transfer panels."""
+        body = QWidget()
+        outer = QHBoxLayout(body)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(6)
+
+        def _cell_label(
+            text: str,
+            *,
+            bold: bool = False,
+            indent: bool = False,
+            align: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+        ) -> QLabel:
+            lbl = QLabel(text)
+            lbl.setAlignment(align)
+            font = lbl.font()
+            font.setPointSize(9)
+            font.setBold(bold)
+            lbl.setFont(font)
+            lbl.setMinimumHeight(18)
+            lbl.setMaximumHeight(20)
+            if indent:
+                lbl.setContentsMargins(10, 0, 0, 0)
+            return lbl
+
+        def _value_label(*, bold: bool = False, width: int = 76) -> QLabel:
+            lbl = _cell_label(
+                "—",
+                bold=bold,
+                align=Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            )
+            lbl.setMinimumWidth(width)
+            lbl.setMaximumWidth(width + 8)
+            return lbl
+
+        def _amount_label(*, bold: bool = False) -> QLabel:
+            return _value_label(bold=bold, width=76)
+
+        def _count_label(*, bold: bool = False) -> QLabel:
+            return _value_label(bold=bold, width=44)
+
+        def _register_amount(key: str, code: str, lbl: QLabel) -> None:
+            self._transfer_amount_labels[key] = lbl
+            self._transfer_amount_codes[key] = code
+
+        def _register_count(key: str, count_id: str, lbl: QLabel) -> None:
+            self._transfer_count_labels[key] = lbl
+            self._transfer_count_key_ids[key] = count_id
+
+        def _add_column_headers(grid: QGridLayout, row: int) -> int:
+            grid.addWidget(_cell_label(""), row, 0)
+            amt_hdr = _cell_label(
+                "Amount",
+                bold=True,
+                align=Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            )
+            amt_hdr.setMinimumWidth(76)
+            amt_hdr.setMaximumWidth(84)
+            cnt_hdr = _cell_label(
+                "Count",
+                bold=True,
+                align=Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            )
+            cnt_hdr.setMinimumWidth(44)
+            cnt_hdr.setMaximumWidth(52)
+            grid.addWidget(amt_hdr, row, 1)
+            grid.addWidget(cnt_hdr, row, 2)
+            return row + 1
+
+        def _add_section(
+            grid: QGridLayout,
+            row: int,
+            *,
+            prefix: str,
+            title: str,
+            amount_code: str,
+            count_id: str,
+            buckets: tuple[tuple[str, str], ...],
+        ) -> int:
+            amt_lbl = _amount_label(bold=True)
+            cnt_lbl = _count_label(bold=True)
+            _register_amount(f"{prefix}:total", amount_code, amt_lbl)
+            _register_count(f"{prefix}:total", count_id, cnt_lbl)
+            grid.addWidget(_cell_label(title, bold=True), row, 0)
+            grid.addWidget(amt_lbl, row, 1)
+            grid.addWidget(cnt_lbl, row, 2)
+            row += 1
+            for label, code in buckets:
+                sub_amt = _amount_label()
+                sub_cnt = _count_label()
+                slug = code or label.lower().replace("-", "").replace(" ", "")
+                key = f"{prefix}:{slug}"
+                _register_amount(key, code, sub_amt)
+                _register_count(key, f"bucket:{code}" if code else f"promo_out:{prefix}", sub_cnt)
+                grid.addWidget(_cell_label(label, indent=True), row, 0)
+                grid.addWidget(sub_amt, row, 1)
+                grid.addWidget(sub_cnt, row, 2)
+                row += 1
+            return row
+
+        def _add_count_only_row(
+            grid: QGridLayout,
+            row: int,
+            *,
+            prefix: str,
+            title: str,
+            count_id: str,
+        ) -> int:
+            cnt_lbl = _count_label(bold=True)
+            _register_count(f"{prefix}:{count_id}", count_id, cnt_lbl)
+            grid.addWidget(_cell_label(title, bold=True), row, 0, 1, 2)
+            grid.addWidget(cnt_lbl, row, 2)
+            return row + 1
+
+        def _build_panel(title: str, *, prefix: str, sections: list) -> QGroupBox:
+            box = QGroupBox(title)
+            grid = QGridLayout(box)
+            grid.setContentsMargins(4, 6, 4, 4)
+            grid.setVerticalSpacing(0)
+            grid.setHorizontalSpacing(8)
+            row = _add_column_headers(grid, 0)
+            for section in sections:
+                kind = section[0]
+                if kind == "section":
+                    _, sect_title, amount_code, count_id, buckets = section
+                    row = _add_section(
+                        grid,
+                        row,
+                        prefix=prefix,
+                        title=sect_title,
+                        amount_code=amount_code,
+                        count_id=count_id,
+                        buckets=buckets,
+                    )
+                elif kind == "count_only":
+                    _, sect_title, count_id = section
+                    row = _add_count_only_row(
+                        grid,
+                        row,
+                        prefix=prefix,
+                        title=sect_title,
+                        count_id=count_id,
+                    )
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 0)
+            grid.setColumnStretch(2, 0)
+            box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            center_layout_in_group_box(box, grid)
+            return box
+
+        ticket = _build_panel(
+            "TICKET",
+            prefix="ticket",
+            sections=[
+                (
+                    "section",
+                    "TICKET IN",
+                    TRANSFER_TICKET_IN_CODE,
+                    "ticket:in",
+                    TRANSFER_TICKET_IN_BUCKETS,
+                ),
+                (
+                    "section",
+                    "TICKET OUT",
+                    TRANSFER_TICKET_OUT_CODE,
+                    "ticket:out",
+                    TRANSFER_TICKET_OUT_BUCKETS,
+                ),
+                ("count_only", "ACCEPTED TICKETS", "ticket:accepted"),
+                ("count_only", "PRINTED TICKETS", "ticket:printed"),
+            ],
+        )
+        cashless = _build_panel(
+            "CASHLESS",
+            prefix="cashless",
+            sections=[
+                (
+                    "section",
+                    "CASHLESS IN",
+                    TRANSFER_CASHLESS_IN_CODE,
+                    "cashless:in",
+                    TRANSFER_CASHLESS_IN_BUCKETS,
+                ),
+                (
+                    "section",
+                    "CASHLESS OUT",
+                    TRANSFER_CASHLESS_OUT_CODE,
+                    "cashless:out",
+                    TRANSFER_CASHLESS_OUT_BUCKETS,
+                ),
+                ("count_only", "TRANSFERS IN", "cashless:transfers_in"),
+                ("count_only", "TRANSFERS OUT", "cashless:transfers_out"),
+            ],
+        )
+        self._transfer_ticket_box = ticket
+        self._transfer_cashless_box = cashless
+        outer.addWidget(ticket, stretch=1)
+        outer.addWidget(cashless, stretch=1)
+        return body
+
+    def _build_security_tab(self) -> QWidget:
+        """EGM-style Door Open Count / Games Since panels."""
+        body = QWidget()
+        outer = QHBoxLayout(body)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(6)
+
+        def _row_label(text: str) -> QLabel:
+            lbl = QLabel(text)
+            font = lbl.font()
+            font.setPointSize(9)
+            lbl.setFont(font)
+            lbl.setMinimumHeight(18)
+            lbl.setMaximumHeight(20)
+            return lbl
+
+        def _value_label() -> QLabel:
+            lbl = QLabel("—")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            font = lbl.font()
+            font.setPointSize(9)
+            lbl.setFont(font)
+            lbl.setMinimumHeight(18)
+            lbl.setMaximumHeight(20)
+            return lbl
+
+        def _build_panel(title: str, rows: tuple[tuple[str, tuple[str, ...]], ...]) -> QGroupBox:
+            box = QGroupBox(title)
+            form = meter_subpanel_form_layout()
+            for label, state_keys in rows:
+                key = label.lower().replace(" ", "_")
+                val = _value_label()
+                self._security_value_labels[key] = val
+                self._security_state_keys[key] = state_keys
+                form.addRow(_row_label(label), val)
+            center_layout_in_group_box(box, form)
+            return box
+
+        doors = _build_panel("Door Open Count", SECURITY_DOOR_ROWS)
+        games = _build_panel("Games Since", SECURITY_GAMES_ROWS)
+        self._security_doors_box = doors
+        self._security_games_box = games
+        outer.addWidget(doors, stretch=1)
+        outer.addWidget(games, stretch=1)
+        return body
+
+    @staticmethod
+    def _make_bills_table_widget() -> QTableWidget:
+        table = QTableWidget(0, _BILLS_TABLE_COLUMN_COUNT)
+        table.setHorizontalHeaderLabels(list(_BILLS_TABLE_HEADERS))
+        table.horizontalHeader().setDefaultAlignment(
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+        )
+        table.setColumnWidth(_BILLS_COL_BILL, 72)
+        table.setColumnWidth(_BILLS_COL_AMOUNT, 72)
+        table.setColumnWidth(_BILLS_COL_COUNT_IDX, 52)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.horizontalHeader().setFixedHeight(22)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(20)
+        table.setShowGrid(True)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setSizeAdjustPolicy(QTableWidget.SizeAdjustPolicy.AdjustToContents)
+        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        return table
+
+    @staticmethod
+    def _make_coins_table_widget() -> QTableWidget:
+        table = QTableWidget(0, _COINS_TABLE_COLUMN_COUNT)
+        table.setHorizontalHeaderLabels(list(_COINS_TABLE_HEADERS))
+        table.horizontalHeader().setDefaultAlignment(
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+        )
+        table.setColumnWidth(_COINS_COL_COIN, 72)
+        table.setColumnWidth(_COINS_COL_AMOUNT, 72)
+        table.setColumnWidth(_COINS_COL_COUNT_IDX, 52)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.horizontalHeader().setFixedHeight(22)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(20)
+        table.setShowGrid(True)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setSizeAdjustPolicy(QTableWidget.SizeAdjustPolicy.AdjustToContents)
+        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        return table
+
+    def _apply_meter_panel_styles(self) -> None:
+        light = surface_is_light(self.palette())
+        table_style = bills_table_stylesheet(light=light)
+        cancelled_style = master_cancelled_row_stylesheet(light=light)
+        panel_style = master_tab_group_box_stylesheet(light=light)
+        self._bills_in_box.setStyleSheet(panel_style)
+        self._bills_out_box.setStyleSheet(panel_style)
+        self._bills_table.setStyleSheet(table_style)
+        self._bills_out_table.setStyleSheet(table_style)
+        for panel_id, table in self._coin_tables.items():
+            box = self._coin_boxes.get(panel_id)
+            if box is not None:
+                box.setStyleSheet(panel_style)
+            table.setStyleSheet(table_style)
+        self._master_credit_box.setStyleSheet(panel_style)
+        self._master_handpay_box.setStyleSheet(panel_style)
+        self._master_wagered_box.setStyleSheet(panel_style)
+        self._master_cancelled_box.setStyleSheet(cancelled_style)
+        self._transfer_ticket_box.setStyleSheet(panel_style)
+        self._transfer_cashless_box.setStyleSheet(panel_style)
+        self._security_doors_box.setStyleSheet(panel_style)
+        self._security_games_box.setStyleSheet(panel_style)
+        self._game_perf_box.setStyleSheet(panel_style)
+        self._game_residual_box.setStyleSheet(panel_style)
+        self._game_chart_box.setStyleSheet(panel_style)
+        reject_font = self._bill_reject_label.font()
+        reject_font.setPointSize(9)
+        self._bill_reject_label.setFont(reject_font)
+
+    @staticmethod
+    def _bill_table_item(
+        text: str,
+        *,
+        align: Qt.AlignmentFlag,
+        bold: bool = False,
+        foreground: QColor | None = None,
+    ) -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        item.setTextAlignment(int(align))
+        font = item.font()
+        font.setPointSize(9)
+        font.setBold(bold)
+        item.setFont(font)
+        if foreground is not None:
+            item.setForeground(foreground)
+        return item
 
     def _schedule_onehand_check(self) -> None:
         self._onehand_check_timer.start()
@@ -777,6 +2122,16 @@ class SasVerifyDialog(QDialog):
         self._onehand_check_worker = None
 
     def _run_onehand_check(self) -> None:
+        if self._onehand_check_uses_local():
+            from network.health_monitor import check_onehand_status_local
+
+            status = check_onehand_status_local()
+            self._onehand_check_pending = False
+            self._onehand_check_ip = "local"
+            self._onehand_running = status.running
+            self._onehand_smb_reachable = status.smb_reachable
+            self._update_onehand_warning_label("local")
+            return
         ip = self._cabinet_ip_from_scan_root()
         if not ip:
             self._onehand_running = None
@@ -806,6 +2161,8 @@ class SasVerifyDialog(QDialog):
         self._onehand_check_thread.start()
 
     def _on_onehand_check_finished(self, ip: str, running: object, smb_reachable: object) -> None:
+        if not self._worker_signals_enabled():
+            return
         if (ip or "").strip() != self._cabinet_ip_from_scan_root():
             return
         self._onehand_check_pending = False
@@ -824,6 +2181,7 @@ class SasVerifyDialog(QDialog):
             ip,
             running=self._onehand_running,
             smb_reachable=self._onehand_smb_reachable,
+            com_meters_ok=self._cached_meter_result is not None,
         )
         if text:
             self._onehand_warning.setText(text)
@@ -840,6 +2198,11 @@ class SasVerifyDialog(QDialog):
             port = s.value(_KEY_COM_PORT, DEFAULT_SAS_COM_PORT, type=str)
             self._preferred_com_port = (port or DEFAULT_SAS_COM_PORT).strip()
             self._com_baud = int(s.value(_KEY_COM_BAUD, DEFAULT_SAS_COM_BAUD, type=int))
+            wire = (s.value(_KEY_COM_WIRE, "", type=str) or "").strip().lower()
+            rts = s.value(_KEY_COM_RTS, False, type=bool)
+            self._cached_serial_profile: tuple[str, int, bool] | None = None
+            if wire:
+                self._cached_serial_profile = (wire, self._com_baud, bool(rts))
         finally:
             s.endGroup()
 
@@ -907,31 +2270,38 @@ class SasVerifyDialog(QDialog):
             self._preferred_com_port = port
             s.setValue(_KEY_COM_PORT, port)
             s.setValue(_KEY_COM_BAUD, int(getattr(self, "_com_baud", DEFAULT_SAS_COM_BAUD)))
+            profile = getattr(self, "_cached_serial_profile", None)
+            if profile:
+                s.setValue(_KEY_COM_WIRE, profile[0])
+                s.setValue(_KEY_COM_RTS, bool(profile[2]))
         finally:
             s.endGroup()
 
     def _build_view_menu_bar(self) -> QMenuBar:
         bar = QMenuBar(self)
         view_menu = bar.addMenu("&View")
-        columns_menu = view_menu.addMenu("&Columns")
-        columns_menu.setToolTip("Show or hide table columns (copy/export uses visible columns only).")
+        self._columns_menu = view_menu.addMenu("&Columns")
+        self._columns_menu.setToolTip(
+            "Show or hide meter table columns (copy/export uses visible columns only)."
+        )
         for col, label in _VERIFY_TABLE_COLUMNS:
             act = QAction(label, self)
             act.setCheckable(True)
             act.setChecked(default_verify_column_visible(col))
             act.toggled.connect(lambda checked, c=col: self._on_column_visibility_toggled(c, checked))
-            columns_menu.addAction(act)
+            self._columns_menu.addAction(act)
             self._column_actions[col] = act
-        copy_menu = view_menu.addMenu("&Copy")
-        copy_menu.setToolTip("Copy meter grids as tab-separated values for Excel.")
-        act_copy_acct = copy_menu.addAction("Copy all accounting meters")
-        act_copy_acct.triggered.connect(self._copy_all_meters_tsv)
-        act_copy_bills = copy_menu.addAction("Copy all bills")
-        act_copy_bills.triggered.connect(self._copy_all_bills_tsv)
-        copy_menu.addSeparator()
-        act_copy_report = copy_menu.addAction("Copy full report…")
-        act_copy_report.triggered.connect(self._copy_report)
         return bar
+
+    def _on_meter_tab_changed(self, index: int) -> None:
+        self._sync_columns_menus_for_tab(index)
+
+    def _sync_columns_menus_for_tab(self, tab_index: int) -> None:
+        columns_active = tab_index in _METER_COLUMN_TABS
+        if self._columns_menu is not None:
+            self._columns_menu.setEnabled(columns_active)
+        for act in self._column_actions.values():
+            act.setEnabled(columns_active)
 
     def _column_settings(self) -> QSettings:
         s = QSettings()
@@ -977,8 +2347,9 @@ class SasVerifyDialog(QDialog):
         self._save_column_visibility_prefs()
 
     def _apply_column_visibility(self) -> None:
-        for col, act in self._column_actions.items():
-            self._table.setColumnHidden(col, not act.isChecked())
+        for tbl in self._verify_tables:
+            for col, act in self._column_actions.items():
+                tbl.setColumnHidden(col, not act.isChecked())
 
     def _column_visibility_map(self) -> dict[int, bool]:
         return {col: act.isChecked() for col, act in self._column_actions.items()}
@@ -1004,16 +2375,15 @@ class SasVerifyDialog(QDialog):
         self._quit_or_orphan_thread(self._compare_thread, wait_ms)
 
     def _stop_meter_fetch_thread(self, wait_ms: int = 300) -> None:
-        th = self._meter_fetch_thread
-        if th is None:
-            return
+        self._quit_or_orphan_thread(self._meter_fetch_thread, wait_ms)
+        self._meter_fetch_thread = None
+        self._meter_fetch_worker = None
+
+    def _worker_signals_enabled(self) -> bool:
         try:
-            if th.isRunning():
-                th.quit()
-                # Never terminate: a killed worker can leave pyserial holding COM4 open.
-                th.wait(max(wait_ms, 120_000))
-        except Exception:
-            pass
+            return bool(self._accept_worker_signals)
+        except RuntimeError:
+            return False
 
     def _meter_fetch_running(self) -> bool:
         th = self._meter_fetch_thread
@@ -1025,9 +2395,12 @@ class SasVerifyDialog(QDialog):
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         SettingsManager.save_sas_verify_dialog_geometry(self)
+        self._accept_worker_signals = False
         self._stop_compare_thread(wait_ms=500)
         self._stop_meter_fetch_thread(wait_ms=500)
         self._stop_onehand_check_thread(wait_ms=500)
+        self._cached_meter_result = None
+        self._meter_fetch_error = None
         super().closeEvent(event)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
@@ -1035,61 +2408,151 @@ class SasVerifyDialog(QDialog):
         if not self._window_geometry_restored:
             self._window_geometry_restored = True
             SettingsManager.restore_sas_verify_dialog_geometry(self)
+        self._reload_game_theme_catalog()
         self._refresh_com_port_list(preserve_text=True)
+        if not self._split_meter_dominant_applied:
+            self._split_meter_dominant_applied = True
+            split_h = max(self._content_split.height(), 480)
+            paste_h = min(140, max(72, int(split_h * 0.13)))
+            self._content_split.setSizes([paste_h, split_h - paste_h])
+        QTimer.singleShot(0, self._start_prefetch)
+
+    def _on_scan_root_edit_changed(self) -> None:
         self._schedule_onehand_check()
-        if self._split_meter_dominant_applied:
+        if not self._prefetch_started:
             return
-        self._split_meter_dominant_applied = True
-        split_h = max(self._content_split.height(), 480)
-        paste_h = min(140, max(72, int(split_h * 0.13)))
-        self._content_split.setSizes([paste_h, split_h - paste_h])
+        sr = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        if should_skip_cabinet_reload(
+            scan_root=sr,
+            loaded_scan_root=self._loaded_cabinet_scan_root,
+            machine_state_loaded=self._machine_state_loaded,
+        ):
+            return
+        if sr and not self._compare_running():
+            self._begin_cabinet_compare(prefetch=True)
 
-    def _on_meter_fetch_thread_finished(self) -> None:
-        self._meter_fetch_thread = None
-        self._meter_fetch_worker = None
+    def _cabinet_cache_valid(self) -> bool:
+        sr = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        return should_skip_cabinet_reload(
+            scan_root=sr,
+            loaded_scan_root=self._loaded_cabinet_scan_root,
+            machine_state_loaded=self._machine_state_loaded,
+        )
 
-    def _on_get_meters_clicked(self) -> None:
-        self._refresh_com_port_list(preserve_text=True)
+    def _start_prefetch(self) -> None:
+        if self._prefetch_started:
+            return
+        self._prefetch_started = True
+        self._scan_root = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        self._update_prefetch_status("Prefetching: starting…")
+        if self._scan_root:
+            self._begin_cabinet_compare(prefetch=True)
+        ip = self._cabinet_ip_from_scan_root()
+        if ip:
+            QTimer.singleShot(1500, self._run_onehand_check)
+        # USB log exports are offline snapshots — do not grab the live COM port.
+        from network.goldclub_paths import GoldclubLayoutKind, resolve_goldclub_layout
+
+        layout = resolve_goldclub_layout(self._scan_root) if self._scan_root else None
+        live_com = layout is None or layout.kind != GoldclubLayoutKind.USB_EXPORT
+        if live_com and self._current_com_port():
+            self._begin_meter_fetch(prefetch=True)
+        self._update_prefetch_status()
+
+    def _update_prefetch_status(self, override: str | None = None) -> None:
+        if override:
+            self._prefetch_status_label.setText(override)
+            return
+        if self._cached_meter_result is not None and self._cabinet_cache_valid():
+            if self._meter_fetch_user_clicked_apply:
+                self._prefetch_status_label.setText(
+                    "Meters displayed — click Get Meters again to refresh from COM."
+                )
+            else:
+                self._prefetch_status_label.setText(
+                    "Ready — click Get Meters to review captured serial data."
+                )
+            return
+        if self._meter_fetch_error and not self._cached_meter_result:
+            self._prefetch_status_label.setText(
+                f"COM capture failed: {self._meter_fetch_error} "
+                "(click Get Meters to retry)"
+            )
+            return
+        parts: list[str] = []
+        if self._compare_running():
+            parts.append("cabinet")
+        if self._meter_fetch_running():
+            parts.append("COM capture")
+        if parts:
+            self._prefetch_status_label.setText(
+                f"Prefetching: {' and '.join(parts)}…"
+            )
+            return
+        if self._cached_meter_result is not None:
+            if self._meter_fetch_user_clicked_apply:
+                self._prefetch_status_label.setText(
+                    "Meters displayed — click Get Meters again to refresh from COM."
+                )
+            else:
+                self._prefetch_status_label.setText(
+                    "COM meters ready — click Get Meters to review."
+                )
+            return
+        if self._cabinet_cache_valid():
+            self._prefetch_status_label.setText(
+                "Cabinet loaded — click Get Meters to capture serial SAS data."
+            )
+            return
+        if not self._current_com_port():
+            self._prefetch_status_label.setText(
+                "Set COM port, then click Get Meters to capture serial data."
+            )
+            return
+        self._prefetch_status_label.setText(
+            "Cabinet loading… click Get Meters to capture serial SAS data."
+        )
+
+    def _paste_fingerprint(self, paste_text: str) -> str:
+        import hashlib
+
+        raw = (paste_text or "").encode("utf-8", errors="replace")
+        return hashlib.sha256(raw).hexdigest()[:16]
+
+    def _meter_result_already_displayed(self, result: object) -> bool:
+        paste_text = getattr(result, "paste_text", None)
+        if not paste_text:
+            return False
+        fp = self._paste_fingerprint(str(paste_text))
+        return fp == self._last_displayed_paste_fingerprint and bool(self._last_parsed_rows)
+
+    def _begin_meter_fetch(self, *, prefetch: bool, force: bool = False) -> bool:
         port = self._current_com_port()
         if not port:
-            QMessageBox.warning(
-                self,
-                "Get Meters",
-                "Enter a COM port (for example COM4).",
-            )
-            return
+            return False
         if self._meter_fetch_running():
-            QMessageBox.information(
-                self,
-                "Get Meters",
-                "A meter fetch is already running on this COM port.\n\n"
-                "Wait for it to finish (6F + bill polls). Do not click Get Meters again — "
-                "interrupting the fetch can lock COM4 until you restart this app.",
-            )
-            return
-        ip = self._cabinet_ip_from_scan_root()
-        if ip and self._onehand_running is False:
-            QMessageBox.warning(
-                self,
-                "Get Meters",
-                f"OneHand.exe is not running on {ip}.\n\n"
-                "The SAS host link often returns no RX until the game client is started "
-                "on the EGM (Aurum / CommCtrl). Start OneHand on the cabinet, then retry.",
-            )
-        elif ip and self._onehand_running is None and not self._onehand_check_pending:
-            self._run_onehand_check()
-        self._save_com_port_prefs()
-        self._scan_root = (self._scan_root_edit.text() or self._scan_root or "").strip()
-        if self._scan_root and not self._compare_running():
-            self._begin_cabinet_compare()
-        self._btn_get_meters.setEnabled(False)
+            if force:
+                self._stop_meter_fetch_thread(wait_ms=0)
+            else:
+                return False
+        if self._cached_meter_result is not None and not force:
+            return False
+        self._meter_fetch_prefetch = prefetch
+        self._meter_fetch_error = None
+        self._btn_get_meters.setText("Capturing COM…")
+        if not prefetch:
+            self._btn_get_meters.setEnabled(False)
+        else:
+            self._update_prefetch_status()
         from network.sas_serial_meters import DEFAULT_SAS_COM_BAUD
 
-        self._btn_get_meters.setText("Capturing COM…")
         self._meter_fetch_thread = QThread(self)
         self._meter_fetch_worker = MeterFetchWorker(
             com_port=port,
             com_baud=int(getattr(self, "_com_baud", DEFAULT_SAS_COM_BAUD)),
+            skip_bill_polls=prefetch,
+            fast_capture=prefetch,
+            cached_profile=getattr(self, "_cached_serial_profile", None),
         )
         self._meter_fetch_worker.moveToThread(self._meter_fetch_thread)
         self._meter_fetch_thread.started.connect(self._meter_fetch_worker.run)
@@ -1108,49 +2571,81 @@ class SasVerifyDialog(QDialog):
         self._meter_fetch_thread.finished.connect(self._on_meter_fetch_thread_finished)
         self._meter_fetch_thread.finished.connect(self._meter_fetch_thread.deleteLater)
         self._meter_fetch_thread.start()
+        return True
 
-    def _on_meter_fetch_finished(self, result: object) -> None:
-        self._btn_get_meters.setEnabled(True)
-        self._btn_get_meters.setText("Get Meters")
+    def _apply_meter_fetch_result(self, result: object, *, switch_tab: bool = False) -> bool:
         paste_text = getattr(result, "paste_text", None)
         port_used = getattr(result, "port_used", "") or ""
         wire_mode = getattr(result, "wire_mode", "") or ""
         baud = getattr(result, "baud", 0) or 0
         if port_used:
             self._set_com_port_selection(str(port_used))
+        if wire_mode and baud:
+            self._cached_serial_profile = (
+                str(wire_mode).strip().lower(),
+                int(baud),
+                bool(getattr(result, "rts", False)),
+            )
+            self._com_baud = int(baud)
             self._save_com_port_prefs()
+        if self._cached_meter_result is not None:
+            self._update_onehand_warning_label(self._onehand_check_ip or "local")
         if not paste_text:
-            return
-        self._paste.setPlainText(str(paste_text))
-        self._paste.setFocus()
-        parsed = build_verify_6f_rows_from_paste(str(paste_text))
-        bill_rows = getattr(result, "bill_rows", None) or ()
-        from network.sas_serial_meters import build_bill_display_rows
+            return False
+        paste_str = str(paste_text)
+        if self._meter_result_already_displayed(result):
+            if switch_tab:
+                parsed = self._last_parsed_rows
+                has_6f = any((r.sas_value_text or "").strip() for r in parsed)
+                if has_6f:
+                    self._meter_tabs.setCurrentIndex(0)
+                elif self._last_bill_in_rows or self._last_bill_out_rows:
+                    self._meter_tabs.setCurrentIndex(TAB_BILLS)
+                self._paste.setFocus()
+            return bool(self._last_parsed_rows or self._last_bill_in_rows)
+        has_6f = False
+        display_rows: list = []
+        self.setUpdatesEnabled(False)
+        try:
+            self._paste.setPlainText(paste_str)
+            if switch_tab:
+                self._paste.setFocus()
+            parsed = build_verify_6f_rows_from_paste(paste_str)
+            bill_rows = getattr(result, "bill_rows", None) or ()
+            bill_out_rows = getattr(result, "bill_out_rows", None) or ()
+            from network.sas_serial_meters import build_bill_display_rows, build_bill_out_display_rows
 
-        display_rows = build_bill_display_rows(
-            bill_rows=bill_rows,
-            paste_text=str(paste_text),
-            machine_state=self._machine_state or None,
-        )
-        if display_rows:
-            self._render_bills(display_rows, machine_state=self._machine_state or None)
-        has_6f = any((r.sas_value_text or "").strip() for r in parsed)
-        if has_6f:
-            self._last_parsed_rows = parsed
-            self._sas_2f_values = parse_sas_2f_paste(str(paste_text))
-            self._currency = _detect_egm_currency(
-                self._scan_root_edit.text() or self._scan_root, self._vm
+            display_rows = build_bill_display_rows(
+                bill_rows=bill_rows,
+                paste_text=paste_str,
+                machine_state=self._machine_state or None,
             )
-            self._update_dollar_toggle_label()
-            self._render(
-                parsed_rows=parsed,
-                allow_machine_lookup=self._machine_state_loaded,
-            )
-        elif display_rows:
-            self._meter_tabs.setCurrentIndex(1)
-        self._scan_root = (self._scan_root_edit.text() or self._scan_root or "").strip()
-        if self._scan_root and (has_6f or display_rows) and not self._compare_running():
-            self._begin_cabinet_compare()
+            out_display = build_bill_out_display_rows(bill_rows=bill_out_rows)
+            if display_rows or out_display:
+                self._render_bills(
+                    display_rows,
+                    out_rows=out_display,
+                    machine_state=self._machine_state or None,
+                )
+            has_6f = any((r.sas_value_text or "").strip() for r in parsed)
+            if has_6f:
+                self._last_parsed_rows = parsed
+                self._sas_2f_values = parse_sas_2f_paste(paste_str)
+                self._currency = _detect_egm_currency(
+                    self._scan_root_edit.text() or self._scan_root, self._vm
+                )
+                self._update_dollar_toggle_label()
+                self._render(
+                    parsed_rows=parsed,
+                    allow_machine_lookup=self._machine_state_loaded,
+                )
+                if switch_tab:
+                    self._meter_tabs.setCurrentIndex(0)
+            elif display_rows and switch_tab:
+                self._meter_tabs.setCurrentIndex(TAB_BILLS)
+            self._last_displayed_paste_fingerprint = self._paste_fingerprint(paste_str)
+        finally:
+            self.setUpdatesEnabled(True)
         try:
             p = self.parent()
             if p is not None and hasattr(p, "statusBar"):
@@ -1160,17 +2655,120 @@ class SasVerifyDialog(QDialog):
                     if wire_mode and baud:
                         link += f" ({wire_mode} @ {baud})"
                     sb.showMessage(
-                        f"SAS meters fetched on {link} — loading cabinet values from Scan root…",
+                        f"SAS meters displayed from session cache ({link}).",
                         6000,
                     )
         except Exception:
             pass
+        return has_6f or bool(display_rows)
 
-    def _on_meter_fetch_error(self, message: str) -> None:
+    def _on_meter_fetch_thread_finished(self) -> None:
+        self._meter_fetch_thread = None
+        self._meter_fetch_worker = None
+
+    def _apply_meter_fetch_apply_clicked(self) -> None:
+        if not self._worker_signals_enabled():
+            return
+        try:
+            self._apply_meter_fetch_result(self._cached_meter_result)
+        except Exception:
+            traceback.print_exc()
+
+    def _begin_get_meters_capture(self) -> None:
+        if not self._worker_signals_enabled():
+            return
+        if self._cached_meter_result is not None:
+            self._cached_meter_result = None
+        self._meter_fetch_error = None
+        self._meter_fetch_user_clicked_apply = False
+        self._last_displayed_paste_fingerprint = ""
+        ip = self._cabinet_ip_from_scan_root()
+        if ip and self._onehand_running is False:
+            QMessageBox.warning(
+                self,
+                "Get Meters",
+                f"OneHand.exe is not running on {ip}.\n\n"
+                "The SAS host link often returns no RX until the game client is started "
+                "on the EGM (Aurum / CommCtrl). Start OneHand on the cabinet, then retry.",
+            )
+        elif ip and self._onehand_running is None and not self._onehand_check_pending:
+            self._run_onehand_check()
+        self._save_com_port_prefs()
+        self._scan_root = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        if self._scan_root and not self._compare_running() and not self._cabinet_cache_valid():
+            self._begin_cabinet_compare(prefetch=True)
+        if not self._begin_meter_fetch(prefetch=False, force=True):
+            self._btn_get_meters.setEnabled(True)
+            self._btn_get_meters.setText("Get Meters")
+            QMessageBox.warning(
+                self,
+                "Get Meters",
+                "Could not start COM capture. Check the COM port and try again.",
+            )
+
+    def _on_get_meters_clicked(self) -> None:
+        port = self._current_com_port()
+        if not port:
+            QMessageBox.warning(
+                self,
+                "Get Meters",
+                "Enter a COM port (for example COM4).",
+            )
+            return
+        action = meter_fetch_display_action(
+            cached_result=self._cached_meter_result,
+            fetch_running=self._meter_fetch_running(),
+            user_already_applied=self._meter_fetch_user_clicked_apply,
+        )
+        if action == "apply":
+            self._meter_fetch_user_clicked_apply = True
+            self._update_prefetch_status()
+            QTimer.singleShot(0, self._apply_meter_fetch_apply_clicked)
+            return
+        if action == "wait":
+            QMessageBox.information(
+                self,
+                "Get Meters",
+                "Background COM capture is still running.\n\n"
+                "Tables will populate automatically when it finishes.",
+            )
+            return
+        self._btn_get_meters.setEnabled(False)
+        self._btn_get_meters.setText("Capturing COM…")
+        QTimer.singleShot(0, self._begin_get_meters_capture)
+
+    def _on_meter_fetch_finished(self, result: object) -> None:
+        if not self._worker_signals_enabled():
+            return
+        QTimer.singleShot(0, lambda r=result: self._apply_meter_fetch_complete(r))
+
+    def _apply_meter_fetch_complete(self, result: object) -> None:
+        if not self._worker_signals_enabled():
+            return
+        self._cached_meter_result = result
+        self._meter_fetch_error = None
         self._btn_get_meters.setEnabled(True)
         self._btn_get_meters.setText("Get Meters")
+        self._meter_fetch_prefetch = False
+        try:
+            self._apply_meter_fetch_result(result)
+        except Exception:
+            traceback.print_exc()
+        self._update_prefetch_status()
+
+    def _on_meter_fetch_error(self, message: str) -> None:
+        if not self._worker_signals_enabled():
+            return
+        self._meter_fetch_error = message or "Serial meter fetch failed."
+        self._btn_get_meters.setEnabled(True)
+        self._btn_get_meters.setText("Get Meters")
+        was_prefetch = self._meter_fetch_prefetch
+        self._meter_fetch_prefetch = False
         self._refresh_com_port_list(preserve_text=True)
-        msg = message or "Serial meter fetch failed."
+        self._update_prefetch_status()
+        if was_prefetch:
+            return
+        msg = self._meter_fetch_error
         if self._onehand_running is False and "SAS link not responding" in msg:
             ip = self._cabinet_ip_from_scan_root() or "the cabinet"
             msg += (
@@ -1192,7 +2790,7 @@ class SasVerifyDialog(QDialog):
         parsed = build_verify_6f_rows_from_paste(paste_text)
         has_6f = any((r.sas_value_text or "").strip() for r in parsed)
         self._load_bills_from_paste(paste_text)
-        has_bills = bool(self._last_bill_rows)
+        has_bills = bool(self._last_bill_in_rows or self._last_bill_out_rows)
         if not has_6f and not has_bills:
             QMessageBox.information(
                 self,
@@ -1201,7 +2799,7 @@ class SasVerifyDialog(QDialog):
             )
             return
         if not has_6f:
-            self._meter_tabs.setCurrentIndex(1)
+            self._meter_tabs.setCurrentIndex(TAB_BILLS)
             return
 
         self._last_parsed_rows = parsed
@@ -1210,28 +2808,45 @@ class SasVerifyDialog(QDialog):
         self._currency = _detect_egm_currency(self._scan_root_edit.text() or self._scan_root, self._vm)
         self._update_dollar_toggle_label()
 
-        # Render immediately without any machine/log lookups (prevents UI-thread UNC IO).
-        self._render(parsed_rows=parsed, allow_machine_lookup=False)
-        self._begin_cabinet_compare()
+        cache_ok = self._cabinet_cache_valid()
+        self._render(parsed_rows=parsed, allow_machine_lookup=cache_ok)
+        if not cache_ok:
+            self._begin_cabinet_compare(prefetch=False)
 
-    def _begin_cabinet_compare(self) -> None:
+    def _begin_cabinet_compare(self, *, prefetch: bool = False) -> None:
         """Load Machine column from cabinet state XML (Scan root UNC). Runs off the UI thread."""
         self._scan_root = (self._scan_root_edit.text() or self._scan_root or "").strip()
         if not self._scan_root:
-            QMessageBox.information(
-                self,
-                "SAS accounting verification",
-                "Set Scan root to the cabinet log UNC (e.g. \\\\10.0.0.90\\c$\\Goldclub\\var\\log) "
-                "so Machine values can be loaded from DeviceManagerData.xml.",
-            )
+            if not prefetch:
+                QMessageBox.information(
+                    self,
+                    "SAS accounting verification",
+                    "Set Scan root to the cabinet log UNC (e.g. \\\\10.0.0.90\\c$\\Goldclub\\var\\log) "
+                    "so Machine values can be loaded from DeviceManagerData.xml.",
+                )
+            else:
+                self._update_prefetch_status()
             return
 
-        self.ui.compare_btn.setEnabled(False)
-        self.ui.compare_btn.setText("Scanning Cabinet...")
-        self._btn_get_meters.setEnabled(False)
+        if self._cabinet_cache_valid() and not self._compare_running():
+            self._update_prefetch_status()
+            return
+
+        if self._compare_running():
+            return
+
+        self._cabinet_compare_prefetch = prefetch
+        if prefetch:
+            self._update_prefetch_status()
+        else:
+            self.ui.compare_btn.setEnabled(False)
+            self.ui.compare_btn.setText("Scanning Cabinet...")
 
         self._stop_compare_thread(wait_ms=300)
-        self._machine_state_loaded = False
+        if not self._cabinet_cache_valid():
+            self._machine_state_loaded = False
+            if self._scan_root != self._loaded_cabinet_scan_root:
+                self._machine_state = {}
 
         self._compare_thread = QThread(self)
         self._compare_worker = CompareWorker(_extract_unc_host(self._scan_root), self._scan_root)
@@ -1255,44 +2870,64 @@ class SasVerifyDialog(QDialog):
         self._compare_thread.start()
 
     def _on_worker_finished(self, state_obj: object) -> None:
+        if not self._worker_signals_enabled():
+            return
+        # Defer UI work to the next event-loop tick so we do not re-enter the
+        # dialog while OneHand / COM prefetch handlers are still running.
+        QTimer.singleShot(0, lambda s=state_obj: self._apply_cabinet_state(s))
+
+    def _apply_cabinet_state(self, state_obj: object) -> None:
+        if not self._worker_signals_enabled():
+            return
         try:
-            try:
-                sys.__stdout__.write(
-                    f"\n[UI-THREAD] Signal received! Results count: {len(state_obj) if isinstance(state_obj, dict) else 0}\n"
-                )
-                sys.__stdout__.flush()
-            except Exception:
-                pass
             if isinstance(state_obj, dict):
                 # IMPORTANT: keep keys normalized/lowercase for alias lookup
                 # (loader returns normalized keys like "coinin"; uppercasing breaks lookups).
                 self._machine_state = {str(k).strip(): str(v) for k, v in state_obj.items()}
                 self._machine_state_loaded = bool(self._machine_state)
+                if self._machine_state_loaded:
+                    self._loaded_cabinet_scan_root = self._scan_root
             else:
                 self._machine_state = {}
                 self._machine_state_loaded = False
             self._currency = _detect_egm_currency(self._scan_root, self._vm)
             self._update_dollar_toggle_label()
+            self._reload_game_theme_catalog()
             self._render(
                 parsed_rows=self._last_parsed_rows,
                 allow_machine_lookup=self._machine_state_loaded,
             )
             paste_text = self._paste.toPlainText()
-            from network.sas_serial_meters import build_bill_display_rows, parse_sas_bill_paste
+            from network.sas_serial_meters import (
+                build_bill_display_rows,
+                build_bill_out_display_rows,
+                parse_sas_bill_paste,
+            )
 
             bill_display = build_bill_display_rows(
                 bill_rows=parse_sas_bill_paste(paste_text),
                 paste_text=paste_text,
                 machine_state=self._machine_state,
             )
-            if bill_display:
-                self._render_bills(bill_display, machine_state=self._machine_state)
+            bill_out_display = build_bill_out_display_rows()
+            if bill_display or bill_out_display:
+                self._render_bills(
+                    bill_display,
+                    out_rows=bill_out_display,
+                    machine_state=self._machine_state,
+                )
+        except Exception:
+            traceback.print_exc()
         finally:
             self.ui.compare_btn.setEnabled(True)
             self.ui.compare_btn.setText("Compare")
             self._btn_get_meters.setEnabled(True)
+            self._cabinet_compare_prefetch = False
+            self._update_prefetch_status()
 
     def _on_worker_error(self, msg: str) -> None:
+        if not self._worker_signals_enabled():
+            return
         try:
             try:
                 sys.__stdout__.write(f"\n[UI-THREAD] Worker error received: {msg}\n")
@@ -1300,14 +2935,19 @@ class SasVerifyDialog(QDialog):
             except Exception:
                 pass
             print(f"[ERROR] {msg}")
-            QMessageBox.information(self, "SAS accounting verification", msg)
+            was_prefetch = self._cabinet_compare_prefetch
+            if not was_prefetch:
+                QMessageBox.information(self, "SAS accounting verification", msg)
         finally:
             self._machine_state = {}
             self._machine_state_loaded = False
+            self._loaded_cabinet_scan_root = ""
             self._render(parsed_rows=self._last_parsed_rows, allow_machine_lookup=False)
             self.ui.compare_btn.setEnabled(True)
             self.ui.compare_btn.setText("Compare")
             self._btn_get_meters.setEnabled(True)
+            self._cabinet_compare_prefetch = False
+            self._update_prefetch_status()
 
     def _normalize_int_for_compare(self, s: str) -> str:
         """
@@ -1345,9 +2985,10 @@ class SasVerifyDialog(QDialog):
 
     def _apply_value_headers(self) -> None:
         sas_6f_h, sas_2f_h, mac_h = self._value_header_labels()
-        self._table.setHorizontalHeaderItem(COL_SAS_6F_VALUE, QTableWidgetItem(sas_6f_h))
-        self._table.setHorizontalHeaderItem(COL_SAS_2F_VALUE, QTableWidgetItem(sas_2f_h))
-        self._table.setHorizontalHeaderItem(COL_MACHINE_VALUE, QTableWidgetItem(mac_h))
+        for tbl in self._verify_tables:
+            tbl.setHorizontalHeaderItem(COL_SAS_6F_VALUE, QTableWidgetItem(sas_6f_h))
+            tbl.setHorizontalHeaderItem(COL_SAS_2F_VALUE, QTableWidgetItem(sas_2f_h))
+            tbl.setHorizontalHeaderItem(COL_MACHINE_VALUE, QTableWidgetItem(mac_h))
 
     def _table_headers_for_copy(self) -> list[str]:
         return visible_verify_table_headers(
@@ -1386,8 +3027,9 @@ class SasVerifyDialog(QDialog):
         self._sas_2f_values = parse_sas_2f_paste(self._paste.toPlainText())
         self._update_2f_column_visibility()
 
-    def _meter_code_for_row(self, row: int) -> str:
-        code_item = self._table.item(row, COL_6F_CODE)
+    def _meter_code_for_row(self, row: int, table: QTableWidget | None = None) -> str:
+        tbl = table or self._table
+        code_item = tbl.item(row, COL_6F_CODE)
         return (code_item.text() if code_item else "").strip().upper()
 
     def _format_cell_value(self, meter_code: str, raw: str) -> str:
@@ -1407,7 +3049,9 @@ class SasVerifyDialog(QDialog):
         raw: str,
         missing_display: str | None = None,
         tooltip: str = "",
+        table: QTableWidget | None = None,
     ) -> None:
+        tbl = table or self._table
         if missing_display is not None and not (raw or "").strip():
             item = QTableWidgetItem(missing_display)
             item.setData(RAW_VALUE_ROLE, "")
@@ -1416,56 +3060,468 @@ class SasVerifyDialog(QDialog):
             item.setData(RAW_VALUE_ROLE, raw)
         if tooltip:
             item.setToolTip(tooltip)
-        self._table.setItem(row, col, item)
+        tbl.setItem(row, col, item)
 
     def _refresh_value_columns(self) -> None:
         self._apply_value_headers()
-        for row in range(self._table.rowCount()):
-            rid = self._meter_code_for_row(row)
-            for col in (COL_SAS_6F_VALUE, COL_SAS_2F_VALUE, COL_MACHINE_VALUE):
-                if col == COL_SAS_2F_VALUE:
-                    raw_opt = self._sas_2f_values.get(rid)
-                    if raw_opt is None:
-                        item = self._table.item(row, col)
-                        if item is not None:
-                            item.setText("—")
-                            item.setData(RAW_VALUE_ROLE, "")
-                        continue
-                    raw = self._normalize_int_for_compare(raw_opt) or raw_opt
-                else:
-                    item = self._table.item(row, col)
+        for tbl in self._verify_tables:
+            for row in range(tbl.rowCount()):
+                rid = self._meter_code_for_row(row, tbl)
+                for col in (COL_SAS_6F_VALUE, COL_SAS_2F_VALUE, COL_MACHINE_VALUE):
+                    if col == COL_SAS_2F_VALUE:
+                        raw_opt = self._sas_2f_values.get(rid)
+                        if raw_opt is None:
+                            item = tbl.item(row, col)
+                            if item is not None:
+                                item.setText("—")
+                                item.setData(RAW_VALUE_ROLE, "")
+                            continue
+                        raw = self._normalize_int_for_compare(raw_opt) or raw_opt
+                    else:
+                        item = tbl.item(row, col)
+                        if item is None:
+                            continue
+                        raw = str(item.data(RAW_VALUE_ROLE) or item.text() or "")
+                    item = tbl.item(row, col)
                     if item is None:
                         continue
-                    raw = str(item.data(RAW_VALUE_ROLE) or item.text() or "")
-                item = self._table.item(row, col)
-                if item is None:
-                    continue
-                item.setText(self._format_cell_value(rid, raw))
-                if col == COL_SAS_2F_VALUE:
-                    sas_6f_item = self._table.item(row, COL_SAS_6F_VALUE)
-                    sas_6f_raw = str(sas_6f_item.data(RAW_VALUE_ROLE) or "") if sas_6f_item else ""
-                    if self._normalize_int_for_compare(raw) != self._normalize_int_for_compare(sas_6f_raw):
-                        item.setForeground(QColor("#b45309"))
-                    else:
-                        item.setForeground(QColor())
-        if self._last_bill_rows:
+                    item.setText(self._format_cell_value(rid, raw))
+                    if col == COL_SAS_2F_VALUE:
+                        sas_6f_item = tbl.item(row, COL_SAS_6F_VALUE)
+                        sas_6f_raw = str(sas_6f_item.data(RAW_VALUE_ROLE) or "") if sas_6f_item else ""
+                        if self._normalize_int_for_compare(raw) != self._normalize_int_for_compare(sas_6f_raw):
+                            item.setForeground(QColor("#b45309"))
+                        else:
+                            item.setForeground(QColor())
+        self._update_game_summary()
+        self._update_master_summary()
+        self._update_transfer_summary()
+        self._update_security_summary()
+        if self._last_bill_in_rows or self._last_bill_out_rows:
             self._render_bills(machine_state=self._machine_state or None)
+        if self._coin_tables:
+            self._render_coins(machine_state=self._machine_state or None)
 
-    def _render(self, *, parsed_rows: list[Sas6FRow], allow_machine_lookup: bool = True) -> None:
-        self._refresh_2f_from_paste()
-        self.ui.table.setRowCount(len(parsed_rows))
-        self._apply_value_headers()
-        self._maybe_show_2f_paste_hint()
-        # Best-effort status-bar hint for operators.
+    @staticmethod
+    def _rows_for_meter_codes(parsed_rows: list[Sas6FRow], codes: frozenset[str]) -> list[Sas6FRow]:
+        wanted = {c.upper() for c in codes}
+        return [r for r in parsed_rows if r.meter_id.upper() in wanted]
+
+    def _sas_value_for_code(self, code: str) -> str:
+        rid = (code or "").strip().upper()
+        for row in self._last_parsed_rows:
+            if row.meter_id.upper() == rid:
+                sas_v = row.sas_value_text.strip()
+                if sas_v:
+                    return self._normalize_int_for_compare(sas_v) or sas_v
+        return ""
+
+    def _machine_value_for_code(self, code: str, *, allow_machine_lookup: bool) -> str:
+        rid = (code or "").strip().upper()
+        if not allow_machine_lookup or not self._machine_state_loaded:
+            return ""
+        machine_v = ""
+        if self._machine_state:
+            try:
+                machine_v = (
+                    getattr(self._vm, "get_gm2u_value_for_sas_code")(rid, self._machine_state) or ""
+                ).strip()
+            except Exception:
+                machine_v = ""
+            if not machine_v:
+                try:
+                    machine_v = (
+                        getattr(self._vm, "emergency_lookup_value_for_sas_code_from_logs")(
+                            self._scan_root, rid
+                        )
+                        or ""
+                    ).strip()
+                except Exception:
+                    machine_v = ""
+        sas_norm = self._sas_value_for_code(rid)
+        if not machine_v and sas_norm == "0":
+            return "0"
+        if machine_v:
+            return self._normalize_int_for_compare(machine_v) or machine_v
+        return ""
+
+    def _master_summary_raw(self, code: str, *, allow_machine_lookup: bool) -> str:
+        machine_v = self._machine_value_for_code(code, allow_machine_lookup=allow_machine_lookup)
+        if machine_v:
+            return machine_v
+        return self._sas_value_for_code(code) or "0"
+
+    def _selected_game_theme_id(self) -> str:
+        if self._game_theme_combo is None:
+            return ""
+        text = (self._game_theme_combo.currentText() or "").strip()
+        if not text or text == GAME_THEME_TOTAL:
+            return ""
+        return text
+
+    def _selected_game_paytable_id(self) -> str:
+        if self._game_paytable_combo is None:
+            return ""
+        text = (self._game_paytable_combo.currentText() or "").strip()
+        if not text or text == GAME_THEME_TOTAL:
+            return ""
+        return text
+
+    def _game_meter_state(self, *, allow_machine_lookup: bool) -> tuple[dict[str, str], bool]:
+        """Return meter state for the Game tab and whether a per-game filter is active."""
+        from network.accounting_state_loader import aggregate_theme_paytable_meters
+
+        theme_id = self._selected_game_theme_id()
+        if theme_id:
+            theme_data = self._theme_perf_by_paytable.get(theme_id, {})
+            paytable_id = self._selected_game_paytable_id()
+            if paytable_id:
+                return dict(theme_data.get(paytable_id, {})), True
+            return aggregate_theme_paytable_meters(theme_data), True
+        if allow_machine_lookup and self._machine_state:
+            return dict(self._machine_state), False
+        return {}, False
+
+    def _reload_game_theme_catalog(self) -> None:
+        from network.accounting_state_loader import (
+            load_cabinet_game_catalog,
+            load_theme_perf_meters_by_paytable,
+        )
+
+        sr = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        if not sr:
+            self._theme_perf_by_paytable = {}
+            self._game_catalog_folders = {}
+            self._game_theme_ids = []
+            return
         try:
-            if self._machine_state:
-                p = self.parent()
-                if p is not None and hasattr(p, "statusBar"):
-                    sb = p.statusBar()
-                    if sb is not None:
-                        sb.showMessage("Path Loaded", 4000)
-        except Exception:
-            pass
+            catalog = load_cabinet_game_catalog(sr)
+            self._game_catalog_folders = {theme_id: folder for theme_id, folder in catalog}
+            self._theme_perf_by_paytable = load_theme_perf_meters_by_paytable(sr)
+        except OSError:
+            self._theme_perf_by_paytable = {}
+            self._game_catalog_folders = {}
+            catalog = []
+        all_ids = sorted(
+            set(self._game_catalog_folders.keys()) | set(self._theme_perf_by_paytable.keys()),
+            key=str.lower,
+        )
+        self._game_theme_ids = all_ids
+        if self._game_theme_combo is None:
+            return
+        current = self._game_theme_combo.currentText()
+        blocked = self._game_theme_combo.blockSignals(True)
+        self._game_theme_combo.clear()
+        self._game_theme_combo.addItem(GAME_THEME_TOTAL)
+        for tid in all_ids:
+            self._game_theme_combo.addItem(tid)
+        idx = self._game_theme_combo.findText(current)
+        self._game_theme_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._game_theme_combo.blockSignals(blocked)
+        self._reload_game_paytable_filter()
+
+    def _reload_game_paytable_filter(self) -> None:
+        from network.accounting_state_loader import load_theme_paytable_ids
+
+        if self._game_paytable_combo is None:
+            return
+        theme_id = self._selected_game_theme_id()
+        sr = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        current = self._game_paytable_combo.currentText()
+        blocked = self._game_paytable_combo.blockSignals(True)
+        self._game_paytable_combo.clear()
+        self._game_paytable_combo.addItem(GAME_THEME_TOTAL)
+        if theme_id and sr:
+            self._game_paytable_combo.setEnabled(True)
+            for paytable_id in load_theme_paytable_ids(
+                sr,
+                theme_id,
+                perf_by_paytable=self._theme_perf_by_paytable,
+                catalog_folders=self._game_catalog_folders,
+            ):
+                self._game_paytable_combo.addItem(paytable_id)
+        else:
+            self._game_paytable_combo.setEnabled(False)
+        idx = self._game_paytable_combo.findText(current)
+        self._game_paytable_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._game_paytable_combo.blockSignals(blocked)
+
+    def _on_game_theme_filter_changed(self, _index: int = 0) -> None:
+        self._reload_game_paytable_filter()
+        self._update_game_summary()
+
+    def _on_game_paytable_filter_changed(self, _index: int = 0) -> None:
+        self._update_game_summary()
+
+    def _game_count_raw(
+        self,
+        state_keys: tuple[str, ...],
+        sas_code: str,
+        *,
+        state: dict[str, str],
+        theme_filtered: bool,
+    ) -> str:
+        if state:
+            v = lookup_normalized_machine_value(state, *state_keys)
+            if v:
+                return v
+        if theme_filtered:
+            return "0"
+        if sas_code:
+            return self._sas_value_for_code(sas_code) or "0"
+        return "0"
+
+    def _game_bonus_win_raw(self, *, state: dict[str, str], theme_filtered: bool) -> str:
+        if not state:
+            return "0"
+        total = 0
+        found = False
+        for key in GAME_BONUS_WIN_STATE_KEYS:
+            v = lookup_normalized_machine_value(state, key)
+            if v and re.fullmatch(r"\d+", v.replace(",", "")):
+                total += int(v.replace(",", ""))
+                found = True
+        if found:
+            return str(total)
+        return "0" if theme_filtered else "0"
+
+    def _game_amount_raw(
+        self,
+        state_keys: tuple[str, ...],
+        sas_code: str,
+        *,
+        state: dict[str, str],
+        theme_filtered: bool,
+        allow_machine_lookup: bool,
+    ) -> str:
+        if state and state_keys:
+            v = lookup_normalized_machine_value(state, *state_keys)
+            if v:
+                return self._normalize_int_for_compare(v) or v
+        if theme_filtered:
+            if sas_code:
+                v = lookup_normalized_machine_value(
+                    state, *game_amount_state_keys_for_sas_code(sas_code)
+                )
+                if v:
+                    return self._normalize_int_for_compare(v) or v
+            return "0"
+        if sas_code:
+            return self._master_summary_raw(sas_code, allow_machine_lookup=allow_machine_lookup)
+        return "0"
+
+    def _reset_game_summary(self) -> None:
+        for lbl in self._game_perf_labels.values():
+            lbl.setText("—")
+        for lbl in self._game_residual_labels.values():
+            lbl.setText("—")
+        if self._game_yield_chart_label is not None:
+            self._game_yield_chart_label.setText("—")
+
+    def _update_game_summary(self, *, allow_machine_lookup: bool | None = None) -> None:
+        if allow_machine_lookup is None:
+            allow_machine_lookup = self._machine_state_loaded
+        state, theme_filtered = self._game_meter_state(allow_machine_lookup=allow_machine_lookup)
+        sym = self._currency.symbol or "$"
+        played_raw = self._game_count_raw(
+            GAME_PLAYED_STATE_KEYS,
+            "0005",
+            state=state,
+            theme_filtered=theme_filtered,
+        )
+        won_raw = self._game_count_raw(
+            GAME_WON_STATE_KEYS,
+            "0006",
+            state=state,
+            theme_filtered=theme_filtered,
+        )
+        lost_raw = self._game_count_raw(
+            GAME_LOST_STATE_KEYS,
+            "0007",
+            state=state,
+            theme_filtered=theme_filtered,
+        )
+        bet_raw = self._game_amount_raw(
+            ("coinin", "gamecoinin"),
+            GAME_BET_CODE,
+            state=state,
+            theme_filtered=theme_filtered,
+            allow_machine_lookup=allow_machine_lookup,
+        )
+        win_raw = self._game_amount_raw(
+            ("coinout", "totalcoinout"),
+            GAME_WIN_CODE,
+            state=state,
+            theme_filtered=theme_filtered,
+            allow_machine_lookup=allow_machine_lookup,
+        )
+        game_win_raw = self._game_amount_raw(
+            ("basegamecoinout", "bggamecoinout"),
+            GAME_GAME_WIN_CODE,
+            state=state,
+            theme_filtered=theme_filtered,
+            allow_machine_lookup=allow_machine_lookup,
+        )
+        bonus_raw = self._game_bonus_win_raw(state=state, theme_filtered=theme_filtered)
+        sas_bonus_raw = self._game_amount_raw(
+            GAME_SAS_BONUS_STATE_KEYS,
+            "",
+            state=state,
+            theme_filtered=theme_filtered,
+            allow_machine_lookup=allow_machine_lookup,
+        )
+        prog_raw = self._game_amount_raw(
+            GAME_PROG_WIN_STATE_KEYS,
+            GAME_PROG_WIN_CODE,
+            state=state,
+            theme_filtered=theme_filtered,
+            allow_machine_lookup=allow_machine_lookup,
+        )
+        totals = compute_game_summary(
+            played_raw=played_raw,
+            won_raw=won_raw,
+            lost_raw=lost_raw,
+            bet_raw=bet_raw,
+            win_raw=win_raw,
+        )
+        count_map = {
+            "played": format_transfer_count_display(played_raw),
+            "won": format_transfer_count_display(won_raw),
+            "lost": str(totals["lost"]),
+        }
+        amount_map = {
+            "bet": format_master_amount_display(bet_raw, symbol=sym),
+            "win": format_master_amount_display(win_raw, symbol=sym),
+            "game_win": format_master_amount_display(game_win_raw, symbol=sym),
+            "bonus_win": format_master_amount_display(bonus_raw, symbol=sym),
+            "sas_bonus": format_master_amount_display(sas_bonus_raw, symbol=sym),
+            "prog_win": format_master_amount_display(prog_raw, symbol=sym),
+            "bet_minus_win": format_signed_dollar_amount(float(totals["bet_minus_win"]), symbol=sym),
+            "yield": format_game_pct_display(
+                float(totals["yield_pct"]) if totals["yield_pct"] is not None else None
+            ),
+            "hold": format_game_pct_display(
+                float(totals["hold_pct"]) if totals["hold_pct"] is not None else None
+            ),
+        }
+        for key, lbl in self._game_perf_labels.items():
+            if key in count_map:
+                lbl.setText(count_map[key])
+            elif key in amount_map:
+                lbl.setText(amount_map[key])
+        for key, lbl in self._game_residual_labels.items():
+            state_keys = self._game_residual_state_keys.get(key, ())
+            raw = "0"
+            if theme_filtered:
+                raw = "0"
+            elif allow_machine_lookup and self._machine_state:
+                raw = lookup_normalized_machine_value(self._machine_state, *state_keys) or "0"
+            if key in ("coin_in", "coin_out"):
+                lbl.setText(format_master_amount_display(raw, symbol=sym))
+            else:
+                lbl.setText(format_transfer_count_display(raw))
+        if self._game_yield_chart_label is not None:
+            yield_text = amount_map.get("yield", "—")
+            self._game_yield_chart_label.setText(yield_text)
+
+    def _reset_master_summary(self) -> None:
+        for lbl in self._master_value_labels.values():
+            lbl.setText("—")
+        if self._master_credit_in_total is not None:
+            self._master_credit_in_total.setText("—")
+        if self._master_credit_out_total is not None:
+            self._master_credit_out_total.setText("—")
+        self._master_total_credit.setText("—")
+        self._master_inout_pct.setText("—")
+
+    def _update_master_summary(self, *, allow_machine_lookup: bool | None = None) -> None:
+        if allow_machine_lookup is None:
+            allow_machine_lookup = self._machine_state_loaded
+        sym = self._currency.symbol or "$"
+        values: dict[str, str] = {}
+        for code in MASTER_TRACKED_CODES:
+            values[code] = self._master_summary_raw(code, allow_machine_lookup=allow_machine_lookup)
+        for key, lbl in self._master_value_labels.items():
+            code = self._master_value_label_codes.get(key, "")
+            raw = values.get(code, "0")
+            lbl.setText(format_master_amount_display(raw, symbol=sym))
+        totals = compute_master_summary(values)
+        if self._master_credit_in_total is not None:
+            self._master_credit_in_total.setText(f"{sym}{totals['credit_in']:.2f}")
+        if self._master_credit_out_total is not None:
+            self._master_credit_out_total.setText(f"{sym}{totals['credit_out']:.2f}")
+        self._master_total_credit.setText(f"{sym}{totals['total_credit']:.2f}")
+        pct = totals["inout_pct"]
+        self._master_inout_pct.setText(f"{pct:.2f}%" if pct is not None else "—")
+
+    def _transfer_amount_raw(self, code: str, *, allow_machine_lookup: bool) -> str:
+        if code:
+            return self._master_summary_raw(code, allow_machine_lookup=allow_machine_lookup)
+        if allow_machine_lookup and self._machine_state:
+            v = lookup_normalized_machine_value(
+                self._machine_state,
+                *self._transfer_promo_out_keys,
+            )
+            if v:
+                return self._normalize_int_for_compare(v) or v
+        return "0"
+
+    def _transfer_count_raw(self, count_id: str, *, allow_machine_lookup: bool) -> str:
+        if not allow_machine_lookup or not self._machine_state:
+            return "0"
+        if count_id.startswith("bucket:"):
+            code = count_id.split(":", 1)[1]
+            keys = TRANSFER_BUCKET_COUNT_KEYS.get(code, ())
+            return lookup_normalized_machine_value(self._machine_state, *keys) or "0"
+        if count_id.startswith("promo_out:"):
+            return "0"
+        keys = TRANSFER_COUNT_STATE_KEYS.get(count_id, ())
+        return lookup_normalized_machine_value(self._machine_state, *keys) or "0"
+
+    def _reset_transfer_summary(self) -> None:
+        for lbl in self._transfer_amount_labels.values():
+            lbl.setText("—")
+        for lbl in self._transfer_count_labels.values():
+            lbl.setText("—")
+
+    def _update_transfer_summary(self, *, allow_machine_lookup: bool | None = None) -> None:
+        if allow_machine_lookup is None:
+            allow_machine_lookup = self._machine_state_loaded
+        sym = self._currency.symbol or "$"
+        for key, lbl in self._transfer_amount_labels.items():
+            code = self._transfer_amount_codes.get(key, "")
+            raw = self._transfer_amount_raw(code, allow_machine_lookup=allow_machine_lookup)
+            lbl.setText(format_master_amount_display(raw, symbol=sym))
+        for key, lbl in self._transfer_count_labels.items():
+            count_id = self._transfer_count_key_ids.get(key, "")
+            raw = self._transfer_count_raw(count_id, allow_machine_lookup=allow_machine_lookup)
+            lbl.setText(format_transfer_count_display(raw))
+
+    def _security_count_raw(self, state_keys: tuple[str, ...], *, allow_machine_lookup: bool) -> str:
+        if not allow_machine_lookup or not self._machine_state:
+            return "0"
+        return lookup_normalized_machine_value(self._machine_state, *state_keys) or "0"
+
+    def _reset_security_summary(self) -> None:
+        for lbl in self._security_value_labels.values():
+            lbl.setText("—")
+
+    def _update_security_summary(self, *, allow_machine_lookup: bool | None = None) -> None:
+        if allow_machine_lookup is None:
+            allow_machine_lookup = self._machine_state_loaded
+        for key, lbl in self._security_value_labels.items():
+            state_keys = self._security_state_keys.get(key, ())
+            raw = self._security_count_raw(state_keys, allow_machine_lookup=allow_machine_lookup)
+            lbl.setText(format_transfer_count_display(raw))
+
+    def _render_table(
+        self,
+        table: QTableWidget,
+        parsed_rows: list[Sas6FRow],
+        *,
+        allow_machine_lookup: bool,
+    ) -> None:
+        table.setRowCount(len(parsed_rows))
         for row, r in enumerate(parsed_rows):
             rid = r.meter_id.upper()
             sas_v = r.sas_value_text.strip()
@@ -1507,7 +3563,6 @@ class SasVerifyDialog(QDialog):
                 if aligned != sas_norm:
                     sas_v = aligned
                     sas_norm = self._normalize_int_for_compare(aligned)
-            # Cabinet XML often omits keys for zero meters; when SAS reads 0 treat as 0.
             if (
                 machine_missing
                 and self._machine_state_loaded
@@ -1523,6 +3578,11 @@ class SasVerifyDialog(QDialog):
             elif machine_missing:
                 match = False
                 status = "PENDING"
+            elif rid == "000B" and machine_v:
+                from network.meter_comparator import bills_in_meters_match
+
+                match = bills_in_meters_match(sas_norm, mac_norm)
+                status = "MATCH" if match else "MISMATCH"
             else:
                 try:
                     match = int(mac_norm) == int(sas_norm)
@@ -1531,16 +3591,16 @@ class SasVerifyDialog(QDialog):
                 status = "MATCH" if match else "MISMATCH"
             code_item = QTableWidgetItem(code_6f)
             code_item.setToolTip("6F paste table id (from RX<= 6F meter-code bytes, little-endian).")
-            self.ui.table.setItem(row, COL_6F_CODE, code_item)
+            table.setItem(row, COL_6F_CODE, code_item)
             wire_item = QTableWidgetItem(wire_id)
             wire_item.setToolTip("On-wire SAS meter id (byte-swapped from 6F Code).")
-            self.ui.table.setItem(row, COL_WIRE_ID, wire_item)
+            table.setItem(row, COL_WIRE_ID, wire_item)
             poll_item = QTableWidgetItem(igt_poll)
             poll_item.setToolTip("Hex index to enter in the IGT tester $2F “Send selected meters” dialog.")
-            self.ui.table.setItem(row, COL_IGT_POLL, poll_item)
+            table.setItem(row, COL_IGT_POLL, poll_item)
             igt_item = QTableWidgetItem(igt_meter)
             igt_item.setToolTip("Label the IGT tester shows (e.g. First Meter = 00000200).")
-            self.ui.table.setItem(row, COL_IGT_METER, igt_item)
+            table.setItem(row, COL_IGT_METER, igt_item)
             name_item = QTableWidgetItem(meter_name)
             derived_formula = DERIVED_SAS_CODES.get(rid)
             name_font = name_item.font()
@@ -1556,7 +3616,7 @@ class SasVerifyDialog(QDialog):
                 name_item.setForeground(QColor(_TRUE_METER_COLOR))
                 name_item.setToolTip("True meter — direct single-source cabinet value.")
             name_item.setFont(name_font)
-            self.ui.table.setItem(row, COL_METER_NAME, name_item)
+            table.setItem(row, COL_METER_NAME, name_item)
             self._set_value_item(
                 row,
                 COL_SAS_6F_VALUE,
@@ -1564,6 +3624,7 @@ class SasVerifyDialog(QDialog):
                 raw=sas_norm or sas_v,
                 missing_display="—" if not has_sas else None,
                 tooltip="From RX<= 6F bulk poll in paste.",
+                table=table,
             )
             sas_2f_raw = self._sas_2f_values.get(rid)
             if sas_2f_raw is None:
@@ -1574,6 +3635,7 @@ class SasVerifyDialog(QDialog):
                     raw="",
                     missing_display="—",
                     tooltip="No matching RX<= 2F poll in paste for this meter's IGT $2F index.",
+                    table=table,
                 )
             else:
                 sas_2f_norm = self._normalize_int_for_compare(sas_2f_raw)
@@ -1586,9 +3648,10 @@ class SasVerifyDialog(QDialog):
                     meter_code=rid,
                     raw=sas_2f_norm or sas_2f_raw,
                     tooltip=tip,
+                    table=table,
                 )
                 if sas_2f_norm != sas_norm:
-                    item = self.ui.table.item(row, COL_SAS_2F_VALUE)
+                    item = table.item(row, COL_SAS_2F_VALUE)
                     if item is not None:
                         item.setForeground(QColor("#b45309"))
             mac_display_raw = mac_norm if machine_v else ""
@@ -1599,6 +3662,7 @@ class SasVerifyDialog(QDialog):
                 raw=mac_display_raw,
                 missing_display="—" if not machine_v else None,
                 tooltip="From cabinet gm2u / accounting XML.",
+                table=table,
             )
             st = QTableWidgetItem(status)
             if match:
@@ -1610,196 +3674,316 @@ class SasVerifyDialog(QDialog):
                 f.setBold(True)
                 st.setFont(f)
                 st.setForeground(Qt.GlobalColor.red)
-            self.ui.table.setItem(row, COL_STATUS, st)
+            table.setItem(row, COL_STATUS, st)
+
+    def _render(self, *, parsed_rows: list[Sas6FRow], allow_machine_lookup: bool = True) -> None:
+        self._refresh_2f_from_paste()
+        self._apply_value_headers()
+        self._maybe_show_2f_paste_hint()
+        try:
+            if self._machine_state:
+                p = self.parent()
+                if p is not None and hasattr(p, "statusBar"):
+                    sb = p.statusBar()
+                    if sb is not None:
+                        sb.showMessage("Path Loaded", 4000)
+        except Exception:
+            pass
+        self._render_table(self._table, parsed_rows, allow_machine_lookup=allow_machine_lookup)
+        self._render_coins(
+            machine_state=self._machine_state or None,
+            allow_machine_lookup=allow_machine_lookup,
+        )
+        self._update_game_summary(allow_machine_lookup=allow_machine_lookup)
+        self._update_master_summary(allow_machine_lookup=allow_machine_lookup)
+        self._update_transfer_summary(allow_machine_lookup=allow_machine_lookup)
+        self._update_security_summary(allow_machine_lookup=allow_machine_lookup)
 
     def _format_bill_dollars(self, amount_cents: int) -> str:
-        cents = max(0, int(amount_cents))
-        return f"${cents / 100.0:,.2f}"
+        return format_bill_amount_display(amount_cents)
 
-    def _format_bill_credits_as_dollars(self, credits_raw: str) -> str:
-        dollars = _credits_to_dollar_amount(credits_raw)
-        if dollars is None:
-            return credits_raw or "—"
-        return _format_dollar_amount(dollars, symbol=self._currency.symbol or "$")
-
-    def _bill_status_item(self, status: str) -> QTableWidgetItem:
-        st = QTableWidgetItem(status)
-        if status == "MATCH":
-            st.setForeground(Qt.GlobalColor.darkGreen)
-        elif status == "PENDING":
-            st.setForeground(Qt.GlobalColor.darkGray)
-        elif status not in ("—", ""):
-            f = st.font()
-            f.setBold(True)
-            st.setFont(f)
-            st.setForeground(Qt.GlobalColor.red)
-        return st
+    def _bill_total_foreground(self) -> QColor:
+        """TOTAL row labels: black in light mode, palette text in dark mode."""
+        pal = self.palette()
+        if surface_is_light(pal):
+            return QColor("#000000")
+        return pal.color(QPalette.ColorRole.Text)
 
     def _render_bills(
         self,
         rows: list | tuple | None = None,
         *,
+        out_rows: list | tuple | None = None,
         machine_state: dict[str, str] | None = None,
     ) -> None:
-        from network.accounting_state_loader import (
-            cabinet_bill_reject_count,
-            cabinet_bill_stacker_amount_credits,
-            cabinet_bill_stacker_count,
-        )
-        from network.sas_serial_meters import SasBillDenomRow
+        from network.accounting_state_loader import cabinet_bill_reject_count
+        from network.sas_serial_meters import build_bill_out_display_rows
 
-        bill_rows = list(rows if rows is not None else self._last_bill_rows)
-        self._last_bill_rows = bill_rows
+        if rows is not None:
+            self._last_bill_in_rows = list(rows)
+        if out_rows is not None:
+            self._last_bill_out_rows = list(out_rows)
         state = machine_state if machine_state is not None else self._machine_state
-        self._bills_table.setRowCount(0)
-        reject_raw = cabinet_bill_reject_count(state or {})
-        if reject_raw:
-            self._bill_reject_label.setText(f"BILL REJECT COUNT — {reject_raw}")
-        else:
-            self._bill_reject_label.setText("BILL REJECT COUNT —")
-        if not bill_rows:
-            return
-
-        aggregate_only = (
-            len(bill_rows) == 1
-            and isinstance(bill_rows[0], SasBillDenomRow)
-            and bill_rows[0].source == "aggregate"
+        self._bill_reject_label.setText(
+            format_bill_reject_count_label(cabinet_bill_reject_count(state or {}))
+        )
+        self._render_bill_table(
+            self._bills_table,
+            self._last_bill_in_rows,
+            direction="in",
+        )
+        out = self._last_bill_out_rows or build_bill_out_display_rows()
+        self._render_bill_table(
+            self._bills_out_table,
+            out,
+            direction="out",
         )
 
-        stacker_cnt_raw = cabinet_bill_stacker_count(state or {})
-        stacker_amt_raw = cabinet_bill_stacker_amount_credits(state or {})
-        has_cabinet_totals = bool(stacker_cnt_raw or stacker_amt_raw)
+    def _coin_sas_values(self, *, allow_machine_lookup: bool) -> dict[str, str]:
+        from network.sas_serial_meters import COIN_PANEL_SPECS
+
+        out: dict[str, str] = {}
+        for _panel, (code, *_rest) in COIN_PANEL_SPECS.items():
+            if code:
+                out[code] = self._master_summary_raw(code, allow_machine_lookup=allow_machine_lookup)
+        return out
+
+    def _render_coins(
+        self,
+        *,
+        machine_state: dict[str, str] | None = None,
+        allow_machine_lookup: bool | None = None,
+    ) -> None:
+        from network.sas_serial_meters import build_all_coin_panel_rows
+
+        if allow_machine_lookup is None:
+            allow_machine_lookup = self._machine_state_loaded
+        state = machine_state if machine_state is not None else self._machine_state
+        sas_values = self._coin_sas_values(allow_machine_lookup=allow_machine_lookup) if allow_machine_lookup else {}
+        panels = build_all_coin_panel_rows(machine_state=state or {}, sas_values=sas_values)
+        for panel_id, table in self._coin_tables.items():
+            body_rows, aggregate_totals = panels.get(panel_id, ((), None))
+            self._render_coin_table(table, body_rows, aggregate_totals=aggregate_totals)
+
+    def _render_coin_table(
+        self,
+        table: QTableWidget,
+        coin_rows: tuple | list,
+        *,
+        aggregate_totals: dict[str, int] | None = None,
+    ) -> None:
+        from network.sas_serial_meters import SasCoinDenomRow
+
+        table.setRowCount(0)
+        center = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
 
         total_amount = 0
         total_count = 0
-        for row in bill_rows:
-            if isinstance(row, SasBillDenomRow) and not row.enabled:
-                continue
-            if isinstance(row, SasBillDenomRow):
+        for row in coin_rows:
+            if isinstance(row, SasCoinDenomRow):
                 label = row.label
                 amount_cents = row.amount_cents
                 count = row.count
-                sas_cmd = row.sas_cmd_hex
             else:
                 label = str(getattr(row, "label", ""))
                 amount_cents = int(getattr(row, "amount_cents", 0))
                 count = int(getattr(row, "count", 0))
-                sas_cmd = str(getattr(row, "sas_cmd_hex", getattr(row, "sas_cmd", "")))
-            r = self._bills_table.rowCount()
-            self._bills_table.insertRow(r)
-            self._bills_table.setItem(r, 0, QTableWidgetItem(label))
-            self._bills_table.setItem(r, 1, QTableWidgetItem(self._format_bill_dollars(amount_cents)))
-            self._bills_table.setItem(r, 2, QTableWidgetItem(str(count)))
-            self._bills_table.setItem(r, 3, QTableWidgetItem(str(sas_cmd).upper()))
-            self._bills_table.setItem(r, 4, QTableWidgetItem("—"))
-            self._bills_table.setItem(r, 5, self._bill_status_item("—"))
+            r = table.rowCount()
+            table.insertRow(r)
+            table.setItem(r, _COINS_COL_COIN, self._bill_table_item(label, align=center))
+            table.setItem(
+                r,
+                _COINS_COL_AMOUNT,
+                self._bill_table_item(format_bill_amount_display(amount_cents), align=center),
+            )
+            table.setItem(
+                r,
+                _COINS_COL_COUNT_IDX,
+                self._bill_table_item(str(count), align=center),
+            )
             total_amount += amount_cents
             total_count += count
 
-        if aggregate_only:
-            row = bill_rows[0]
-            if isinstance(row, SasBillDenomRow):
-                count = row.count
-                amount_cents = row.amount_cents
-            else:
-                count = int(getattr(row, "count", 0))
-                amount_cents = int(getattr(row, "amount_cents", 0))
-            sas_cnt_norm = self._normalize_int_for_compare(str(count))
-            mac_cnt_norm = (
-                self._normalize_int_for_compare(stacker_cnt_raw) if stacker_cnt_raw else "—"
-            )
-            sas_amt_norm = self._normalize_int_for_compare(str(amount_cents))
-            mac_amt_norm = self._normalize_int_for_compare(stacker_amt_raw or "")
-            count_ok = not stacker_cnt_raw or sas_cnt_norm == mac_cnt_norm
-            amount_ok = not stacker_amt_raw or sas_amt_norm == mac_amt_norm
-            if not has_cabinet_totals:
-                status = "PENDING"
-            elif count_ok and amount_ok:
-                status = "MATCH"
-            else:
-                status = "MISMATCH"
-            r = self._bills_table.rowCount() - 1
-            if r >= 0:
-                machine_display = mac_cnt_norm
-                if mac_cnt_norm != "—" and stacker_amt_raw:
-                    machine_display = f"{mac_cnt_norm} / {self._normalize_int_for_compare(stacker_amt_raw)}"
-                self._bills_table.setItem(r, 4, QTableWidgetItem(machine_display))
-                st_item = self._bill_status_item(status)
-                self._bills_table.setItem(r, 5, st_item)
+        if aggregate_totals is not None:
+            total_amount = int(aggregate_totals.get("amount_cents", 0))
+            total_count = int(aggregate_totals.get("count", 0))
+
+        r = table.rowCount()
+        table.insertRow(r)
+        total_fg = self._bill_total_foreground()
+        table.setItem(
+            r,
+            _COINS_COL_COIN,
+            self._bill_table_item("TOTAL", align=center, bold=True, foreground=total_fg),
+        )
+        table.setItem(
+            r,
+            _COINS_COL_AMOUNT,
+            self._bill_table_item(
+                format_bill_amount_display(total_amount),
+                align=center,
+                bold=True,
+                foreground=total_fg,
+            ),
+        )
+        table.setItem(
+            r,
+            _COINS_COL_COUNT_IDX,
+            self._bill_table_item(str(total_count), align=center, bold=True, foreground=total_fg),
+        )
+        self._fit_bill_table_height(table)
+
+    def _render_bill_table(
+        self,
+        table: QTableWidget,
+        bill_rows: list,
+        *,
+        direction: str = "in",
+    ) -> None:
+        from network.sas_serial_meters import SasBillDenomRow
+
+        table.setRowCount(0)
+        if not bill_rows:
             return
 
-        r = self._bills_table.rowCount()
-        self._bills_table.insertRow(r)
-        total_label = QTableWidgetItem("TOTAL")
-        total_label.setForeground(QColor("#000000"))
-        font = total_label.font()
-        font.setBold(True)
-        total_label.setFont(font)
-        self._bills_table.setItem(r, 0, total_label)
-        total_amount_text = self._format_bill_dollars(total_amount)
-        if self._show_dollars and stacker_amt_raw:
-            machine_amount_text = self._format_bill_credits_as_dollars(stacker_amt_raw)
-        elif stacker_amt_raw:
-            machine_amount_text = self._normalize_int_for_compare(stacker_amt_raw)
-        else:
-            machine_amount_text = "—"
-        machine_count_text = (
-            self._normalize_int_for_compare(stacker_cnt_raw) if stacker_cnt_raw else "—"
+        body_rows, aggregate_totals = prepare_bill_table_body_rows(
+            bill_rows,
+            direction=direction,
         )
-        total_status = "PENDING"
-        if has_cabinet_totals:
-            sas_cnt_norm = self._normalize_int_for_compare(str(total_count))
-            mac_cnt_norm = self._normalize_int_for_compare(machine_count_text)
-            sas_amt_norm = self._normalize_int_for_compare(str(total_amount))
-            mac_amt_norm = self._normalize_int_for_compare(stacker_amt_raw or "")
-            count_ok = not stacker_cnt_raw or sas_cnt_norm == mac_cnt_norm
-            amount_ok = not stacker_amt_raw or sas_amt_norm == mac_amt_norm
-            total_status = "MATCH" if count_ok and amount_ok else "MISMATCH"
-        machine_display = machine_count_text
-        if machine_count_text != "—" and machine_amount_text != "—":
-            machine_display = f"{machine_count_text} / {machine_amount_text}"
-        elif machine_amount_text != "—" and machine_count_text == "—":
-            machine_display = machine_amount_text
-        for col, text in (
-            (1, total_amount_text),
-            (2, str(total_count)),
-            (3, ""),
-            (4, machine_display),
-            (5, total_status),
-        ):
-            item = QTableWidgetItem(text)
-            item.setFont(font)
-            if col == 5:
-                item = self._bill_status_item(total_status)
-                item.setFont(font)
-            self._bills_table.setItem(r, col, item)
+        center = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+
+        total_amount = 0
+        total_count = 0
+        for row in body_rows:
+            if isinstance(row, SasBillDenomRow):
+                label = row.label
+                amount_cents = row.amount_cents
+                count = row.count
+            else:
+                label = str(getattr(row, "label", ""))
+                amount_cents = int(getattr(row, "amount_cents", 0))
+                count = int(getattr(row, "count", 0))
+            r = table.rowCount()
+            table.insertRow(r)
+            table.setItem(
+                r,
+                _BILLS_COL_BILL,
+                self._bill_table_item(label, align=center),
+            )
+            table.setItem(
+                r,
+                _BILLS_COL_AMOUNT,
+                self._bill_table_item(format_bill_amount_display(amount_cents), align=center),
+            )
+            table.setItem(
+                r,
+                _BILLS_COL_COUNT_IDX,
+                self._bill_table_item(str(count), align=center),
+            )
+            total_amount += amount_cents
+            total_count += count
+
+        if aggregate_totals is not None:
+            total_amount = int(aggregate_totals.get("amount_cents", 0))
+            total_count = int(aggregate_totals.get("count", 0))
+
+        r = table.rowCount()
+        table.insertRow(r)
+        total_fg = self._bill_total_foreground()
+        table.setItem(
+            r,
+            _BILLS_COL_BILL,
+            self._bill_table_item("TOTAL", align=center, bold=True, foreground=total_fg),
+        )
+        table.setItem(
+            r,
+            _BILLS_COL_AMOUNT,
+            self._bill_table_item(
+                format_bill_amount_display(total_amount),
+                align=center,
+                bold=True,
+                foreground=total_fg,
+            ),
+        )
+        table.setItem(
+            r,
+            _BILLS_COL_COUNT_IDX,
+            self._bill_table_item(str(total_count), align=center, bold=True, foreground=total_fg),
+        )
+        self._fit_bill_table_height(table)
+
+    @staticmethod
+    def _fit_bill_table_height(table: QTableWidget) -> None:
+        """Shrink table to row content (compact EGM-style, no empty scroll area)."""
+        header_h = table.horizontalHeader().height()
+        row_h = table.verticalHeader().defaultSectionSize()
+        frame = table.frameWidth() * 2
+        table.setFixedHeight(header_h + row_h * max(table.rowCount(), 1) + frame)
 
     def _load_bills_from_paste(self, paste_text: str) -> None:
-        from network.sas_serial_meters import build_bill_display_rows, parse_sas_bill_paste
+        from network.sas_serial_meters import (
+            build_bill_display_rows,
+            build_bill_out_display_rows,
+            parse_sas_bill_paste,
+        )
 
-        per_denom = parse_sas_bill_paste(paste_text)
         rows = build_bill_display_rows(
-            bill_rows=per_denom,
+            bill_rows=parse_sas_bill_paste(paste_text),
             paste_text=paste_text,
             machine_state=self._machine_state or None,
         )
-        if rows:
-            self._render_bills(rows)
+        out_rows = build_bill_out_display_rows()
+        if rows or out_rows:
+            self._render_bills(rows, out_rows=out_rows)
 
     def _clear_all(self) -> None:
         """Reset the dialog: empty the paste box (upper) and the results table (bottom)."""
         self._paste.clear()
-        self._table.clearContents()
-        self._table.setRowCount(0)
+        for tbl in self._verify_tables:
+            tbl.clearContents()
+            tbl.setRowCount(0)
+        self._reset_game_summary()
+        self._reset_master_summary()
+        self._reset_transfer_summary()
+        self._reset_security_summary()
+        self._theme_perf_by_paytable = {}
+        self._game_catalog_folders = {}
+        self._game_theme_ids = []
+        if self._game_theme_combo is not None:
+            blocked = self._game_theme_combo.blockSignals(True)
+            self._game_theme_combo.clear()
+            self._game_theme_combo.addItem(GAME_THEME_TOTAL)
+            self._game_theme_combo.setCurrentIndex(0)
+            self._game_theme_combo.blockSignals(blocked)
+        if self._game_paytable_combo is not None:
+            blocked = self._game_paytable_combo.blockSignals(True)
+            self._game_paytable_combo.clear()
+            self._game_paytable_combo.addItem(GAME_THEME_TOTAL)
+            self._game_paytable_combo.setEnabled(False)
+            self._game_paytable_combo.setCurrentIndex(0)
+            self._game_paytable_combo.blockSignals(blocked)
         self._bills_table.clearContents()
         self._bills_table.setRowCount(0)
-        self._bill_reject_label.setText("BILL REJECT COUNT —")
+        self._bills_out_table.clearContents()
+        self._bills_out_table.setRowCount(0)
+        self._bill_reject_label.setText(format_bill_reject_count_label(None))
+        for table in self._coin_tables.values():
+            table.clearContents()
+            table.setRowCount(0)
+        self._render_coins(machine_state=None, allow_machine_lookup=False)
         self._sas_2f_values = {}
         self._update_2f_column_visibility()
         self._last_parsed_rows = []
-        self._last_bill_rows = []
+        self._last_bill_in_rows = []
+        self._last_bill_out_rows = []
+        self._cached_meter_result = None
+        self._meter_fetch_error = None
+        self._meter_fetch_user_clicked_apply = False
+        self._last_displayed_paste_fingerprint = ""
+        self._loaded_cabinet_scan_root = ""
         self._machine_state = {}
         self._machine_state_loaded = False
+        self._update_prefetch_status()
         self._paste.setFocus()
 
     def _name_for_code(self, rid: str) -> str:
@@ -1933,35 +4117,6 @@ class SasVerifyDialog(QDialog):
         ]
         QApplication.clipboard().setText("\n".join(lines))
 
-    def _copy_table_selection_tsv(
-        self,
-        table: QTableWidget,
-        headers: list[str],
-        *,
-        excel_text_cols: frozenset[int] = frozenset(),
-        text_resolver: Callable[[int, int, str], str] | None = None,
-        fallback_all: Callable[[], None] | None = None,
-    ) -> None:
-        rows = sorted({idx.row() for idx in table.selectedIndexes()})
-        if not rows:
-            if fallback_all is not None:
-                fallback_all()
-            return
-        header = "\t".join(headers)
-        lines = [
-            header,
-            *(
-                self._generic_table_row_tsv(
-                    table,
-                    r,
-                    excel_text_cols=excel_text_cols,
-                    text_resolver=text_resolver,
-                )
-                for r in rows
-            ),
-        ]
-        QApplication.clipboard().setText("\n".join(lines))
-
     def _accounting_copy_headers(self) -> list[str]:
         return self._table_headers_for_copy()
 
@@ -1969,6 +4124,14 @@ class SasVerifyDialog(QDialog):
         if col == COL_METER_NAME and not text:
             text = self._name_for_code(self._meter_code_for_row(row))
         return text
+
+    def _verify_cell_resolver(self, table: QTableWidget) -> Callable[[int, int, str], str]:
+        def resolver(row: int, col: int, text: str) -> str:
+            if col == COL_METER_NAME and not text:
+                text = self._name_for_code(self._meter_code_for_row(row, table))
+            return text
+
+        return resolver
 
     def _bills_copy_headers(self) -> list[str]:
         return list(_BILLS_TABLE_HEADERS)
@@ -1993,8 +4156,7 @@ class SasVerifyDialog(QDialog):
         headers = headers_fn()
 
         menu = QMenu(self)
-        copy_menu = menu.addMenu("Copy")
-        act_all = copy_menu.addAction(all_label)
+        act_all = menu.addAction(all_label)
         act_all.triggered.connect(
             lambda _checked=False: self._copy_table_all_tsv(
                 table,
@@ -2003,7 +4165,7 @@ class SasVerifyDialog(QDialog):
                 text_resolver=text_resolver,
             )
         )
-        act_row = copy_menu.addAction("Copy selected row")
+        act_row = menu.addAction("Copy selected row")
         act_row.setEnabled(has_row)
         if row >= 0:
             act_row.triggered.connect(
@@ -2025,7 +4187,7 @@ class SasVerifyDialog(QDialog):
                     text_resolver=text_resolver,
                 )
             )
-        col_menu = copy_menu.addMenu("Copy column")
+        col_menu = menu.addMenu("Copy column")
         col_menu.setEnabled(bool(visible_cols))
         for c in visible_cols:
             try:
@@ -2034,8 +4196,6 @@ class SasVerifyDialog(QDialog):
                 col_label = table.horizontalHeaderItem(c)
                 col_label = col_label.text() if col_label else f"Column {c + 1}"
             act_col = col_menu.addAction(col_label)
-            act_col.setCheckable(True)
-            act_col.setChecked(c == col and col >= 0)
             act_col.triggered.connect(
                 lambda _checked=False, column=c: self._copy_table_column_tsv(
                     table,
@@ -2047,46 +4207,47 @@ class SasVerifyDialog(QDialog):
             )
         menu.exec(table.viewport().mapToGlobal(pos))
 
-    def _copy_all_meters_tsv(self) -> None:
-        self._copy_table_all_tsv(
-            self._table,
-            self._accounting_copy_headers(),
-            excel_text_cols=_EXCEL_TEXT_COLS,
-            text_resolver=self._accounting_cell_resolver,
-        )
+    def _copy_bill_table_row_tsv(self, table: QTableWidget) -> None:
+        headers = self._bills_copy_headers()
+        self._copy_table_row_tsv(table, headers, None)
 
-    def _copy_all_bills_tsv(self) -> None:
-        self._copy_table_all_tsv(self._bills_table, self._bills_copy_headers())
+    def _copy_focused_table_row_tsv(self) -> None:
+        focus = QApplication.focusWidget()
+        if focus is self._bills_out_table or (
+            focus is not None and self._bills_out_table.isAncestorOf(focus)
+        ):
+            self._copy_bill_table_row_tsv(self._bills_out_table)
+            return
+        if focus is self._bills_table or (
+            focus is not None and self._bills_table.isAncestorOf(focus)
+        ):
+            self._copy_bill_table_row_tsv(self._bills_table)
+            return
+        for tbl in self._verify_tables:
+            if focus is tbl or (focus is not None and tbl.isAncestorOf(focus)):
+                self._copy_table_row_tsv(
+                    tbl,
+                    self._accounting_copy_headers(),
+                    None,
+                    excel_text_cols=_EXCEL_TEXT_COLS,
+                    text_resolver=self._verify_cell_resolver(tbl),
+                )
+                return
 
-    def _copy_selected_row_tsv(self, row: int | None = None) -> None:
-        self._copy_table_row_tsv(
-            self._table,
-            self._accounting_copy_headers(),
-            row,
-            excel_text_cols=_EXCEL_TEXT_COLS,
-            text_resolver=self._accounting_cell_resolver,
-        )
-
-    def _copy_selected_column_tsv(self, col: int) -> None:
-        self._copy_table_column_tsv(
-            self._table,
-            self._accounting_copy_headers(),
-            col,
-            excel_text_cols=_EXCEL_TEXT_COLS,
-            text_resolver=self._accounting_cell_resolver,
-        )
-
-    def _on_table_context_menu(self, pos: QPoint) -> None:
+    def _on_verify_table_context_menu(self, table: QTableWidget, pos: QPoint) -> None:
         self._show_table_copy_menu(
-            self._table,
+            table,
             pos,
             all_label="Copy all meters",
             headers_fn=self._accounting_copy_headers,
             excel_text_cols=_EXCEL_TEXT_COLS,
-            text_resolver=self._accounting_cell_resolver,
+            text_resolver=self._verify_cell_resolver(table),
         )
 
-    def _on_bills_table_context_menu(self, pos: QPoint) -> None:
+    def _on_table_context_menu(self, pos: QPoint) -> None:
+        self._on_verify_table_context_menu(self._table, pos)
+
+    def _on_bills_in_table_context_menu(self, pos: QPoint) -> None:
         self._show_table_copy_menu(
             self._bills_table,
             pos,
@@ -2094,30 +4255,12 @@ class SasVerifyDialog(QDialog):
             headers_fn=self._bills_copy_headers,
         )
 
-    def _copy_focused_table_selection_tsv(self) -> None:
-        focus = QApplication.focusWidget()
-        if focus is self._bills_table or (
-            focus is not None and self._bills_table.isAncestorOf(focus)
-        ):
-            self._copy_bills_selection_tsv()
-            return
-        self._copy_selection_tsv()
-
-    def _copy_selection_tsv(self) -> None:
-        """Ctrl+C: copy selected rows as full TSV rows (all columns). Falls back to all."""
-        self._copy_table_selection_tsv(
-            self._table,
-            self._accounting_copy_headers(),
-            excel_text_cols=_EXCEL_TEXT_COLS,
-            text_resolver=self._accounting_cell_resolver,
-            fallback_all=self._copy_all_meters_tsv,
-        )
-
-    def _copy_bills_selection_tsv(self) -> None:
-        self._copy_table_selection_tsv(
-            self._bills_table,
-            self._bills_copy_headers(),
-            fallback_all=self._copy_all_bills_tsv,
+    def _on_bills_out_table_context_menu(self, pos: QPoint) -> None:
+        self._show_table_copy_menu(
+            self._bills_out_table,
+            pos,
+            all_label="Copy all bills",
+            headers_fn=self._bills_copy_headers,
         )
 
     def _copy_report(self) -> None:
@@ -2144,6 +4287,13 @@ class SasVerifyDialog(QDialog):
                 )
             )
         QApplication.clipboard().setText("\n".join(lines))
+
+    def changeEvent(self, event) -> None:  # type: ignore[override]
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            self._apply_meter_panel_styles()
+            if self._last_bill_in_rows or self._last_bill_out_rows:
+                self._render_bills(machine_state=self._machine_state or None)
 
     def mismatch_detected(self) -> bool:
         for i in range(self._table.rowCount()):

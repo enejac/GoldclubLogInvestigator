@@ -532,7 +532,7 @@ class MainWindow(QMainWindow):
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Scan root:"))
         self._path_edit = QLineEdit()
-        self._path_edit.setPlaceholderText(r"e.g. C:\Goldclub\var\log")
+        self._path_edit.setPlaceholderText(r"e.g. C:\Goldclub\var\log or D:\_LogFiles\log_DD_MM_YYYY")
         self._browse_btn = QPushButton("Browse…")
         self._browse_btn.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
@@ -1343,6 +1343,28 @@ class MainWindow(QMainWindow):
                 8000,
             )
 
+    def _default_local_scan_root(self) -> str:
+        saved = str(
+            self._settings.value("connection/local_log_path", DEFAULT_LOCAL_LOG_ROOT)
+        )
+        if self._radio_remote.isChecked():
+            return saved
+        from network.goldclub_paths import discover_portable_scan_roots
+
+        portable = discover_portable_scan_roots()
+        if not portable:
+            return saved
+        saved_path = Path(saved)
+        usb_exports = [p for p in portable if Path(p).name.lower().startswith("log_")]
+        if usb_exports and (
+            not saved_path.is_dir()
+            or saved.strip().lower() == DEFAULT_LOCAL_LOG_ROOT.lower()
+        ):
+            return usb_exports[0]
+        if not saved_path.is_dir():
+            return portable[0]
+        return saved
+
     def _load_connection_settings(self) -> None:
         mode = self._settings.value("connection/mode", "local")
         remote = str(mode).lower() == "remote"
@@ -1355,13 +1377,7 @@ class MainWindow(QMainWindow):
         self._ip_edit.setText(
             str(self._settings.value("connection/remote_ip", DEFAULT_REMOTE_IP))
         )
-        self._path_edit.setText(
-            str(
-                self._settings.value(
-                    "connection/local_log_path", DEFAULT_LOCAL_LOG_ROOT
-                )
-            )
-        )
+        self._path_edit.setText(self._default_local_scan_root())
         self._apply_mode_to_widgets()
         self._autoscroll_chk.setChecked(
             bool(self._settings.value("live/autoscroll", False))
@@ -1392,7 +1408,7 @@ class MainWindow(QMainWindow):
         if remote:
             self._path_edit.setPlaceholderText(r"Enter root directory or UNC path...")
         else:
-            self._path_edit.setPlaceholderText(r"e.g. C:\Goldclub\var\log")
+            self._path_edit.setPlaceholderText(r"e.g. C:\Goldclub\var\log or D:\_LogFiles\log_DD_MM_YYYY")
         self._update_incidents_capture_button_enabled()
         self._sync_remote_ram_target_ip()
 

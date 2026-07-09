@@ -21,18 +21,12 @@ set "YYYY=%dt:~0,4%"
 set "LogFolder=log_%DD%_%MM%_%YYYY%"
 
 echo ******************************************
-echo *****Terminating non-Windows Embedded tasks*****
+echo *****Terminating log writers (keep SAS/COM stack running)*****
 echo ******************************************
+:: Do NOT kill CommCtrl.exe / CommCtrlSAS.exe — that breaks live SAS over COM.
 ::taskkill /F /IM BiOS.exe > nul 2>&1
 taskkill /F /IM bootstrap.exe > nul 2>&1
-taskkill /F /IM CommCtrl.exe > nul 2>&1
-taskkill /F /IM CommCtrlSAS.exe > nul 2>&1
-taskkill /F /IM GoldClub.Aurum.Services.e > nul 2>&1
-taskkill /F /IM GoldClub.Logging.LogDaemo > nul 2>&1
-taskkill /F /IM hwsubsys.exe > nul 2>&1
-taskkill /F /IM MachineRemoteTools.exe > nul 2>&1
 taskkill /F /IM OneHand.exe > nul 2>&1
-taskkill /F /IM SlotConfigurationSync.exe > nul 2>&1
 echo ******************************************
 ping 0.0.0.0 -n 2 > nul
 
@@ -44,6 +38,10 @@ for /d %%i in ("%LOG_ROOT%log*") do rd /s /q "%%i"
 echo ******************************************
 ping 0.0.0.0 -n 5 > nul
 Xcopy /E /I /S  C:\Goldclub\var\log  "%LOG_ROOT%%LogFolder%"
+echo ******************************************
+ping 0.0.0.0 -n 2 > nul
+echo *****Copying meter state (GCMessenger full stack)******
+Xcopy /E /I /S  C:\Goldclub\var\state\GoldClub.Aurum.Services\GCMessenger  "%LOG_ROOT%%LogFolder%\state\GoldClub.Aurum.Services\GCMessenger"
 echo ******************************************
 ping 0.0.0.0 -n 2 > nul
 Xcopy /E /I /S  C:\Goldclub\slot\HWDrivers  "%LOG_ROOT%%LogFolder%\HWDrivers"
@@ -60,6 +58,10 @@ echo ******************************************
 ping 0.0.0.0 -n 2  > nul
 echo *********************************************
 echo **********Copy files COMPLETED*************
-echo *********************************************                                        
+echo *********************************************
+echo *****Restarting game + SAS services (COM link)******
+net start "GoldClub Serial Communication Gateway SAS" > nul 2>&1
+net start "GoldClub.Aurum.Services" > nul 2>&1
+if exist "C:\Goldclub\slot\OneHand.exe" start "" /D "C:\Goldclub\slot" OneHand.exe
 ping 0.0.0.0 -n 5 > nul
 taskkill /f /im cmd.exe

@@ -291,11 +291,17 @@ def test_build_aggregate_bill_rows_from_6f_000b() -> None:
 
 
 def test_align_bills_in_sas_credits_maps_dollars_to_credits() -> None:
-    from network.meter_comparator import align_bills_in_sas_credits
+    from network.meter_comparator import align_bills_in_sas_credits, bills_in_meters_match
 
     assert align_bills_in_sas_credits("6", "600") == "600"
     assert align_bills_in_sas_credits("600", "600") == "600"
     assert align_bills_in_sas_credits("6", "601") == "6"
+    assert align_bills_in_sas_credits("209", "20960") == "20960"
+    assert align_bills_in_sas_credits("209", "20900") == "20900"
+    assert align_bills_in_sas_credits("1769", "176930") == "176930"
+    assert bills_in_meters_match("209", "20960")
+    assert bills_in_meters_match("1769", "176930")
+    assert not bills_in_meters_match("6", "601")
 
 
 def test_0b00_len8_reports_whole_dollar_bcd() -> None:
@@ -304,6 +310,109 @@ def test_0b00_len8_reports_whole_dollar_bcd() -> None:
         "17 00 09 00 00 00 00 00 00 01 00 00 23 42"
     )
     assert dict(ordered)["0B00"] == 6
+
+
+def test_merge_bill_rows_with_catalog_fills_missing_denoms() -> None:
+    from network.sas_serial_meters import (
+        SasBillDenomRow,
+        merge_bill_rows_with_catalog,
+        paste_has_bill_lp_attempts,
+    )
+
+    responded = (
+        SasBillDenomRow(
+            sas_cmd=0x33,
+            label="$5.00",
+            face_cents=500,
+            enabled=True,
+            count=1,
+            amount_cents=500,
+        ),
+    )
+    rows = merge_bill_rows_with_catalog(responded)
+    assert len(rows) == 7
+    assert rows[2].label == "$5.00"
+    assert rows[2].count == 1
+    assert rows[0].count == 0
+    assert rows[0].source == "missing"
+    paste = "TX>= 01 31 D2 39\nRX<= (no response - bill $1.00 LP 31)"
+    assert paste_has_bill_lp_attempts(paste)
+
+
+def test_build_bill_display_rows_uses_full_catalog_after_lp_attempts() -> None:
+    from network.sas_serial_meters import build_bill_display_rows
+
+    paste = (
+        "; --- Bill-in long polls ($31-$45, enabled only) ---\n"
+        "TX>= 01 31 D2 39\n"
+        "RX<= (no response - bill $1.00 LP 31)\n"
+    )
+    rows = build_bill_display_rows(bill_rows=(), paste_text=paste)
+    assert len(rows) == 7
+    assert all(r.count == 0 for r in rows)
+
+
+def test_build_bill_display_rows_empty_fallback_catalog() -> None:
+    from network.sas_serial_meters import build_bill_display_rows
+
+    rows = build_bill_display_rows(bill_rows=(), paste_text="RX<= 01 6F 55 00 00 05 00 09")
+    assert len(rows) == 7
+    assert rows[0].label == "$1.00"
+    assert rows[0].count == 0
+
+
+def test_build_bill_rows_from_cabinet_note_meters() -> None:
+    from network.accounting_state_loader import extract_cabinet_bill_note_meters
+    from network.sas_serial_meters import build_bill_rows_from_cabinet_note_meters, build_bill_display_rows
+
+    state = {
+        "note_curInCnt_500": "6",
+        "note_curInAmt_500": "3000",
+        "note_curInCnt_10000": "11",
+        "note_curInAmt_10000": "110000",
+    }
+    by_face = extract_cabinet_bill_note_meters(state)
+    assert by_face[500]["count"] == 6
+    assert by_face[500]["amount_cents"] == 3000
+    rows = build_bill_rows_from_cabinet_note_meters(state)
+    assert len(rows) == 2
+    five = next(r for r in rows if r.label == "$5.00")
+    assert five.count == 6
+    assert five.amount_cents == 3000
+    assert five.source == "cabinet"
+    display = build_bill_display_rows(machine_state=state)
+    assert len(display) == 7
+    assert next(r for r in display if r.label == "$5.00").count == 6
+    assert all(r.count == 0 for r in display if r.label == "$1.00")
+
+
+def test_expand_aggregate_bill_assigns_single_denom_row() -> None:
+    from gui.sas_verify_dialog import prepare_bill_table_body_rows
+    from network.sas_serial_meters import SasBillDenomRow, build_aggregate_bill_rows
+
+    paste = (
+        "RX<= 01 6F 4D 00 00 0B 00 09 00 00 00 00 00 00 00 05 00 "
+        "17 00 09 00 00 00 00 00 00 01 00 00 23 42"
+    )
+    agg_rows = build_aggregate_bill_rows(
+        paste_text=paste,
+        machine_state={"notesinstackercnt": "1", "notesinstackeramt": "500"},
+    )
+    body, totals = prepare_bill_table_body_rows(agg_rows, direction="in")
+    assert totals is None
+    five = next(r for r in body if r.label == "$5.00")
+    assert five.count == 1
+    assert five.amount_cents == 500
+    assert all(r.count == 0 for r in body if r.label != "$5.00")
+
+
+def test_build_bill_out_display_rows_full_catalog() -> None:
+    from network.sas_serial_meters import build_bill_out_display_rows
+
+    rows = build_bill_out_display_rows()
+    assert len(rows) == 7
+    assert rows[0].direction == "out"
+    assert rows[0].count == 0
 
 
 def test_build_aggregate_bill_rows_aligns_dollar_sas_000b() -> None:
@@ -319,3 +428,330 @@ def test_build_aggregate_bill_rows_aligns_dollar_sas_000b() -> None:
     )
     assert len(rows) == 1
     assert rows[0].amount_cents == 600
+
+
+def test_should_skip_cabinet_reload_when_loaded_and_same_root() -> None:
+    from gui.sas_verify_dialog import should_skip_cabinet_reload
+
+    root = r"\\10.0.0.90\c$\Goldclub\var\log"
+    assert should_skip_cabinet_reload(
+        scan_root=root,
+        loaded_scan_root=root,
+        machine_state_loaded=True,
+    )
+
+
+def test_meter_fetch_display_action_apply_when_cached() -> None:
+    from gui.sas_verify_dialog import meter_fetch_display_action
+
+    assert (
+        meter_fetch_display_action(
+            cached_result=object(),
+            fetch_running=False,
+        )
+        == "apply"
+    )
+
+
+def test_meter_fetch_display_action_capture_after_user_applied() -> None:
+    from gui.sas_verify_dialog import meter_fetch_display_action
+
+    assert (
+        meter_fetch_display_action(
+            cached_result=object(),
+            fetch_running=False,
+            user_already_applied=True,
+        )
+        == "capture"
+    )
+
+
+def test_meter_fetch_display_action_capture_fallback() -> None:
+    from gui.sas_verify_dialog import meter_fetch_display_action
+
+    assert (
+        meter_fetch_display_action(
+            cached_result=None,
+            fetch_running=False,
+        )
+        == "capture"
+    )
+
+
+def test_format_bill_amount_display() -> None:
+    from gui.sas_verify_dialog import format_bill_amount_display
+
+    assert format_bill_amount_display(100) == "1.00"
+    assert format_bill_amount_display(2200) == "22.00"
+    assert format_bill_amount_display(20800) == "208.00"
+    assert format_bill_amount_display(0) == "0.00"
+
+
+def test_format_bill_reject_count_label() -> None:
+    from gui.sas_verify_dialog import format_bill_reject_count_label
+
+    assert format_bill_reject_count_label("0") == "BILL REJECT COUNT 0"
+    assert format_bill_reject_count_label("") == "BILL REJECT COUNT"
+    assert format_bill_reject_count_label(None) == "BILL REJECT COUNT"
+
+
+def test_prepare_bill_table_body_rows_expands_aggregate() -> None:
+    from gui.sas_verify_dialog import prepare_bill_table_body_rows
+    from network.sas_serial_meters import SasBillDenomRow
+
+    agg = SasBillDenomRow(
+        sas_cmd=0,
+        label="Total Bills In",
+        face_cents=0,
+        enabled=True,
+        count=17,
+        amount_cents=20800,
+        sas_code="000B",
+        source="aggregate",
+        direction="in",
+    )
+    body, totals = prepare_bill_table_body_rows([agg], direction="in")
+    assert len(body) == 7
+    assert totals == {"count": 17, "amount_cents": 20800}
+    assert all(r.count == 0 for r in body)
+
+
+def test_verify_bills_table_spec_ok() -> None:
+    from gui.sas_verify_dialog import _BILLS_TABLE_HEADERS, verify_bills_table_spec
+
+    assert verify_bills_table_spec(
+        column_count=3,
+        headers=_BILLS_TABLE_HEADERS,
+        vertical_header_hidden=True,
+        row_count=8,
+    ) == []
+
+
+def test_verify_bills_table_spec_detects_issues() -> None:
+    from gui.sas_verify_dialog import verify_bills_table_spec
+
+    issues = verify_bills_table_spec(
+        column_count=6,
+        headers=("Bill", "Amount", "Count"),
+        vertical_header_hidden=False,
+    )
+    assert any("3 columns" in i for i in issues)
+    assert any("headers" in i for i in issues)
+    assert any("vertical" in i for i in issues)
+
+
+def test_format_master_amount_display() -> None:
+    from gui.sas_verify_dialog import format_master_amount_display
+
+    assert format_master_amount_display("20800") == "$208.00"
+    assert format_master_amount_display("500") == "$5.00"
+    assert format_master_amount_display("0") == "$0.00"
+    assert format_master_amount_display("") == "$0.00"
+
+
+def test_compute_master_summary_reference_totals() -> None:
+    from gui.sas_verify_dialog import compute_master_summary
+
+    values = {
+        "000B": "20800",
+        "0000": "0",
+        "0017": "500",
+        "0015": "500",
+        "0023": "500",
+        "006E": "0",
+        "0001": "0",
+        "0003": "21555",
+        "0016": "0",
+        "0018": "0",
+    }
+    totals = compute_master_summary(values)
+    assert abs(totals["credit_in"] - 223.0) < 0.01
+    assert abs(totals["credit_out"] - 215.55) < 0.01
+    assert abs(totals["total_credit"] - 7.45) < 0.01
+    assert totals["inout_pct"] is not None
+    assert abs(totals["inout_pct"] - 96.66) < 0.05
+
+
+def test_format_transfer_count_display() -> None:
+    from gui.sas_verify_dialog import format_transfer_count_display, lookup_normalized_machine_value
+
+    assert format_transfer_count_display("") == "0"
+    assert format_transfer_count_display("12") == "12"
+    assert format_transfer_count_display("1,234") == "1234"
+    state = {"watTransferInCnt": "7", "TicketInCnt": "3"}
+    assert lookup_normalized_machine_value(state, "wattransferincnt") == "7"
+    assert lookup_normalized_machine_value(state, "missing") == ""
+
+
+def test_verify_master_tab_spec_ok() -> None:
+    from gui.sas_verify_dialog import MASTER_TRACKED_CODES, verify_master_tab_spec
+
+    assert verify_master_tab_spec(
+        group_titles=("TOTAL CREDIT", "HANDPAY OUT", "WAGERED CREDITS"),
+        value_label_codes=frozenset(MASTER_TRACKED_CODES),
+        has_credit_section_totals=True,
+    ) == []
+
+
+def test_compute_game_summary_reference_totals() -> None:
+    from gui.sas_verify_dialog import compute_game_summary, format_game_pct_display
+
+    totals = compute_game_summary(
+        played_raw="3",
+        won_raw="1",
+        lost_raw="0",
+        bet_raw="170",
+        win_raw="200",
+    )
+    assert totals["played"] == 3
+    assert totals["won"] == 1
+    assert totals["lost"] == 2
+    assert totals["bet"] == 1.70
+    assert totals["win"] == 2.00
+    assert abs(float(totals["bet_minus_win"]) - (-0.30)) < 0.001
+    assert abs(float(totals["yield_pct"]) - 117.647) < 0.05
+    assert abs(float(totals["hold_pct"]) - (-17.647)) < 0.05
+    assert format_game_pct_display(float(totals["yield_pct"])) == "117.65%"
+
+
+def test_verify_game_tab_spec_ok() -> None:
+    from gui.sas_verify_dialog import GAME_RESIDUAL_ROWS, verify_game_tab_spec
+
+    residual_keys = frozenset(k.lower().replace(" ", "_") for k, _ in GAME_RESIDUAL_ROWS)
+    assert verify_game_tab_spec(
+        group_titles=(
+            "Performance Meters",
+            "Residual Credit Removal Feature",
+            "Machine Yield Chart",
+        ),
+        perf_label_keys=frozenset(
+            {
+                "played",
+                "won",
+                "lost",
+                "bet",
+                "win",
+                "game_win",
+                "bonus_win",
+                "sas_bonus",
+                "prog_win",
+                "bet_minus_win",
+                "yield",
+                "hold",
+            }
+        ),
+        residual_label_keys=residual_keys,
+        has_yield_chart=True,
+    ) == []
+
+
+def test_parse_game_catalog_theme_ids() -> None:
+    from network.accounting_state_loader import parse_game_catalog_entries, parse_game_catalog_theme_ids
+
+    xml = """<?xml version="1.0"?>
+    <GameCatalogSettings>
+      <GameSelectorButton><Id>PR3_RedZone</Id><internalID>PR3_RedZone</internalID></GameSelectorButton>
+      <GameSelectorButton><Id>Sizzling Sevens HD HnW</Id><ThemePath>SizzlingSevensHD_HnW</ThemePath></GameSelectorButton>
+      <GameSelectorButton><ThemePath>RouletteGame</ThemePath></GameSelectorButton>
+    </GameCatalogSettings>"""
+    assert parse_game_catalog_theme_ids(xml) == [
+        "PR3_RedZone",
+        "Sizzling Sevens HD HnW",
+        "RouletteGame",
+    ]
+    assert parse_game_catalog_entries(xml)[1] == (
+        "Sizzling Sevens HD HnW",
+        "SizzlingSevensHD_HnW",
+    )
+
+
+def test_extract_theme_perf_meters_from_xml(tmp_path) -> None:
+    from network.accounting_state_loader import extract_theme_perf_meters_from_xml
+
+    xml = """<?xml version="1.0"?>
+    <root xmlns:d4p1="urn:test">
+      <d4p1:perfMeter d4p1:meterName="coinIn" d4p1:themeId="Roulette Game" d4p1:paytableId="return_97_0" d4p1:meterValue="170"/>
+      <d4p1:perfMeter d4p1:meterName="gamesPlayed" d4p1:themeId="Roulette Game" d4p1:paytableId="return_97_0" d4p1:meterValue="3"/>
+      <d4p1:perfMeter d4p1:meterName="coinIn" d4p1:themeId="PR3_RedZone" d4p1:paytableId="return_94_0" d4p1:meterValue="50"/>
+      <d4p1:perfMeter d4p1:meterName="coinIn" d4p1:themeId="" d4p1:paytableId="return_99_0" d4p1:meterValue="999"/>
+    </root>"""
+    p = tmp_path / "DeviceManagerData.xml_1"
+    p.write_text(xml, encoding="utf-8")
+    meters = extract_theme_perf_meters_from_xml(p)
+    assert meters["Roulette Game"]["return_97_0"]["coinin"] == "170"
+    assert meters["Roulette Game"]["return_97_0"]["gamesplayed"] == "3"
+    assert meters["PR3_RedZone"]["return_94_0"]["coinin"] == "50"
+    assert "" not in meters
+
+
+def test_parse_math_settings_paytable_ids() -> None:
+    from network.accounting_state_loader import parse_math_settings_paytable_ids
+
+    xml = "<root><MathFile>return_94_0.thm</MathFile><Other>return_92_0</Other></root>"
+    assert parse_math_settings_paytable_ids(xml) == ["return_92_0", "return_94_0"]
+
+
+def test_aggregate_theme_paytable_meters() -> None:
+    from network.accounting_state_loader import aggregate_theme_paytable_meters
+
+    totals = aggregate_theme_paytable_meters(
+        {
+            "return_94_0": {"coinin": "100", "gamesplayed": "2"},
+            "return_92_0": {"coinin": "70", "gamesplayed": "1"},
+        }
+    )
+    assert totals == {"coinin": "170", "gamesplayed": "3"}
+
+
+def test_build_coin_panel_display_rows_aggregate() -> None:
+    from network.sas_serial_meters import build_coin_panel_display_rows, catalog_coin_panel_rows
+
+    rows, totals = build_coin_panel_display_rows("in", machine_state={"coinin": "940"})
+    assert len(rows) == len(catalog_coin_panel_rows("in"))
+    assert totals == {"amount_cents": 940, "count": 0, "sas_code": "0000"}
+
+
+def test_probe_com_port_available_reports_missing_port() -> None:
+    from network.sas_serial_meters import probe_com_port_available
+
+    ok, msg = probe_com_port_available("COM99999")
+    assert not ok
+    assert "COM99999" in msg
+
+
+def test_find_running_sas_com_blockers_returns_list() -> None:
+    from network.sas_serial_meters import find_running_sas_com_blockers
+
+    assert isinstance(find_running_sas_com_blockers(), list)
+
+
+def test_sas_poll_keeper_probe_cli() -> None:
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [sys.executable, str(repo / "scripts" / "sas_poll_keeper.py"), "--probe", "COM99999"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 1
+
+
+def test_verify_coins_table_spec_ok() -> None:
+    from gui.sas_verify_dialog import (
+        _COINS_CATALOG_ROW_COUNT,
+        _COINS_TABLE_COLUMN_COUNT,
+        _COINS_TABLE_HEADERS,
+        verify_coins_table_spec,
+    )
+
+    assert verify_coins_table_spec(
+        column_count=_COINS_TABLE_COLUMN_COUNT,
+        headers=_COINS_TABLE_HEADERS,
+        vertical_header_hidden=True,
+        row_count=_COINS_CATALOG_ROW_COUNT + 1,
+    ) == []

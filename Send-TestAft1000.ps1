@@ -69,6 +69,9 @@ param(
     # Optional cabinet admin credential for the faster WinRM transport (NTLM by IP).
     [pscredential] $Credential,
 
+    [string] $SasComPort = 'COM4',
+    [switch] $NoAutoSasPoll,
+
     # Maintenance: safely remove the WinDivert driver service on the cabinet, then exit.
     [switch] $RemoveDriver,
 
@@ -183,6 +186,8 @@ if ($Cashable)      { $invokeArgs.Cashable = $true }
 if ($Restricted)    { $invokeArgs.Restricted = $true }
 if ($NonRestricted) { $invokeArgs.NonRestricted = $true }
 if ($Credential)    { $invokeArgs.Credential = $Credential }
+if ($PSBoundParameters.ContainsKey('SasComPort')) { $invokeArgs.SasComPort = $SasComPort }
+if ($NoAutoSasPoll) { $invokeArgs.NoAutoSasPoll = $true }
 
 if ($PSCmdlet.ParameterSetName -eq 'Send') {
     $invokeArgs.Send = $true

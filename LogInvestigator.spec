@@ -49,6 +49,7 @@ datas = [
     ("issues/*.md", "issues"),
     ("issues/README.md", "issues"),
     ("cabinet_tools/InputAgent/InputAgent.cs", "cabinet_tools/InputAgent"),
+    ("assets/log_investigator_icon.png", "assets"),
 ]
 binaries = []
 hiddenimports = [
@@ -160,4 +161,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon="assets/log_investigator.ico",
 )

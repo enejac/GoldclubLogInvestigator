@@ -60,6 +60,24 @@ param(
     [string] $WinDivertDir = 'C:\Tools\WinDivert\extracted\WinDivert-2.2.2-A\x64',
     [int]    $MaxRetries = 3,
 
+    # When -Send and cabinet sasmsgr shows no recent 80/81 polls, establish host polls:
+    #   Auto (default) — WinDivert TCP poll sim on the cabinet (no COM/MUX); fallback COM4 keeper
+    #   WinDivert      — TCP poll sim only (WdPollInject pollaft + AFT in one session)
+    #   Com            — legacy COM4 sas_poll_keeper + separate WdInject.exe
+    #   None           — no auto polls (-NoAutoSasPoll forces this)
+    [ValidateSet('Auto', 'WinDivert', 'Com', 'None')]
+    [string] $SasPollMode = 'Auto',
+    [string] $SasComPort = 'COM4',
+    [int]    $SasPollWarmupSec = 4,
+    [int]    $WinDivertPollSeconds = 8,
+    [int]    $WinDivertPollIntervalMs = 200,
+    [int]    $WinDivertPollInjectDelayMs = 2000,
+    [int]    $WinDivertPollDrainSec = 4,
+    [int]    $WinDivertEphemWaitSec = 90,
+    [AllowNull()][datetime] $PollBaselineUtc = $null,
+    [int]    $PollAftRetryDelaySec = 25,
+    [switch] $NoAutoSasPoll,
+
     # WinRM by IP needs explicit NTLM credentials. On lab fleet IPs this is auto-filled
     # from LabAccess.ps1 (GOLD-CLUB\test) unless you pass -Credential yourself.
     [pscredential] $Credential,
@@ -88,6 +106,29 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Resolve-WinDivertDir {
+    param([string] $Preferred)
+    $candidates = @()
+    if ($Preferred) { $candidates += $Preferred }
+    $candidates += @(
+        'C:\Tools\WinDivert\extracted\WinDivert-2.2.2-A\x64',
+        'C:\Tools\WinDivert\x64'
+    )
+    foreach ($dir in ($candidates | Select-Object -Unique)) {
+        $dll = Join-Path $dir 'WinDivert.dll'
+        $sys = Join-Path $dir 'WinDivert64.sys'
+        if ((Test-Path -LiteralPath $dll) -and (Test-Path -LiteralPath $sys)) {
+            return $dir
+        }
+    }
+    throw @(
+        'WinDivert x64 not found. Expected WinDivert.dll + WinDivert64.sys under one of:',
+        '  C:\Tools\WinDivert\x64',
+        '  C:\Tools\WinDivert\extracted\WinDivert-2.2.2-A\x64',
+        'Pass -WinDivertDir <folder> or extract WinDivert 2.2.2 x64 to C:\Tools\WinDivert\x64.'
+    ) -join "`n"
+}
+
 function Show-WinDivertAftHelp {
     $runbook = Join-Path $PSScriptRoot 'aft\RUNBOOK.md'
     $readme = Join-Path $PSScriptRoot 'aft\README.md'
@@ -95,8 +136,12 @@ function Show-WinDivertAftHelp {
 Invoke-WinDivertAft.ps1 — inject raw SAS 0x72 AFT transfer into live CommCtrlSAS:31150 -> Aurum stream (WinDivert).
 
 PREREQUISITES
-  Cabinet reachable (admin C$), PsExec + WinDivert on this host, SAS link active with live
-  polls on 31150 (SAS tester/host connected — see $readme).
+  Cabinet reachable (admin C$), PsExec + WinDivert on this host, CommCtrlSAS + Aurum running.
+  On -Send, if cabinet polls are stale, host polls are auto-established:
+    -SasPollMode Auto     WinDivert TCP poll sim (1B80/1B81 @200ms on loopback 31150) — no COM/MUX
+    -SasPollMode WinDivert same, no COM fallback
+    -SasPollMode Com      legacy COM4 poll keeper (close IGT tester first)
+    -NoAutoSasPoll        skip auto polls (IGT or external host must already be polling)
 
 MODES
   Default = DryRun (prints packet; injects nothing). Pass -Send for live injection.
@@ -474,7 +519,8 @@ function Find-CreditEvidence {
     $subFolders = @(
         @{ Folder = 'OneHand GM2AU'; Pattern = "Withdraw successful GCC_ST_\d+_01 .*${amountRawPattern}.*(${fieldPattern}|promo)" },
         @{ Folder = 'OneHand TRANSACTION EVENTS'; Pattern = "Transfer IN .*${amountDollarsPattern}.*(${fieldPattern}|promo)" },
-        @{ Folder = 'SlotLog'; Pattern = $slotLogPattern }
+        @{ Folder = 'SlotLog'; Pattern = $slotLogPattern },
+        @{ Folder = 'GoldClub.Aurum.Services'; Pattern = "TRANSFER REQUEST FROM SERVER STARTED.*(Cashable|NonRestricted|Restricted)\(${amountRawPattern}\)" }
     )
     foreach ($sf in $subFolders) {
         $logPath = Get-DatedLogPath -Computer $Computer -SubFolder $sf.Folder -Date (Get-Date)
@@ -487,7 +533,7 @@ function Find-CreditEvidence {
             }
         }
     }
-    return $results
+    return ,[string[]]($results.ToArray())
 }
 
 function Find-AftFailureEvidence {
@@ -521,6 +567,288 @@ function Find-AftFailureEvidence {
         }
     }
     return $results
+}
+
+function Test-CabinetSasPollsRecent {
+    param(
+        [string] $Computer,
+        [int]    $WithinSeconds = 15,
+        $SinceUtc = $null
+    )
+    $logPath = Get-DatedLogPath -Computer $Computer -SubFolder 'GoldClub.Aurum.Services sasmsgr of SASControler1' -Date (Get-Date)
+    if (-not (Test-Path -LiteralPath $logPath)) { return $false }
+    $cutoff = if ($null -ne $SinceUtc) { [datetime]$SinceUtc } else { (Get-Date).ToUniversalTime().AddSeconds(-[math]::Abs($WithinSeconds)) }
+    foreach ($line in (Get-Content -LiteralPath $logPath -Tail 80 -ErrorAction SilentlyContinue)) {
+        if ($line -notmatch 'qGMID1:8[01]\s*$') { continue }
+        if ($line -notmatch '^(\S+)') { continue }
+        try {
+            $lineUtc = Get-LogLineUtc $Matches[1]
+        }
+        catch {
+            continue
+        }
+        if ($null -ne $SinceUtc) {
+            if ($lineUtc -gt [datetime]$SinceUtc) { return $true }
+        }
+        elseif ($lineUtc -ge $cutoff) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-CabinetLatestPollLine {
+    param(
+        [string] $Computer,
+        [string] $Pattern = 'qGMID1:8[01]\s*$'
+    )
+    $logPath = Get-DatedLogPath -Computer $Computer -SubFolder 'GoldClub.Aurum.Services sasmsgr of SASControler1' -Date (Get-Date)
+    if (-not (Test-Path -LiteralPath $logPath)) { return $null }
+    $hits = Get-Content -LiteralPath $logPath -Tail 120 -ErrorAction SilentlyContinue | Select-String -Pattern $Pattern
+    if (-not $hits) { return $null }
+    return ($hits | Select-Object -Last 1).Line.Trim()
+}
+
+function Resolve-SasPollKeeperScript {
+    $candidates = @(
+        (Join-Path $PSScriptRoot 'scripts\sas_poll_keeper_standalone.py'),
+        (Join-Path $PSScriptRoot 'scripts\sas_poll_keeper.py')
+    )
+    $repoRoot = Split-Path $PSScriptRoot -Parent
+    if ($repoRoot) {
+        $candidates += Join-Path $repoRoot 'GoldclubLogInvestigator\scripts\sas_poll_keeper_standalone.py'
+        $candidates += Join-Path $repoRoot 'GoldclubLogInvestigator\scripts\sas_poll_keeper.py'
+    }
+    foreach ($path in $candidates) {
+        if ($path -and (Test-Path -LiteralPath $path)) {
+            return $path
+        }
+    }
+    return $null
+}
+
+function Test-SasComPortAvailable {
+    param([string] $Port = 'COM4')
+    $keeper = Resolve-SasPollKeeperScript
+    if (-not $keeper) {
+        return @{ Ok = $false; Message = "Missing SAS poll keeper script under $PSScriptRoot\scripts (expected sas_poll_keeper_standalone.py)" }
+    }
+    $py = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $py) {
+        return @{ Ok = $false; Message = 'python not found on PATH (needed for COM poll probe)' }
+    }
+    $probe = & $py.Source $keeper '--probe' $Port 2>&1 | Out-String
+    $probe = $probe.Trim()
+    $ok = ($LASTEXITCODE -eq 0)
+    return @{ Ok = $ok; Message = $(if ($probe) { $probe } else { "COM probe exit $LASTEXITCODE" }) }
+}
+
+function Start-SasPollKeeper {
+    param(
+        [string] $Port = 'COM4',
+        [int]    $WarmupSec = 4
+    )
+    $keeper = Resolve-SasPollKeeperScript
+    if (-not $keeper) {
+        throw "Missing SAS poll keeper script under $PSScriptRoot\scripts"
+    }
+    $py = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $py) {
+        throw 'python not found on PATH (needed for SAS poll keeper)'
+    }
+    $warmupMs = [math]::Max(0, $WarmupSec * 1000)
+    $args = @(
+        $keeper,
+        $Port,
+        '--interval-ms', '200',
+        '--warmup-s', ([string]([math]::Max(0.5, $WarmupSec)))
+    )
+    $proc = Start-Process -FilePath $py.Source -ArgumentList $args `
+        -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru
+    Start-Sleep -Milliseconds ([math]::Min(1500, $warmupMs))
+    return $proc
+}
+
+function Stop-SasPollKeeper {
+    param([System.Diagnostics.Process] $Process)
+    if ($null -eq $Process) { return }
+    if ($Process.HasExited) { return }
+    try {
+        Stop-Process -Id $Process.Id -Force -ErrorAction Stop
+    }
+    catch {
+        Write-Host "[!] Could not stop SAS poll keeper (pid $($Process.Id)): $_" -ForegroundColor Yellow
+    }
+}
+
+function Wait-CabinetSasPolls {
+    param(
+        [string] $Computer,
+        [int]    $TimeoutSec = 15,
+        [int]    $WithinSeconds = 8
+    )
+    $deadline = (Get-Date).AddSeconds([math]::Max(1, $TimeoutSec))
+    do {
+        if (Test-CabinetSasPollsRecent -Computer $Computer -WithinSeconds $WithinSeconds) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 400
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
+function Start-AutoSasPollKeeperIfNeeded {
+    param(
+        [string] $Computer,
+        [string] $Port = 'COM4',
+        [int]    $WarmupSec = 4
+    )
+    if (Test-CabinetSasPollsRecent -Computer $Computer -WithinSeconds 12) {
+        Write-Host '[+] SAS general polls already active on cabinet (external host or prior session).' -ForegroundColor Green
+        return @{ Ok = $true; Process = $null; Message = 'Cabinet polls already active' }
+    }
+    Write-Host '[*] No recent cabinet 80/81 polls — checking whether host COM port is free...' -ForegroundColor Cyan
+    $probe = Test-SasComPortAvailable -Port $Port
+    if (-not $probe.Ok) {
+        Write-Host "[!] $($probe.Message)" -ForegroundColor Yellow
+        return @{
+            Ok      = $false
+            Process = $null
+            Message = "$($probe.Message). Start the IGT SAS tester on the MUX port, or free $Port so the built-in poll keeper can run."
+        }
+    }
+    Write-Host "[+] $($probe.Message)" -ForegroundColor Green
+    Write-Host "[*] Starting built-in SAS poll keeper on $Port (IGT-tester-style 80/81 @200ms)..." -ForegroundColor Cyan
+    try {
+        $proc = Start-SasPollKeeper -Port $Port -WarmupSec $WarmupSec
+    }
+    catch {
+        return @{ Ok = $false; Process = $null; Message = "Could not start SAS poll keeper: $_" }
+    }
+    if (Wait-CabinetSasPolls -Computer $Computer -TimeoutSec 15) {
+        Write-Host '[+] Cabinet sasmsgr shows live 80/81 polls — safe to inject.' -ForegroundColor Green
+        return @{ Ok = $true; Process = $proc; Message = 'Poll keeper active' }
+    }
+    Write-Host '[!] Poll keeper started but cabinet log still shows no fresh 80/81 within 15s.' -ForegroundColor Yellow
+    return @{
+        Ok      = $false
+        Process = $proc
+        Message = "Poll keeper started on $Port but cabinet sasmsgr still shows no fresh qGMID1:80/81 within 15s. Check MUX cable, cabinet power, and COM wiring."
+    }
+}
+
+function Resolve-SasPollStrategy {
+    param(
+        [string] $Computer,
+        [string] $Mode
+    )
+    if ($Mode -eq 'None') {
+        return @{
+            PollsActive  = (Test-CabinetSasPollsRecent -Computer $Computer -WithinSeconds 12)
+            UsePollAft   = $false
+            UseComKeeper = $false
+        }
+    }
+    if (Test-CabinetSasPollsRecent -Computer $Computer -WithinSeconds 12) {
+        return @{
+            PollsActive  = $true
+            UsePollAft   = $false
+            UseComKeeper = $false
+            Message      = 'Cabinet polls already active'
+        }
+    }
+    switch ($Mode) {
+        'Com' {
+            return @{ PollsActive = $false; UsePollAft = $false; UseComKeeper = $true }
+        }
+        'WinDivert' {
+            return @{ PollsActive = $false; UsePollAft = $true; UseComKeeper = $false }
+        }
+        default {
+            return @{ PollsActive = $false; UsePollAft = $true; UseComKeeper = $true }
+        }
+    }
+}
+
+function Test-WdPollInjectOpenOk {
+    param([string] $Output)
+    return [bool]($Output -match '(?m)OPEN ok\s*$')
+}
+
+function Test-WdPollAftInjected {
+    param([string] $Output)
+    return [bool]($Output -match 'AFT_INJECTED')
+}
+
+function New-WinDivertPollAftRemoteScript {
+    param(
+        [string] $RemoteRunPath,
+        [string] $BridgePayloadHex,
+        [int]    $BridgePort,
+        [int]    $RunSeconds,
+        [int]    $IntervalMs,
+        [int]    $DrainSec,
+        [int]    $InjectDelayMs,
+        [int]    $EphemWaitSec = 90
+    )
+    $remoteTemplate = @'
+$ErrorActionPreference = "Stop"
+$wd  = "__REMOTE_WD__"
+$csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+$exe = "$wd\WdPollInject.exe"
+$out = "$wd\pollaft_out.txt"
+Remove-Item $out -Force -ErrorAction SilentlyContinue
+"REMOTE_START $(Get-Date -Format o)" | Out-File -FilePath $out -Encoding utf8
+try {
+    if (-not (Test-Path $exe)) {
+        & $csc /nologo /platform:x64 /optimize+ /out:"$exe" "$wd\WdPollInject.cs" 2>&1 | Out-File -FilePath $out -Encoding utf8 -Append
+    }
+    if (-not (Test-Path $exe)) {
+        "COMPILE_FAILED" | Out-File -FilePath $out -Encoding utf8 -Append
+    } else {
+        $ephem = 0
+        $deadline = (Get-Date).AddSeconds(__EPHEMWAIT__)
+        do {
+            $c = Get-NetTCPConnection -LocalPort __PORT__ -State Established -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($c) { $ephem = [int]$c.RemotePort; break }
+            Start-Sleep -Milliseconds 500
+        } while ((Get-Date) -lt $deadline)
+        if ($ephem -eq 0) {
+            "BRIDGE_STATE (no Established on __PORT__):" | Out-File -FilePath $out -Encoding utf8 -Append
+            "PROCESSES:" | Out-File -FilePath $out -Encoding utf8 -Append
+            Get-Process CommCtrlSAS,GoldClub.Aurum.Services -ErrorAction SilentlyContinue |
+                Select-Object Name, Id | Format-Table -AutoSize | Out-String |
+                Out-File -FilePath $out -Encoding utf8 -Append
+            "TCP_ALL_STATES:" | Out-File -FilePath $out -Encoding utf8 -Append
+            Get-NetTCPConnection -LocalPort __PORT__ -ErrorAction SilentlyContinue |
+                Select-Object LocalPort, RemotePort, State, OwningProcess |
+                Format-Table -AutoSize | Out-String | Out-File -FilePath $out -Encoding utf8 -Append
+            "NO_ESTABLISHED___PORT__ (waited __EPHEMWAIT__s for Aurum TCP client on loopback __PORT__; WdPollInject simulates 1B80/1B81 host polls into this flow - it cannot start without an Established CommCtrlSAS->Aurum connection)" | Out-File -FilePath $out -Encoding utf8 -Append
+        } else {
+            "DISCOVERED_EPHEM=$ephem" | Out-File -FilePath $out -Encoding utf8 -Append
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                & "$exe" pollaft $ephem __SECONDS__ __INTERVAL__ __DRAIN__ "1B81,1B80" __PORT__ "__PAYLOAD__" __INJECTDELAY__ 2>&1 | Out-File -FilePath $out -Encoding utf8 -Append
+                "EXITCODE=$LASTEXITCODE" | Out-File -FilePath $out -Encoding utf8 -Append
+            }
+            finally { $ErrorActionPreference = $prevEap }
+        }
+    }
+}
+catch {
+    "REMOTE_EXCEPTION: $_" | Out-File -FilePath $out -Encoding utf8 -Append
+}
+'@
+    return $remoteTemplate.
+        Replace('__REMOTE_WD__', $RemoteRunPath).
+        Replace('__PAYLOAD__', $BridgePayloadHex).
+        Replace('__PORT__', [string]$BridgePort).
+        Replace('__SECONDS__', [string]$RunSeconds).
+        Replace('__INTERVAL__', [string]$IntervalMs).
+        Replace('__DRAIN__', [string]$DrainSec).
+        Replace('__INJECTDELAY__', [string]$InjectDelayMs).
+        Replace('__EPHEMWAIT__', [string]$EphemWaitSec)
 }
 
 # ---- remote transport (WinRM preferred / PsExec fallback via LabRemoteTransport.ps1) ----
@@ -588,10 +916,12 @@ Write-Host ("  assetLE={0} (={1}) registrationKey=20x00" -f (ConvertTo-Hex ($sas
 Write-Host ("  CRC16={0}" -f (ConvertTo-Hex ($sasPacket[($sasPacket.Length-2)..($sasPacket.Length-1)])))
 Write-Host ''
 
+$WinDivertDir = Resolve-WinDivertDir -Preferred $WinDivertDir
 $dll = Join-Path $WinDivertDir 'WinDivert.dll'
 $sys = Join-Path $WinDivertDir 'WinDivert64.sys'
 $csSrc = Join-Path $PSScriptRoot 'WdInject.cs'
-foreach ($f in @($PsExecPath, $dll, $sys, $csSrc)) {
+$pollCsSrc = Join-Path $PSScriptRoot 'WdPollInject.cs'
+foreach ($f in @($PsExecPath, $dll, $sys, $csSrc, $pollCsSrc)) {
     if (-not (Test-Path -LiteralPath $f)) { throw "Required file not found: $f" }
 }
 
@@ -600,18 +930,37 @@ foreach ($f in @($PsExecPath, $dll, $sys, $csSrc)) {
 # runs skip both staging and compilation (and dodge the WinDivert.dll copy-lock, since
 # we never re-copy on a cache hit).
 $srcHash = (Get-FileHash -LiteralPath $csSrc -Algorithm SHA256).Hash.Substring(0, 12).ToLowerInvariant()
+$pollSrcHash = (Get-FileHash -LiteralPath $pollCsSrc -Algorithm SHA256).Hash.Substring(0, 12).ToLowerInvariant()
 $remoteBaseDirUnc = "\\$ComputerName\c`$\Windows\Temp\aurumtap"
 $remoteBinName = "bin-$srcHash"
+$remotePollBinName = "pollinjectbin-$pollSrcHash"
 $remoteDirUnc = Join-Path $remoteBaseDirUnc $remoteBinName
+$remotePollDirUnc = Join-Path $remoteBaseDirUnc $remotePollBinName
 $remoteRunPath = "C:\Windows\Temp\aurumtap\$remoteBinName"
+$remotePollRunPath = "C:\Windows\Temp\aurumtap\$remotePollBinName"
 $exeUnc = Join-Path $remoteDirUnc 'WdInject.exe'
+$pollExeUnc = Join-Path $remotePollDirUnc 'WdPollInject.exe'
 $wouldRun = "WinRM first (5985), PsExec (-s) fallback | EncodedCommand -> csc/WdInject.exe $bridgePayloadHex $BridgePort $ObserveMs $AckGraceMs"
+$wouldRunPollAft = "WinRM/PsExec -> WdPollInject.exe pollaft (TCP 1B80/1B81 @${WinDivertPollIntervalMs}ms + AFT) ephem discovered live, ${WinDivertPollSeconds}s window"
 
 if ($PSCmdlet.ParameterSetName -eq 'DryRun') {
     Write-Host '[dry-run] Nothing staged or injected.' -ForegroundColor Yellow
     Write-Host 'Remote command that WOULD run (as SYSTEM):' -ForegroundColor DarkGray
+    $dryPollMode = if ($NoAutoSasPoll) { 'None' } else { $SasPollMode }
+    if ($dryPollMode -ne 'None' -and -not (Test-CabinetSasPollsRecent -Computer $ComputerName -WithinSeconds 12)) {
+        if ($dryPollMode -in @('Auto', 'WinDivert')) {
+            Write-Host "  Poll path: $wouldRunPollAft" -ForegroundColor DarkGray
+            Write-Host "  Cache dir: $remotePollDirUnc  (pollinjectbin-$pollSrcHash)" -ForegroundColor DarkGray
+        }
+        elseif ($dryPollMode -eq 'Com') {
+            Write-Host "  Poll path: COM poll keeper on $SasComPort, then WdInject.exe" -ForegroundColor DarkGray
+        }
+    }
+    else {
+        Write-Host "  Poll path: external polls active (or -NoAutoSasPoll) -> WdInject.exe only" -ForegroundColor DarkGray
+    }
+    Write-Host "  Inject: $wouldRun" -ForegroundColor DarkGray
     Write-Host "  Cache dir: $remoteDirUnc  (bin-$srcHash; stages WinDivert.dll/.sys/.cs + compiles only on a cache miss)" -ForegroundColor DarkGray
-    Write-Host "  $wouldRun" -ForegroundColor DarkGray
     Write-Host ''
     Write-Host '***************************************************************' -ForegroundColor Yellow
     Write-Host '*  THIS WAS A DRY RUN -- NOTHING WAS INJECTED.                *' -ForegroundColor Yellow
@@ -626,26 +975,76 @@ if ($PSCmdlet.ParameterSetName -eq 'DryRun') {
 
 # ---- Send: stage + compile + inject + verify ----
 
+$pollKeeperProc = $null
+$sasPollModeEffective = if ($NoAutoSasPoll) { 'None' } else { $SasPollMode }
+$pollStrategy = Resolve-SasPollStrategy -Computer $ComputerName -Mode $sasPollModeEffective
+$usePollAft = $false
+$pollCutoffUtc = if ($PollBaselineUtc) { $PollBaselineUtc } else { $null }
+if ($pollCutoffUtc) {
+    $latestPoll = Get-CabinetLatestPollLine -Computer $ComputerName
+    if ($latestPoll) {
+        Write-Host "[*] Poll baseline: last sasmsgr line = $latestPoll" -ForegroundColor DarkGray
+    }
+}
+
+try {
+if ($pollStrategy.PollsActive -or (Test-CabinetSasPollsRecent -Computer $ComputerName -SinceUtc $pollCutoffUtc -WithinSeconds 12)) {
+    Write-Host '[+] SAS general polls already active on cabinet (external host or prior session).' -ForegroundColor Green
+}
+elseif ($sasPollModeEffective -ne 'None') {
+    if ($pollStrategy.UsePollAft) {
+        $usePollAft = $true
+        Write-Host '[*] No recent sasmsgr 80/81 — this run will SIMULATE host polls via WinDivert (1B80/1B81 on loopback 31150; no COM/MUX/IGT).' -ForegroundColor Cyan
+        Write-Host "    Waiting up to ${WinDivertEphemWaitSec}s for Aurum TCP client on 31150, then poll cadence ${WinDivertPollIntervalMs}ms, AFT @ ${WinDivertPollInjectDelayMs}ms, window ${WinDivertPollSeconds}s" -ForegroundColor DarkGray
+    }
+    if ($pollStrategy.UseComKeeper -and -not $usePollAft) {
+        $pollResult = Start-AutoSasPollKeeperIfNeeded -Computer $ComputerName -Port $SasComPort -WarmupSec $SasPollWarmupSec
+        $pollKeeperProc = $pollResult.Process
+        if (-not $pollResult.Ok) {
+            Write-Host ''
+            Write-Host '[!] Aborting inject: live SAS general polls (qGMID1:80/81) are required before AFT credit can post.' -ForegroundColor Red
+            Write-Host "    $($pollResult.Message)" -ForegroundColor Yellow
+            Write-Host '    Without steady 80/81 polls the packet may reach sasmsgr but Aurum will not commit credit.' -ForegroundColor Yellow
+            exit 4
+        }
+    }
+}
+
 if ($autoTransactionStatePath) {
     Write-Host "[*] Auto transaction number: Test Transaction$TransactionNumber (next for ${ComputerName}: $autoTransactionNext)" -ForegroundColor DarkGray
 }
 
 $swStage = [System.Diagnostics.Stopwatch]::StartNew()
 $cacheHit = Test-Path -LiteralPath $exeUnc
-if ($cacheHit) {
-    Write-Host "[*] Reusing cached WdInject.exe on cabinet (bin-$srcHash); skipping stage + compile." -ForegroundColor Cyan
+$pollCacheHit = Test-Path -LiteralPath $pollExeUnc
+if ($usePollAft) {
+    if ($pollCacheHit) {
+        Write-Host "[*] Reusing cached WdPollInject.exe on cabinet ($remotePollBinName); skipping stage + compile." -ForegroundColor Cyan
+    }
+    else {
+        New-Item -ItemType Directory -Force -Path $remotePollDirUnc | Out-Null
+        Copy-Item -LiteralPath $dll -Destination $remotePollDirUnc -Force
+        Copy-Item -LiteralPath $sys -Destination $remotePollDirUnc -Force
+        Copy-Item -LiteralPath $pollCsSrc -Destination $remotePollDirUnc -Force
+        Write-Host "[*] Cache miss ($remotePollBinName): staged WinDivert + WdPollInject.cs for TCP poll sim." -ForegroundColor Cyan
+    }
 }
-else {
-    New-Item -ItemType Directory -Force -Path $remoteDirUnc | Out-Null
-    Copy-Item -LiteralPath $dll -Destination $remoteDirUnc -Force
-    Copy-Item -LiteralPath $sys -Destination $remoteDirUnc -Force
-    Copy-Item -LiteralPath $csSrc -Destination $remoteDirUnc -Force
-    Write-Host "[*] Cache miss (bin-$srcHash): staged WinDivert.dll, WinDivert64.sys, WdInject.cs to $remoteDirUnc (compiles WdInject.exe once)." -ForegroundColor Cyan
+if (-not $usePollAft) {
+    if ($cacheHit) {
+        Write-Host "[*] Reusing cached WdInject.exe on cabinet (bin-$srcHash); skipping stage + compile." -ForegroundColor Cyan
+    }
+    else {
+        New-Item -ItemType Directory -Force -Path $remoteDirUnc | Out-Null
+        Copy-Item -LiteralPath $dll -Destination $remoteDirUnc -Force
+        Copy-Item -LiteralPath $sys -Destination $remoteDirUnc -Force
+        Copy-Item -LiteralPath $csSrc -Destination $remoteDirUnc -Force
+        Write-Host "[*] Cache miss (bin-$srcHash): staged WinDivert.dll, WinDivert64.sys, WdInject.cs to $remoteDirUnc (compiles WdInject.exe once)." -ForegroundColor Cyan
+    }
 }
 $swStage.Stop()
 $stageElapsed = $swStage.Elapsed
 
-$outUnc = Join-Path $remoteDirUnc 'inject_out.txt'
+$outUnc = if ($usePollAft) { Join-Path $remotePollDirUnc 'pollaft_out.txt' } else { Join-Path $remoteDirUnc 'inject_out.txt' }
 
 # Remote script compiles ONLY when WdInject.exe is absent (cache miss); otherwise it
 # runs the cached exe directly. Any change to WdInject.cs changes $srcHash -> new
@@ -700,6 +1099,11 @@ finally {
 '@
 $remoteScript = $remoteTemplate.Replace('__PAYLOAD__', $bridgePayloadHex).Replace('__PORT__', [string]$BridgePort).Replace('__OBSERVE__', [string]$ObserveMs).Replace('__ACKGRACE__', [string]$AckGraceMs).Replace('__REMOTE_WD__', $remoteRunPath)
 $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($remoteScript))
+
+$pollAftScript = New-WinDivertPollAftRemoteScript -RemoteRunPath $remotePollRunPath -BridgePayloadHex $bridgePayloadHex `
+    -BridgePort $BridgePort -RunSeconds $WinDivertPollSeconds -IntervalMs $WinDivertPollIntervalMs `
+    -DrainSec $WinDivertPollDrainSec -InjectDelayMs $WinDivertPollInjectDelayMs -EphemWaitSec $WinDivertEphemWaitSec
+$encPollAft = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($pollAftScript))
 
 # ---- transport selection (WinRM preferred / PsExec fallback) ----
 $transportStatePath = Join-Path $PSScriptRoot '.aft-windivert-transport.json'
@@ -786,44 +1190,96 @@ $fatalInjectFailure = $null
 
 while ($attempt -lt $MaxRetries -and -not $ingestLine) {
     $attempt++
-    Write-Host ''
-    Write-Host "[*] Live injection attempt $attempt of $MaxRetries..." -ForegroundColor Cyan
-    $sendStartUtc = (Get-Date).ToUniversalTime()
-    Remove-Item -LiteralPath $outUnc -Force -ErrorAction SilentlyContinue
+    $attemptPollAft = $usePollAft
+    $attemptEnc = if ($attemptPollAft) { $encPollAft } else { $enc }
+    $attemptOutUnc = if ($attemptPollAft) { Join-Path $remotePollDirUnc 'pollaft_out.txt' } else { Join-Path $remoteDirUnc 'inject_out.txt' }
+    $injectLabel = if ($attemptPollAft) { 'WdPollInject.exe (pollaft)' } else { 'WdInject.exe' }
 
-    # 4d. Run the encoded payload over the transport order; if a transport fails to
-    # launch, fall back to the next one within this same attempt. The PsExec path is
-    # unchanged from the proven implementation (SYSTEM, banner to stderr -> relaxed
-    # EAP, all streams captured to a log file inside Invoke-RemoteEncoded).
+    Write-Host ''
+    Write-Host "[*] Live injection attempt $attempt of $MaxRetries ($injectLabel)..." -ForegroundColor Cyan
+    $sendStartUtc = (Get-Date).ToUniversalTime()
+    Remove-Item -LiteralPath $attemptOutUnc -Force -ErrorAction SilentlyContinue
+
+    if (-not $attemptPollAft -and -not (Test-Path -LiteralPath $exeUnc)) {
+        if (-not (Test-Path -LiteralPath $remoteDirUnc)) {
+            New-Item -ItemType Directory -Force -Path $remoteDirUnc | Out-Null
+        }
+        Copy-Item -LiteralPath $dll -Destination $remoteDirUnc -Force -ErrorAction SilentlyContinue
+        Copy-Item -LiteralPath $sys -Destination $remoteDirUnc -Force -ErrorAction SilentlyContinue
+        Copy-Item -LiteralPath $csSrc -Destination $remoteDirUnc -Force -ErrorAction SilentlyContinue
+    }
+
     $usedTransport = $null
     $swInject = [System.Diagnostics.Stopwatch]::StartNew()
-    $transportLog = Join-Path $env:TEMP ("wdinject_{0}.log" -f $attempt)
+    $transportLog = Join-Path $env:TEMP ("wdinject_{0}_{1}.log" -f $ComputerName.Replace('.','_'), (Get-Date -Format 'yyyyMMddHHmmssfff'))
+    $winRmTimeoutMs = if ($attemptPollAft) {
+        ([Math]::Max($WinDivertEphemWaitSec + $WinDivertPollSeconds + $WinDivertPollDrainSec + 30, 120)) * 1000
+    } else { $null }
+    $psexecTimeoutSec = if ($attemptPollAft) {
+        [Math]::Max($WinDivertEphemWaitSec + $WinDivertPollSeconds + $WinDivertPollDrainSec + 20, 90)
+    } else { $null }
     $usedTransport = Invoke-LabRemoteEncodedWithFallback -TransportOrder $transportOrder `
-        -Computer $ComputerName -Enc $enc -LogPath $transportLog -Credential $Credential `
-        -PsExecPath $PsExecPath -PsExecAuthArgs $script:PsExecAuthArgs
+        -Computer $ComputerName -Enc $attemptEnc -LogPath $transportLog -Credential $Credential `
+        -PsExecPath $PsExecPath -PsExecAuthArgs $script:PsExecAuthArgs `
+        -WinRmOperationTimeoutMs $winRmTimeoutMs -PsExecTimeoutSec $psexecTimeoutSec
     $swInject.Stop()
     $injectElapsed = $swInject.Elapsed
     if (-not $usedTransport) {
         Write-Host '[!] No transport succeeded for this attempt. Retrying...' -ForegroundColor Yellow
+        if ($attemptPollAft -and $sasPollModeEffective -eq 'Auto' -and $pollStrategy.UseComKeeper) {
+            Write-Host '[*] Auto fallback: next attempt will use COM poll keeper + WdInject.exe.' -ForegroundColor Yellow
+            $usePollAft = $false
+        }
         continue
     }
 
-    # PsExec/WinRM run synchronously, so inject_out.txt is usually complete the moment
-    # the transport returns. Poll briefly for the terminal marker instead of a fixed wait.
     $lastInjectOut = ''
-    for ($i = 0; $i -lt 8; $i++) {
-        if (Test-Path -LiteralPath $outUnc) {
-            $lastInjectOut = (Get-Content -LiteralPath $outUnc -Raw)
-            if ($lastInjectOut -match 'EXITCODE=|COMPILE_FAILED|REMOTE_EXCEPTION') { break }
+    $pollAftWaitSec = [Math]::Max($WinDivertEphemWaitSec + $WinDivertPollSeconds + $WinDivertPollDrainSec + 15, 60)
+    $waitIters = if ($attemptPollAft) {
+        [Math]::Ceiling($pollAftWaitSec / 0.5)
+    } else { 8 }
+    for ($i = 0; $i -lt $waitIters; $i++) {
+        if (Test-Path -LiteralPath $attemptOutUnc) {
+            $lastInjectOut = (Get-Content -LiteralPath $attemptOutUnc -Raw)
+            if ($lastInjectOut -match 'EXITCODE=|COMPILE_FAILED|REMOTE_EXCEPTION|NO_ESTABLISHED|AFT_INJECTED|DONE mode=pollaft') { break }
         }
-        Start-Sleep -Milliseconds 150
+        Start-Sleep -Milliseconds $(if ($attemptPollAft) { 500 } else { 150 })
     }
     if ($lastInjectOut) {
-        Write-Host '--- WdInject.exe output ---' -ForegroundColor DarkGray
+        Write-Host "--- $injectLabel output ---" -ForegroundColor DarkGray
         Write-Host $lastInjectOut
     }
     else {
-        Write-Host '[!] No inject_out.txt produced.' -ForegroundColor Yellow
+        Write-Host "[!] No output file produced at $attemptOutUnc." -ForegroundColor Yellow
+    }
+
+    $openOk = if ($attemptPollAft) { Test-WdPollInjectOpenOk -Output $lastInjectOut } else { Test-WdInjectOpenOk -Output $lastInjectOut }
+    $aftSent = if ($attemptPollAft) { Test-WdPollAftInjected -Output $lastInjectOut } else { $lastInjectOut -match 'INJECTED seq=' }
+
+    if ($attemptPollAft -and ($lastInjectOut -match 'NO_ESTABLISHED|NO_TCP_TRAFFIC' -or (-not $openOk) -or (-not $aftSent))) {
+        Write-Host '[!] WinDivert TCP poll+AFT session did not complete cleanly.' -ForegroundColor Yellow
+        if ($lastInjectOut -match 'NO_ESTABLISHED') {
+            Write-Host '    Poll sim needs CommCtrlSAS:31150 <-> Aurum:<ephemeral> in ESTABLISHED state (we originate 1B80/1B81 into that flow; no external IGT/COM host required).' -ForegroundColor Yellow
+            Write-Host '    CommCtrlSAS/Aurum may be running while the bridge TCP is still down (e.g. mandatory service offline / comm lock). Wait for communications unlock — do not restart services from this tool.' -ForegroundColor Yellow
+        }
+        elseif ($lastInjectOut -match 'DONE mode=pollaft.*\bs2c=0\b.*\bc2s=0\b' -and $openOk) {
+            Write-Host '    Bridge TCP was ESTABLISHED but completely silent (zero packets both directions). WdPollInject needs at least one packet to learn IP/TCP headers before it can inject polls.' -ForegroundColor Yellow
+            Write-Host '    Wait for natural 80/81 traffic or comm unlock, then retry.' -ForegroundColor Yellow
+        }
+        if ($attempt -lt $MaxRetries -and $PollAftRetryDelaySec -gt 0) {
+            Write-Host "[*] Waiting ${PollAftRetryDelaySec}s for SAS bridge to recover before next attempt..." -ForegroundColor DarkGray
+            Start-Sleep -Seconds $PollAftRetryDelaySec
+        }
+        if ($sasPollModeEffective -eq 'Auto' -and $pollStrategy.UseComKeeper) {
+            Write-Host '[*] Auto fallback: starting COM poll keeper and switching to WdInject.exe for next attempt.' -ForegroundColor Cyan
+            $usePollAft = $false
+            $pollResult = Start-AutoSasPollKeeperIfNeeded -Computer $ComputerName -Port $SasComPort -WarmupSec $SasPollWarmupSec
+            $pollKeeperProc = $pollResult.Process
+            if (-not $pollResult.Ok) {
+                Write-Host "    COM fallback failed: $($pollResult.Message)" -ForegroundColor Yellow
+            }
+            continue
+        }
     }
 
     $driverFailure = Get-WdInjectFatalDriverFailure -Output $lastInjectOut
@@ -835,25 +1291,25 @@ while ($attempt -lt $MaxRetries -and -not $ingestLine) {
 
     # 4e. WinDivert needs an elevated token. If WinRM ran but the driver did not open,
     # retry immediately via PsExec in this same attempt before polling logs.
-    if ($usedTransport -eq 'winrm') {
+    if ($usedTransport -eq 'winrm' -and -not $attemptPollAft) {
         $openOk = (Test-WdInjectOpenOk -Output $lastInjectOut) -and ($lastInjectOut -notmatch 'WinDivertOpen FAILED')
         if (-not $openOk) {
             Write-Host '[!] WinRM session could not load WinDivert (no "OPEN ok"); retrying via PsExec now...' -ForegroundColor Yellow
-            Remove-Item -LiteralPath $outUnc -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $attemptOutUnc -Force -ErrorAction SilentlyContinue
             $transportLog = Join-Path $env:TEMP ("wdinject_psexec_retry_{0}.log" -f $attempt)
             $usedTransport = Invoke-LabRemoteEncodedWithFallback -TransportOrder @('psexec') `
-                -Computer $ComputerName -Enc $enc -LogPath $transportLog -Credential $Credential `
+                -Computer $ComputerName -Enc $attemptEnc -LogPath $transportLog -Credential $Credential `
                 -PsExecPath $PsExecPath -PsExecAuthArgs $script:PsExecAuthArgs
             $lastInjectOut = ''
             for ($i = 0; $i -lt 8; $i++) {
-                if (Test-Path -LiteralPath $outUnc) {
-                    $lastInjectOut = (Get-Content -LiteralPath $outUnc -Raw)
+                if (Test-Path -LiteralPath $attemptOutUnc) {
+                    $lastInjectOut = (Get-Content -LiteralPath $attemptOutUnc -Raw)
                     if ($lastInjectOut -match 'EXITCODE=|COMPILE_FAILED|REMOTE_EXCEPTION') { break }
                 }
                 Start-Sleep -Milliseconds 150
             }
             if ($lastInjectOut) {
-                Write-Host '--- WdInject.exe output (PsExec retry) ---' -ForegroundColor DarkGray
+                Write-Host "--- $injectLabel output (PsExec retry) ---" -ForegroundColor DarkGray
                 Write-Host $lastInjectOut
             }
             $transportOrder = @('psexec')
@@ -872,9 +1328,6 @@ while ($attempt -lt $MaxRetries -and -not $ingestLine) {
     if ($ingestLine) {
         Write-Host '[+] sasmsgr INGESTED the injected 0x72 command:' -ForegroundColor Green
         Write-Host "    $ingestLine" -ForegroundColor Green
-        if ($autoTransactionStatePath) {
-            $autoTransactionState | ConvertTo-Json | Set-Content -LiteralPath $autoTransactionStatePath -Encoding UTF8
-        }
         if ($ingestLine -match '^(\S+)') {
             $ingestUtc = Get-LogLineUtc $Matches[1]
         }
@@ -887,12 +1340,18 @@ while ($attempt -lt $MaxRetries -and -not $ingestLine) {
         do {
             Start-Sleep -Milliseconds 500
             $creditEvidence = Find-CreditEvidence -Computer $ComputerName -StartUtc $ingestUtc -EndUtc $ingestUtc.AddSeconds(45) -Amount $AmountCents -TransferType $TransferType
-        } while (($null -eq $creditEvidence -or $creditEvidence.Count -eq 0) -and (Get-Date) -lt $creditDeadline)
+        } while ((@($creditEvidence).Count -eq 0) -and (Get-Date) -lt $creditDeadline)
         $swCredit.Stop()
         $creditElapsed = $swCredit.Elapsed
     }
     else {
         Write-Host '[!] sasmsgr did not log our 0x72 within window (likely SEQ race). Retrying...' -ForegroundColor Yellow
+        if ($attemptPollAft -and $sasPollModeEffective -eq 'Auto' -and $pollStrategy.UseComKeeper -and -not $pollKeeperProc) {
+            Write-Host '[*] Auto fallback: COM poll keeper + WdInject.exe on next attempt.' -ForegroundColor Cyan
+            $usePollAft = $false
+            $pollResult = Start-AutoSasPollKeeperIfNeeded -Computer $ComputerName -Port $SasComPort -WarmupSec $SasPollWarmupSec
+            $pollKeeperProc = $pollResult.Process
+        }
     }
 }
 
@@ -921,9 +1380,12 @@ Write-Host '================ RESULT ================' -ForegroundColor White
 if ($ingestLine) {
     Write-Host 'INGESTED : YES' -ForegroundColor Green
     Write-Host "  $ingestLine"
-    if ($creditEvidence -and $creditEvidence.Count -gt 0) {
+    if (@($creditEvidence).Count -gt 0) {
         Write-Host 'CREDITED : evidence found' -ForegroundColor Green
         foreach ($e in $creditEvidence) { Write-Host "  $e" }
+        if ($autoTransactionStatePath) {
+            $autoTransactionState | ConvertTo-Json | Set-Content -LiteralPath $autoTransactionStatePath -Encoding UTF8
+        }
     }
     else {
         Write-Host 'CREDITED : NO fresh credit line within the post-ingest window.' -ForegroundColor Red
@@ -934,7 +1396,7 @@ if ($ingestLine) {
             foreach ($f in $aftFailures) { Write-Host "  $f" -ForegroundColor Yellow }
         }
         else {
-            Write-Host 'The packet reached sasmsgr, but Aurum/EGM did not post a matching fresh cashless-in. Common causes: duplicate transaction id, cashout/handpay during transfer, or amount/type rejected after ingest.' -ForegroundColor Yellow
+            Write-Host 'The packet reached sasmsgr, but Aurum/EGM did not post a matching fresh cashless-in. Common causes: SAS 80/81 polls not active on the link, duplicate transaction id, cashout/handpay during transfer, or amount/type rejected after ingest.' -ForegroundColor Yellow
         }
         exit 3
     }
@@ -945,6 +1407,9 @@ else {
     if ($fatalInjectFailure) {
         Write-Host $fatalInjectFailure -ForegroundColor Yellow
     }
+    elseif ($lastInjectOut -match 'NO_ESTABLISHED') {
+        Write-Host 'WinDivert poll sim never started: no ESTABLISHED TCP on 31150 after the wait window. Poll+AFT requires the CommCtrl↔Aurum bridge link; when the cabinet shows mandatory service offline, wait for communications to recover naturally.' -ForegroundColor Yellow
+    }
     elseif ($lastInjectOut -match 'TIMEOUT no data packet seen on srcPort') {
         Write-Host "WinDivert opened successfully, but NO outbound segment at all was seen on source port $BridgePort during the ${ObserveMs}ms observe window. ACK-anchoring was attempted (grace ${AckGraceMs}ms), so this means the connection emitted neither payload nor a bare ACK -- it is truly silent (e.g. CommCtrlSAS not running, no established 31150 -> Aurum flow, or a fully idle link with no keepalive/ACK traffic). Restore SAS/COM11 traffic on the cabinet, or raise -ObserveMs, then retry. Verify the live flow with: Get-NetTCPConnection -LocalPort 31100,31150" -ForegroundColor Yellow
     }
@@ -954,4 +1419,8 @@ else {
     Write-Host 'Last WdInject.exe output:' -ForegroundColor DarkGray
     Write-Host $lastInjectOut
     exit 2
+}
+}
+finally {
+    Stop-SasPollKeeper -Process $pollKeeperProc
 }

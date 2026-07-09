@@ -13,7 +13,7 @@ import threading
 import traceback
 
 from PySide6.QtCore import QEvent, QObject, QSettings, QThread, QThreadPool, Signal, Qt, QPoint, QTimer
-from PySide6.QtGui import QAction, QColor, QKeySequence, QPalette, QShortcut
+from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMessageBox,
     QMenu,
@@ -42,6 +43,7 @@ from PySide6.QtWidgets import (
 from pathlib import Path
 
 from config_manager import SettingsManager
+from gui.machine_yield_chart import MachineYieldChartWidget
 from gui.palette_adapt import surface_is_light
 
 # --- EGM currency / dollar display (100 credits = $1 on USD cabinets) ---
@@ -205,6 +207,15 @@ _VERIFY_TABLE_COLUMNS: tuple[tuple[int, str], ...] = (
     (COL_STATUS, "Status"),
 )
 _SAS_VERIFY_SETTINGS_GROUP = "SasVerifyDialog"
+# WindowSystemMenuHint is required on Windows so taskbar right-click → Close works.
+_SAS_VERIFY_WINDOW_FLAGS = (
+    Qt.WindowType.Window
+    | Qt.WindowType.WindowTitleHint
+    | Qt.WindowType.WindowSystemMenuHint
+    | Qt.WindowType.WindowMinimizeButtonHint
+    | Qt.WindowType.WindowMaximizeButtonHint
+    | Qt.WindowType.WindowCloseButtonHint
+)
 _KEY_COM_PORT = "com_port"
 _KEY_COM_BAUD = "com_baud"
 _KEY_COM_WIRE = "com_wire_mode"
@@ -213,6 +224,18 @@ _KEY_COM_RTS = "com_rts"
 _SAS_VERIFY_COLUMN_PREFS_VERSION = 2
 _KEY_COLUMN_PREFS_VERSION = "column_prefs_version"
 _DEFAULT_HIDDEN_VERIFY_COLUMNS = frozenset({COL_WIRE_ID, COL_SAS_2F_VALUE})
+_VERIFY_COL_MIN_WIDTHS: dict[int, int] = {
+    COL_6F_CODE: 72,
+    COL_WIRE_ID: 72,
+    COL_IGT_POLL: 64,
+    COL_IGT_METER: 88,
+    COL_METER_NAME: 180,
+    COL_SAS_6F_VALUE: 72,
+    COL_SAS_2F_VALUE: 72,
+    COL_MACHINE_VALUE: 72,
+    COL_STATUS: 72,
+}
+_VERIFY_METER_NAME_MAX_WIDTH = 240
 
 # Meter tabs (EGM accounting UI order — View -> Meter tabs).
 TAB_ACCOUNTING = 0
@@ -541,19 +564,54 @@ def build_verify_6f_rows_from_paste(text: str) -> list[Sas6FRow]:
     """Merge pasted 6F RX with the full verify-table meter list (stable row order)."""
     from network.sas_serial_meters import DEFAULT_6F_VERIFY_POLL_CODES
 
-    parsed = {r.meter_id.upper(): r.sas_value_text for r in parse_sas_6f_paste(text)}
+    return build_verify_6f_rows_for_codes(text, DEFAULT_6F_VERIFY_POLL_CODES)
+
+
+def filter_verify_6f_rows(
+    parsed_rows: list[Sas6FRow],
+    meter_codes: tuple[str, ...] | list[str],
+) -> list[Sas6FRow]:
+    """Keep stable row order for a meter-code subset."""
+    by_id = {r.meter_id.upper(): r.sas_value_text for r in parsed_rows}
     rows: list[Sas6FRow] = []
     seen: set[str] = set()
-    for code in DEFAULT_6F_VERIFY_POLL_CODES:
+    for code in meter_codes:
         rid = code.upper()
         if rid in seen:
             continue
         seen.add(rid)
-        rows.append(Sas6FRow(meter_id=rid, sas_value_text=parsed.get(rid, "")))
-    for rid, val in parsed.items():
-        if rid not in seen:
-            rows.append(Sas6FRow(meter_id=rid, sas_value_text=val))
+        rows.append(Sas6FRow(meter_id=rid, sas_value_text=by_id.get(rid, "")))
     return rows
+
+
+def build_verify_6f_rows_for_codes(
+    text: str,
+    meter_codes: tuple[str, ...] | list[str],
+) -> list[Sas6FRow]:
+    """Merge pasted 6F RX with a fixed meter-code list (stable row order)."""
+    return filter_verify_6f_rows(parse_sas_6f_paste(text), meter_codes)
+
+
+def verify_accounting_tab_spec(
+    *,
+    tab_names: tuple[str, ...],
+    has_accounting_panel: bool,
+    verify_row_count: int,
+    expected_row_count: int,
+) -> list[str]:
+    """Self-check Accounting tab uses the shared meter-panel shell."""
+    issues: list[str] = []
+    if "Submeter" in tab_names:
+        issues.append("Submeter tab must not be present")
+    if "Accounting" not in tab_names:
+        issues.append("missing Accounting tab")
+    if not has_accounting_panel:
+        issues.append("Accounting tab must use meter panel layout")
+    if verify_row_count != expected_row_count:
+        issues.append(
+            f"verify row count {verify_row_count} != expected {expected_row_count}"
+        )
+    return issues
 
 
 def _hex_bytes_from_sas_line(line: str, *, direction: str) -> bytes | None:
@@ -702,11 +760,10 @@ def meter_fetch_display_action(
     fetch_running: bool,
     user_already_applied: bool = False,
 ) -> str:
-    """Get Meters action: ``apply`` | ``wait`` | ``capture``."""
+    """Get Meters action: ``wait`` while capturing, else ``capture`` (refresh from COM)."""
+    del cached_result, user_already_applied
     if fetch_running:
         return "wait"
-    if cached_result is not None and not user_already_applied:
-        return "apply"
     return "capture"
 
 
@@ -903,41 +960,129 @@ def meter_tabs_stylesheet() -> str:
     return "QTabWidget::tab-bar { alignment: center; }"
 
 
+_METER_PANEL_FONT_PT = 9
+_METER_ROW_MIN_HEIGHT = 20
+_METER_VALUE_MIN_WIDTH = 96
+_METER_COUNT_MIN_WIDTH = 56
+_METER_TRANSFER_AMOUNT_WIDTH = 96
+_METER_FORM_MIN_WIDTH = 300
+_METER_PANEL_OUTER_MARGIN = 8
+_METER_PANEL_CLUSTER_SPACING = 8
+
+
+def meter_panel_font(*, bold: bool = False) -> QFont:
+    font = QFont()
+    font.setPointSize(_METER_PANEL_FONT_PT)
+    font.setBold(bold)
+    return font
+
+
+def meter_row_label(text: str, *, indent: bool = False, bold: bool = False) -> QLabel:
+    lbl = QLabel(text)
+    if indent:
+        lbl.setContentsMargins(10, 0, 0, 0)
+    lbl.setFont(meter_panel_font(bold=bold))
+    lbl.setMinimumHeight(_METER_ROW_MIN_HEIGHT)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    return lbl
+
+
+def meter_value_label(*, bold: bool = False, min_width: int = _METER_VALUE_MIN_WIDTH) -> QLabel:
+    """Value column for form-style meter panels (Game / Master / Security)."""
+    lbl = QLabel("—")
+    lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    lbl.setFont(meter_panel_font(bold=bold))
+    lbl.setMinimumHeight(_METER_ROW_MIN_HEIGHT)
+    lbl.setMinimumWidth(min_width)
+    lbl.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
+    return lbl
+
+
+def meter_grid_value_label(*, bold: bool = False, min_width: int = _METER_VALUE_MIN_WIDTH) -> QLabel:
+    """Centered value cell for Transfer-style grid panels."""
+    lbl = QLabel("—")
+    lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+    lbl.setFont(meter_panel_font(bold=bold))
+    lbl.setMinimumHeight(_METER_ROW_MIN_HEIGHT)
+    lbl.setMinimumWidth(min_width)
+    lbl.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
+    return lbl
+
+
+def meter_tab_outer_layout(body: QWidget) -> QVBoxLayout:
+    layout = QVBoxLayout(body)
+    layout.setContentsMargins(
+        _METER_PANEL_OUTER_MARGIN,
+        _METER_PANEL_OUTER_MARGIN,
+        _METER_PANEL_OUTER_MARGIN,
+        _METER_PANEL_OUTER_MARGIN,
+    )
+    layout.setSpacing(6)
+    return layout
+
+
+def meter_centered_filter_row(*widgets: QWidget) -> QHBoxLayout:
+    """Center a compact row of filter controls above meter panels."""
+    outer = QHBoxLayout()
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.addStretch(1)
+    inner = QHBoxLayout()
+    inner.setContentsMargins(0, 0, 0, 0)
+    inner.setSpacing(_METER_PANEL_CLUSTER_SPACING)
+    for widget in widgets:
+        inner.addWidget(widget)
+    outer.addLayout(inner)
+    outer.addStretch(1)
+    return outer
+
+
+def meter_panel_cluster(*widgets: QWidget) -> QWidget:
+    """Horizontal cluster of meter group boxes with consistent spacing."""
+    cluster = QWidget()
+    layout = QHBoxLayout(cluster)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(_METER_PANEL_CLUSTER_SPACING)
+    layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+    for widget in widgets:
+        layout.addWidget(widget)
+    cluster.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+    return cluster
+
+
 def meter_subpanel_form_layout() -> QFormLayout:
     """Compact label/value form; caller wraps with ``center_layout_in_group_box``."""
     form = QFormLayout()
     form.setContentsMargins(0, 0, 0, 0)
     form.setVerticalSpacing(0)
-    form.setHorizontalSpacing(8)
-    form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+    form.setHorizontalSpacing(10)
+    form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
     form.setLabelAlignment(
         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
     )
     form.setFormAlignment(
-        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
     )
     return form
 
 
 def center_layout_in_group_box(box: QGroupBox, inner: QLayout) -> None:
-    """Place *inner* centered horizontally and vertically inside *box*."""
+    """Fit the group box border around *inner* (no empty interior stretch)."""
     holder = QWidget()
     holder.setLayout(inner)
+    holder.setMinimumWidth(_METER_FORM_MIN_WIDTH)
+    holder.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Minimum)
     outer = QVBoxLayout(box)
-    outer.setContentsMargins(4, 8, 4, 8)
-    outer.addStretch(1)
-    row = QHBoxLayout()
-    row.addStretch(1)
-    row.addWidget(holder)
-    row.addStretch(1)
-    outer.addLayout(row)
-    outer.addStretch(1)
+    outer.setContentsMargins(10, 12, 10, 8)
+    outer.setSpacing(0)
+    outer.addWidget(holder)
+    box.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Minimum)
 
 
 def center_widget_in_panel(layout: QVBoxLayout, widget: QWidget) -> None:
-    """Center *widget* in a tab panel (horizontal + vertical)."""
-    layout.addStretch(1)
+    """Horizontally center *widget* in a tab panel; stick to the top vertically."""
+    widget.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
     row = QHBoxLayout()
+    row.setContentsMargins(0, 0, 0, 0)
     row.addStretch(1)
     row.addWidget(widget)
     row.addStretch(1)
@@ -945,17 +1090,135 @@ def center_widget_in_panel(layout: QVBoxLayout, widget: QWidget) -> None:
     layout.addStretch(1)
 
 
-def center_table_in_group_box(box: QGroupBox, table: QTableWidget) -> None:
-    """Center a compact meter table inside a group box."""
-    outer = QVBoxLayout(box)
-    outer.setContentsMargins(4, 8, 4, 8)
-    outer.addStretch(1)
+def stretch_widget_in_panel(layout: QVBoxLayout, widget: QWidget) -> None:
+    """Horizontally center *widget* and grow it vertically with the tab panel."""
+    widget.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
     row = QHBoxLayout()
+    row.setContentsMargins(0, 0, 0, 0)
     row.addStretch(1)
-    row.addWidget(table)
+    row.addWidget(widget)
     row.addStretch(1)
-    outer.addLayout(row)
-    outer.addStretch(1)
+    layout.addLayout(row, 1)
+
+
+def center_table_in_group_box(box: QGroupBox, table: QTableWidget) -> None:
+    """Wrap a compact meter table in a tight group box."""
+    table.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Minimum)
+    outer = QVBoxLayout(box)
+    outer.setContentsMargins(10, 12, 10, 8)
+    outer.setSpacing(0)
+    outer.addWidget(table)
+    box.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Minimum)
+
+
+def wrap_expand_verify_table_in_group_box(box: QGroupBox, table: QTableWidget) -> None:
+    """Accounting verify table: column-fit width, grows vertically when the window is tall."""
+    table.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    outer = QVBoxLayout(box)
+    outer.setContentsMargins(10, 12, 10, 8)
+    outer.setSpacing(0)
+    outer.addWidget(table, 1)
+    box.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+
+
+def wrap_compact_verify_table_in_group_box(box: QGroupBox, table: QTableWidget) -> None:
+    """Compact verify table in a group box (Accounting tab — centered like Bills/Coins)."""
+    table.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    center_table_in_group_box(box, table)
+
+
+def fit_verify_table_columns(table: QTableWidget) -> None:
+    """Resize visible verify columns to content; cap Meter Name width; shrink table to fit."""
+    header = table.horizontalHeader()
+    total = 0
+    for col in range(table.columnCount()):
+        if table.isColumnHidden(col):
+            continue
+        header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+        table.resizeColumnToContents(col)
+        width = table.columnWidth(col)
+        min_w = _VERIFY_COL_MIN_WIDTHS.get(col, 48)
+        width = max(width, min_w)
+        if col == COL_METER_NAME:
+            width = min(width, _VERIFY_METER_NAME_MAX_WIDTH)
+        table.setColumnWidth(col, width)
+        total += width
+    header.setStretchLastSection(False)
+    frame = table.frameWidth() * 2
+    row_h = table.verticalHeader().defaultSectionSize() or 20
+    header_h = table.horizontalHeader().height() or 22
+    needs_vscroll = table.rowCount() * row_h + header_h > table.height() - 4
+    vscroll_gutter = 18 if needs_vscroll or table.rowCount() > 12 else 0
+    content_w = total + frame + vscroll_gutter
+    table.setMinimumWidth(content_w)
+    table.setMaximumWidth(content_w)
+
+
+def verify_accounting_tab_layout(
+    *,
+    accounting_tab: QWidget,
+    accounting_box: QGroupBox | None,
+    table: QTableWidget,
+    tab_names: tuple[str, ...],
+) -> list[str]:
+    """Self-check Accounting tab is centered and verify columns fit without excess stretch."""
+    issues: list[str] = []
+    if "Submeter" in tab_names:
+        issues.append("Submeter tab must not be present")
+    if accounting_box is None:
+        issues.append("missing accounting group box")
+    else:
+        pol = accounting_box.sizePolicy()
+        if pol.verticalPolicy() != QSizePolicy.Policy.Expanding:
+            issues.append("accounting box should expand vertically with the tab")
+        if pol.horizontalPolicy() not in (
+            QSizePolicy.Policy.Minimum,
+            QSizePolicy.Policy.MinimumExpanding,
+        ):
+            issues.append("accounting box should size to table content (not full-width expand)")
+
+    layout = accounting_tab.layout()
+    if not isinstance(layout, QVBoxLayout):
+        issues.append("accounting tab must use QVBoxLayout")
+    elif verify_stretch_widget_in_panel_layout(layout) != []:
+        issues.append("accounting tab must use stretch_widget_in_panel for vertical fill")
+
+    if table.isColumnHidden(COL_STATUS):
+        issues.append("Status column must be visible")
+    if table.rowCount() < 1:
+        issues.append("verify table must have rows after render")
+
+    header = table.horizontalHeader()
+    if header.sectionResizeMode(COL_METER_NAME) == QHeaderView.ResizeMode.Stretch:
+        issues.append("Meter Name column must not stretch (causes excess empty space)")
+
+    meter_name_w = table.columnWidth(COL_METER_NAME)
+    if meter_name_w > _VERIFY_METER_NAME_MAX_WIDTH:
+        issues.append(
+            f"Meter Name column too wide ({meter_name_w}px > {_VERIFY_METER_NAME_MAX_WIDTH}px)"
+        )
+
+    if table.horizontalScrollBar().maximum() > 0:
+        issues.append(
+            f"horizontal scrollbar still required (max={table.horizontalScrollBar().maximum()})"
+        )
+
+    visible_width = sum(
+        table.columnWidth(c)
+        for c in range(table.columnCount())
+        if not table.isColumnHidden(c)
+    )
+    viewport_w = table.viewport().width()
+    if viewport_w > 0 and visible_width > viewport_w + 4:
+        issues.append(
+            f"columns ({visible_width}px) clipped in {viewport_w}px viewport"
+        )
+
+    return issues
 
 
 def format_master_amount_display(raw: str, *, symbol: str = "$") -> str:
@@ -1031,6 +1294,40 @@ def compute_game_summary(
         "yield_pct": yield_pct,
         "hold_pct": hold_pct,
     }
+
+
+def verify_stretch_widget_in_panel_layout(layout: QVBoxLayout) -> list[str]:
+    """Self-check: one expanding content row, no trailing stretch eating height."""
+    issues: list[str] = []
+    if layout.count() < 1:
+        issues.append("expected at least one content row")
+        return issues
+    first = layout.itemAt(0)
+    if first is not None and first.spacerItem() is not None:
+        issues.append("leading vertical stretch must not be present")
+    if layout.count() > 1:
+        last = layout.itemAt(layout.count() - 1)
+        if last is not None and last.spacerItem() is not None:
+            issues.append("trailing vertical stretch must not be present on expandable tabs")
+    row = layout.itemAt(0)
+    if row is None or row.layout() is None:
+        issues.append("expected first item to be a horizontal center row")
+    return issues
+
+
+def verify_center_widget_in_panel_layout(layout: QVBoxLayout) -> list[str]:
+    """Self-check: panel content is top-stuck and horizontally centered (bottom stretch only)."""
+    issues: list[str] = []
+    if layout.count() < 2:
+        issues.append("expected at least a content row and trailing stretch")
+        return issues
+    first = layout.itemAt(0)
+    if first is not None and first.spacerItem() is not None:
+        issues.append("leading vertical stretch must not be present (top-stuck layout)")
+    last = layout.itemAt(layout.count() - 1)
+    if last is None or last.spacerItem() is None:
+        issues.append("trailing vertical stretch required for top-stuck layout")
+    return issues
 
 
 def verify_game_tab_spec(
@@ -1185,30 +1482,42 @@ class MeterFetchWorker(QObject):
         com_port: str,
         com_baud: int,
         skip_bill_polls: bool = True,
-        fast_capture: bool = False,
         cached_profile: tuple[str, int, bool] | None = None,
     ) -> None:
         super().__init__(None)
         self._com_port = (com_port or "").strip()
         self._com_baud = int(com_baud)
         self._skip_bill_polls = skip_bill_polls
-        self._fast_capture = fast_capture
         self._cached_profile = cached_profile
 
     def run(self) -> None:
         try:
+            import sys
+
             from network.sas_serial_meters import fetch_meters_over_serial
 
+            sys.__stdout__.write(
+                f"[COM-FETCH] Starting on {self._com_port} "
+                f"(bill_lps={'skip' if self._skip_bill_polls else 'full'})\n"
+            )
             result = fetch_meters_over_serial(
                 port=self._com_port,
                 baud=self._com_baud,
                 force_capture=True,
                 skip_bill_polls=self._skip_bill_polls,
-                fast_capture=self._fast_capture,
                 cached_profile=self._cached_profile,
+            )
+            lines = (getattr(result, "paste_text", "") or "").count("\n") + 1
+            sys.__stdout__.write(
+                f"[COM-FETCH] OK {getattr(result, 'port_used', self._com_port)} "
+                f"{getattr(result, 'wire_mode', '')}@{getattr(result, 'baud', '')} "
+                f"({lines} paste lines)\n"
             )
             self.finished.emit(result)
         except Exception as exc:  # noqa: BLE001
+            import sys
+
+            sys.__stderr__.write(f"[COM-FETCH] FAILED: {exc}\n")
             self.error.emit(str(exc))
 
 
@@ -1224,6 +1533,7 @@ class SasVerifyDialog(QDialog):
         self._compare_worker: CompareWorker | None = None
         self._meter_fetch_thread: QThread | None = None
         self._meter_fetch_worker: MeterFetchWorker | None = None
+        self._cabinet_ui_refresh_pending = False
         self._onehand_check_thread: QThread | None = None
         self._onehand_check_worker: OneHandCheckWorker | None = None
         self._onehand_running: bool | None = None
@@ -1245,16 +1555,15 @@ class SasVerifyDialog(QDialog):
         self._loaded_cabinet_scan_root = ""
         self._cabinet_compare_prefetch = False
         self._meter_fetch_prefetch = False
+        self._meter_prefetch_retried = False
         self._accept_worker_signals = True
         self._last_displayed_paste_fingerprint = ""
 
         self.setWindowTitle("SAS accounting verification")
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.WindowMinimizeButtonHint
-            | Qt.WindowType.WindowMaximizeButtonHint
-            | Qt.WindowType.WindowCloseButtonHint
-        )
+        from gui.app_branding import apply_window_branding
+
+        apply_window_branding(self)
+        self.setWindowFlags(_SAS_VERIFY_WINDOW_FLAGS)
         self.setMinimumSize(800, 560)
         self.resize(1180, 780)
 
@@ -1263,10 +1572,10 @@ class SasVerifyDialog(QDialog):
         root.addWidget(self._build_view_menu_bar())
         root.addWidget(
             QLabel(
-                "Cabinet values prefetch when this dialog opens. "
-                "Click Get Meters to capture or review serial SAS data; "
-                "click again to refresh from COM. "
-                "Or paste TX/RX and click Compare."
+                "Cabinet and COM meters prefetch when this dialog opens "
+                "(close IGT SAS tester first if it holds the COM port). "
+                "Tables fill automatically; click Refresh Meters to capture again from COM, "
+                "or paste TX/RX and Compare."
             )
         )
         legend = QLabel(
@@ -1303,8 +1612,8 @@ class SasVerifyDialog(QDialog):
         self._btn_get_meters = QPushButton("Get Meters")
         self._btn_get_meters.setToolTip(
             "Capture SAS 6F meters over COM (IGT five polls). "
-            "Capture starts in the background when this dialog opens. "
-            "Bill LPs ($31-$37) are skipped for speed; Bills tab uses 6F 000B + cabinet stacker."
+            "Prefetch runs when this dialog opens and fills the tables automatically. "
+            "Click again to refresh from COM. Bill LPs are skipped during prefetch."
         )
         self._btn_get_meters.clicked.connect(self._on_get_meters_clicked)
         scan_row.addWidget(self._btn_get_meters)
@@ -1340,6 +1649,7 @@ class SasVerifyDialog(QDialog):
 
         self._table = self._make_verify_table_widget()
         self._verify_tables: tuple[QTableWidget, ...] = (self._table,)
+        self._accounting_box: QGroupBox | None = None
         self._master_value_labels: dict[str, QLabel] = {}
         self._master_value_label_codes: dict[str, str] = {}
         self._master_credit_in_total: QLabel | None = None
@@ -1347,7 +1657,7 @@ class SasVerifyDialog(QDialog):
         self._game_perf_labels: dict[str, QLabel] = {}
         self._game_residual_labels: dict[str, QLabel] = {}
         self._game_residual_state_keys: dict[str, tuple[str, ...]] = {}
-        self._game_yield_chart_label: QLabel | None = None
+        self._game_yield_chart: MachineYieldChartWidget | None = None
         self._game_theme_combo: QComboBox | None = None
         self._game_paytable_combo: QComboBox | None = None
         self._theme_perf_by_paytable: dict[str, dict[str, dict[str, str]]] = {}
@@ -1364,6 +1674,7 @@ class SasVerifyDialog(QDialog):
         self._master_tab = self._build_master_tab()
         self._transfer_tab = self._build_transfer_tab()
         self._security_tab = self._build_security_tab()
+        self._accounting_tab = self._build_accounting_tab()
         self._load_column_visibility_prefs()
         self._apply_column_visibility()
         for tbl in self._verify_tables:
@@ -1384,15 +1695,10 @@ class SasVerifyDialog(QDialog):
         center_table_in_group_box(bills_out_box, self._bills_out_table)
         self._bill_reject_label = QLabel(format_bill_reject_count_label(None))
         self._bill_reject_label.setContentsMargins(4, 2, 4, 0)
-        bills_row = QHBoxLayout()
-        bills_row.setContentsMargins(4, 4, 4, 0)
-        bills_row.setSpacing(6)
-        bills_row.addWidget(bills_in_box, stretch=1)
-        bills_row.addWidget(bills_out_box, stretch=1)
+        bills_cluster = meter_panel_cluster(bills_in_box, bills_out_box)
         bills_tab = QWidget()
-        bills_tab_layout = QVBoxLayout(bills_tab)
-        bills_tab_layout.setContentsMargins(0, 0, 0, 0)
-        bills_tab_layout.addLayout(bills_row)
+        bills_tab_layout = meter_tab_outer_layout(bills_tab)
+        center_widget_in_panel(bills_tab_layout, bills_cluster)
         self._bill_reject_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         bills_tab_layout.addWidget(self._bill_reject_label)
         self._bills_in_box = bills_in_box
@@ -1405,7 +1711,7 @@ class SasVerifyDialog(QDialog):
 
         self._meter_tabs = QTabWidget()
         self._meter_tabs.setStyleSheet(meter_tabs_stylesheet())
-        self._meter_tabs.addTab(self._table, _METER_TAB_NAMES[TAB_ACCOUNTING])
+        self._meter_tabs.addTab(self._accounting_tab, _METER_TAB_NAMES[TAB_ACCOUNTING])
         self._meter_tabs.addTab(self._game_tab, _METER_TAB_NAMES[TAB_GAME])
         self._meter_tabs.addTab(self._master_tab, _METER_TAB_NAMES[TAB_MASTER])
         self._meter_tabs.addTab(bills_tab, _METER_TAB_NAMES[TAB_BILLS])
@@ -1502,187 +1808,138 @@ class SasVerifyDialog(QDialog):
                 "Status",
             ]
         )
-        table.setColumnWidth(COL_6F_CODE, 72)
-        table.setColumnWidth(COL_WIRE_ID, 72)
-        table.setColumnWidth(COL_IGT_POLL, 64)
-        table.setColumnWidth(COL_IGT_METER, 88)
-        table.setColumnWidth(COL_METER_NAME, 280)
-        table.horizontalHeader().setStretchLastSection(True)
+        table.setColumnWidth(COL_6F_CODE, _VERIFY_COL_MIN_WIDTHS[COL_6F_CODE])
+        table.setColumnWidth(COL_WIRE_ID, _VERIFY_COL_MIN_WIDTHS[COL_WIRE_ID])
+        table.setColumnWidth(COL_IGT_POLL, _VERIFY_COL_MIN_WIDTHS[COL_IGT_POLL])
+        table.setColumnWidth(COL_IGT_METER, _VERIFY_COL_MIN_WIDTHS[COL_IGT_METER])
+        table.setColumnWidth(COL_METER_NAME, _VERIFY_COL_MIN_WIDTHS[COL_METER_NAME])
+        table.horizontalHeader().setStretchLastSection(False)
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(20)
+        table.horizontalHeader().setFixedHeight(22)
+        table.setShowGrid(True)
+        table.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
         table.setMinimumHeight(320)
         return table
+
+    def _build_accounting_tab(self) -> QWidget:
+        """EGM-style centered Meters panel (same shell as Bills/Coins/Master)."""
+        body = QWidget()
+        body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        tab_layout = meter_tab_outer_layout(body)
+        box = QGroupBox("Meters")
+        wrap_expand_verify_table_in_group_box(box, self._table)
+        self._accounting_box = box
+        stretch_widget_in_panel(tab_layout, box)
+        return body
 
     def _build_game_tab(self) -> QWidget:
         """EGM-style Performance Meters / Residual Credit / Yield chart layout."""
         body = QWidget()
-        root = QVBoxLayout(body)
-        root.setContentsMargins(4, 4, 4, 4)
-        root.setSpacing(4)
+        root = meter_tab_outer_layout(body)
 
-        filter_row = QHBoxLayout()
-        filter_row.setContentsMargins(0, 0, 0, 0)
-        filter_row.setSpacing(6)
         self._game_theme_combo = QComboBox()
         self._game_theme_combo.addItem(GAME_THEME_TOTAL)
-        theme_font = self._game_theme_combo.font()
-        theme_font.setPointSize(9)
-        self._game_theme_combo.setFont(theme_font)
-        self._game_theme_combo.setMinimumWidth(180)
-        self._game_theme_combo.setMaximumWidth(280)
+        self._game_theme_combo.setFont(meter_panel_font())
+        self._game_theme_combo.setMinimumWidth(160)
+        self._game_theme_combo.setMaximumWidth(240)
         self._game_theme_combo.currentIndexChanged.connect(self._on_game_theme_filter_changed)
-        filter_row.addWidget(self._game_theme_combo)
         self._game_paytable_combo = QComboBox()
         self._game_paytable_combo.addItem(GAME_THEME_TOTAL)
         self._game_paytable_combo.setEnabled(False)
-        pay_font = self._game_paytable_combo.font()
-        pay_font.setPointSize(9)
-        self._game_paytable_combo.setFont(pay_font)
+        self._game_paytable_combo.setFont(meter_panel_font())
         self._game_paytable_combo.setMinimumWidth(120)
-        self._game_paytable_combo.setMaximumWidth(180)
+        self._game_paytable_combo.setMaximumWidth(200)
         self._game_paytable_combo.currentIndexChanged.connect(self._on_game_paytable_filter_changed)
-        filter_row.addWidget(self._game_paytable_combo)
         denom_combo = QComboBox()
         denom_combo.addItem(GAME_THEME_TOTAL)
         denom_combo.setEnabled(False)
-        denom_font = denom_combo.font()
-        denom_font.setPointSize(9)
-        denom_combo.setFont(denom_font)
-        denom_combo.setMaximumWidth(140)
-        filter_row.addWidget(denom_combo)
-        root.addLayout(filter_row)
-
-        content = QHBoxLayout()
-        content.setContentsMargins(0, 0, 0, 0)
-        content.setSpacing(6)
-
-        def _row_label(text: str, *, indent: bool = False, bold: bool = False) -> QLabel:
-            lbl = QLabel(text)
-            if indent:
-                lbl.setContentsMargins(10, 0, 0, 0)
-            font = lbl.font()
-            font.setPointSize(9)
-            font.setBold(bold)
-            lbl.setFont(font)
-            lbl.setMinimumHeight(18)
-            lbl.setMaximumHeight(20)
-            return lbl
-
-        def _value_label(*, bold: bool = False) -> QLabel:
-            lbl = QLabel("—")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            font = lbl.font()
-            font.setPointSize(9)
-            font.setBold(bold)
-            lbl.setFont(font)
-            lbl.setMinimumHeight(18)
-            lbl.setMaximumHeight(20)
-            return lbl
+        denom_combo.setFont(meter_panel_font())
+        denom_combo.setMinimumWidth(100)
+        denom_combo.setMaximumWidth(160)
+        root.addLayout(
+            meter_centered_filter_row(
+                self._game_theme_combo,
+                self._game_paytable_combo,
+                denom_combo,
+            )
+        )
 
         def _perf_row(
             form: QFormLayout,
-            title: str | QLabel,
+            title: str,
             key: str,
             *,
+            indent: bool = False,
+            bold_label: bool = False,
             bold_value: bool = False,
         ) -> None:
-            lbl = _value_label(bold=bold_value)
+            lbl = meter_value_label(bold=bold_value)
             self._game_perf_labels[key] = lbl
-            form.addRow(title, lbl)
+            form.addRow(meter_row_label(title, indent=indent, bold=bold_label), lbl)
 
         perf = QGroupBox("Performance Meters")
         perf_form = meter_subpanel_form_layout()
-        _perf_row(perf_form, _row_label("Games Played"), "played")
-        _perf_row(perf_form, _row_label("Games Won"), "won")
-        _perf_row(perf_form, _row_label("Games Lost"), "lost")
-        _perf_row(perf_form, _row_label("Bet"), "bet")
-        _perf_row(perf_form, _row_label("Win", bold=True), "win", bold_value=True)
-        _perf_row(perf_form, _row_label("Game Win", indent=True), "game_win")
-        _perf_row(perf_form, _row_label("Bonus Win", indent=True), "bonus_win")
-        _perf_row(perf_form, _row_label("SAS Bonus Win", indent=True), "sas_bonus")
-        _perf_row(perf_form, _row_label("Progr. Win", indent=True), "prog_win")
-        _perf_row(perf_form, _row_label("Bet - Win", bold=True), "bet_minus_win", bold_value=True)
-        _perf_row(perf_form, _row_label("Machine Yield", bold=True), "yield", bold_value=True)
-        _perf_row(perf_form, _row_label("Machine Hold", bold=True), "hold", bold_value=True)
+        _perf_row(perf_form, "Games Played", "played")
+        _perf_row(perf_form, "Games Won", "won")
+        _perf_row(perf_form, "Games Lost", "lost")
+        _perf_row(perf_form, "Bet", "bet")
+        _perf_row(perf_form, "Win", "win", bold_label=True, bold_value=True)
+        _perf_row(perf_form, "Game Win", "game_win", indent=True)
+        _perf_row(perf_form, "Bonus Win", "bonus_win", indent=True)
+        _perf_row(perf_form, "SAS Bonus Win", "sas_bonus", indent=True)
+        _perf_row(perf_form, "Progr. Win", "prog_win", indent=True)
+        _perf_row(perf_form, "Bet - Win", "bet_minus_win", bold_label=True, bold_value=True)
+        _perf_row(perf_form, "Machine Yield", "yield", bold_label=True, bold_value=True)
+        _perf_row(perf_form, "Machine Hold", "hold", bold_label=True, bold_value=True)
         center_layout_in_group_box(perf, perf_form)
 
         residual = QGroupBox("Residual Credit Removal Feature")
         residual_form = meter_subpanel_form_layout()
         for label, state_keys in GAME_RESIDUAL_ROWS:
             key = label.lower().replace(" ", "_")
-            val = _value_label()
+            val = meter_value_label()
             self._game_residual_labels[key] = val
             self._game_residual_state_keys[key] = state_keys
-            residual_form.addRow(_row_label(label), val)
+            residual_form.addRow(meter_row_label(label), val)
         center_layout_in_group_box(residual, residual_form)
 
         left_inner = QVBoxLayout()
         left_inner.setContentsMargins(0, 0, 0, 0)
-        left_inner.setSpacing(4)
+        left_inner.setSpacing(_METER_PANEL_CLUSTER_SPACING)
         left_inner.addWidget(perf)
         left_inner.addWidget(residual)
         left_panel = QWidget()
         left_panel.setLayout(left_inner)
+        left_panel.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Minimum)
 
         chart_box = QGroupBox("Machine Yield Chart")
         chart_layout = QVBoxLayout(chart_box)
-        chart_layout.setContentsMargins(8, 8, 8, 8)
-        self._game_yield_chart_label = QLabel("—")
-        self._game_yield_chart_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        chart_font = self._game_yield_chart_label.font()
-        chart_font.setPointSize(22)
-        chart_font.setBold(True)
-        self._game_yield_chart_label.setFont(chart_font)
-        chart_layout.addStretch(1)
-        chart_layout.addWidget(self._game_yield_chart_label)
-        chart_layout.addStretch(1)
+        chart_layout.setContentsMargins(12, 10, 12, 10)
+        self._game_yield_chart = MachineYieldChartWidget()
+        chart_layout.addWidget(self._game_yield_chart)
+        chart_box.setMinimumWidth(300)
+        chart_box.setMinimumHeight(260)
+        chart_box.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Minimum)
 
         self._game_perf_box = perf
         self._game_residual_box = residual
         self._game_chart_box = chart_box
 
-        content.addWidget(left_panel, stretch=1)
-        content.addWidget(chart_box, stretch=1)
-        root.addLayout(content, stretch=1)
+        center_widget_in_panel(root, meter_panel_cluster(left_panel, chart_box))
         return body
 
     def _build_master_tab(self) -> QWidget:
         """EGM-style Master summary matching cabinet meter UI layout."""
         body = QWidget()
         body.setObjectName("masterTabBody")
-        outer = QHBoxLayout(body)
-        outer.setContentsMargins(4, 4, 4, 4)
-        outer.setSpacing(6)
 
-        def _value_label(*, bold: bool = False) -> QLabel:
-            lbl = QLabel("—")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            lbl.setMinimumHeight(18)
-            lbl.setMaximumHeight(20)
-            font = lbl.font()
-            font.setPointSize(9)
-            font.setBold(bold)
-            lbl.setFont(font)
-            return lbl
-
-        def _section_label(html: str) -> QLabel:
-            lbl = QLabel(html)
-            font = lbl.font()
-            font.setPointSize(9)
-            font.setBold(True)
-            lbl.setFont(font)
-            lbl.setMinimumHeight(18)
-            lbl.setMaximumHeight(20)
-            return lbl
+        def _section_label(text: str) -> QLabel:
+            return meter_row_label(text, bold=True)
 
         def _sub_label(text: str) -> QLabel:
-            lbl = QLabel(text)
-            lbl.setContentsMargins(10, 0, 0, 0)
-            font = lbl.font()
-            font.setPointSize(9)
-            lbl.setFont(font)
-            lbl.setMinimumHeight(18)
-            lbl.setMaximumHeight(20)
-            return lbl
+            return meter_row_label(text, indent=True)
 
         def _row(
             form: QFormLayout,
@@ -1692,30 +1949,30 @@ class SasVerifyDialog(QDialog):
             *,
             bold_value: bool = False,
         ) -> None:
-            lbl = _value_label(bold=bold_value)
+            lbl = meter_value_label(bold=bold_value)
             self._master_value_labels[key] = lbl
             self._master_value_label_codes[key] = code
             form.addRow(title, lbl)
 
         credit = QGroupBox("TOTAL CREDIT")
         credit_form = meter_subpanel_form_layout()
-        self._master_credit_in_total = _value_label(bold=True)
+        self._master_credit_in_total = meter_value_label(bold=True)
         credit_form.addRow(_section_label("Credit In"), self._master_credit_in_total)
         for title, code in MASTER_CREDIT_IN_ROWS:
             _row(credit_form, _sub_label(title), f"in:{code}", code)
-        self._master_credit_out_total = _value_label(bold=True)
+        self._master_credit_out_total = meter_value_label(bold=True)
         credit_form.addRow(_section_label("Credit Out"), self._master_credit_out_total)
         for title, code in MASTER_CREDIT_OUT_ROWS:
             _row(credit_form, _sub_label(title), f"out:{code}", code)
-        self._master_total_credit = _value_label(bold=True)
+        self._master_total_credit = meter_value_label(bold=True)
         credit_form.addRow(_section_label("Total Credit"), self._master_total_credit)
-        self._master_inout_pct = _value_label(bold=True)
+        self._master_inout_pct = meter_value_label(bold=True)
         credit_form.addRow(_section_label("TOTAL IN-OUT %"), self._master_inout_pct)
         center_layout_in_group_box(credit, credit_form)
 
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
-        right.setSpacing(4)
+        right.setSpacing(_METER_PANEL_CLUSTER_SPACING)
 
         handpay = QGroupBox("HANDPAY OUT")
         hp_form = meter_subpanel_form_layout()
@@ -1724,38 +1981,40 @@ class SasVerifyDialog(QDialog):
         for title, code in MASTER_JACKPOT_SUB_ROWS:
             _row(hp_form, _sub_label(title), f"hp:{code}", code)
         center_layout_in_group_box(handpay, hp_form)
-        right.addWidget(handpay, stretch=1)
+        right.addWidget(handpay)
 
         cancelled = QGroupBox("")
         cancelled.setFlat(True)
         c_form = meter_subpanel_form_layout()
         _row(c_form, _section_label("Total Cancelled Credits"), "cancelled:0004", MASTER_CANCELLED_CODE)
         center_layout_in_group_box(cancelled, c_form)
-        right.addWidget(cancelled, stretch=1)
+        right.addWidget(cancelled)
 
         wagered = QGroupBox("WAGERED CREDITS")
         w_form = meter_subpanel_form_layout()
         for title, code in MASTER_WAGERED_ROWS:
-            row_title = _sub_label(title)
-            row_title.setContentsMargins(0, 0, 0, 0)
-            _row(w_form, row_title, f"wager:{code}", code)
+            _row(w_form, meter_row_label(title), f"wager:{code}", code)
         center_layout_in_group_box(wagered, w_form)
-        right.addWidget(wagered, stretch=1)
+        right.addWidget(wagered)
 
         self._master_credit_box = credit
         self._master_handpay_box = handpay
         self._master_cancelled_box = cancelled
         self._master_wagered_box = wagered
 
-        outer.addWidget(credit, stretch=1)
-        outer.addLayout(right, stretch=1)
+        right_panel = QWidget()
+        right_panel.setLayout(right)
+        right_panel.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Minimum)
+
+        tab_layout = meter_tab_outer_layout(body)
+        center_widget_in_panel(tab_layout, meter_panel_cluster(credit, right_panel))
         return body
 
     def _build_coins_tab(self) -> QWidget:
         """EGM-style 2x2 COIN IN / OUT / TO DROP BOX / TO HOPPER panels."""
         body = QWidget()
-        grid = QGridLayout(body)
-        grid.setContentsMargins(4, 4, 4, 4)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(6)
         panel_positions = (
             ("in", 0, 0),
@@ -1771,49 +2030,37 @@ class SasVerifyDialog(QDialog):
             self._coin_tables[panel_id] = table
             self._coin_boxes[panel_id] = box
             grid.addWidget(box, row, col)
+        cluster = QWidget()
+        cluster.setLayout(grid)
+        cluster.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Minimum)
+        tab_layout = meter_tab_outer_layout(body)
+        center_widget_in_panel(tab_layout, cluster)
         return body
 
     def _build_transfer_tab(self) -> QWidget:
         """EGM-style TICKET / CASHLESS transfer panels."""
         body = QWidget()
-        outer = QHBoxLayout(body)
-        outer.setContentsMargins(4, 4, 4, 4)
-        outer.setSpacing(6)
 
         def _cell_label(
             text: str,
             *,
             bold: bool = False,
             indent: bool = False,
-            align: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            align: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
         ) -> QLabel:
             lbl = QLabel(text)
             lbl.setAlignment(align)
-            font = lbl.font()
-            font.setPointSize(9)
-            font.setBold(bold)
-            lbl.setFont(font)
-            lbl.setMinimumHeight(18)
-            lbl.setMaximumHeight(20)
+            lbl.setFont(meter_panel_font(bold=bold))
+            lbl.setMinimumHeight(_METER_ROW_MIN_HEIGHT)
             if indent:
                 lbl.setContentsMargins(10, 0, 0, 0)
             return lbl
 
-        def _value_label(*, bold: bool = False, width: int = 76) -> QLabel:
-            lbl = _cell_label(
-                "—",
-                bold=bold,
-                align=Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
-            )
-            lbl.setMinimumWidth(width)
-            lbl.setMaximumWidth(width + 8)
-            return lbl
-
         def _amount_label(*, bold: bool = False) -> QLabel:
-            return _value_label(bold=bold, width=76)
+            return meter_grid_value_label(bold=bold, min_width=_METER_TRANSFER_AMOUNT_WIDTH)
 
         def _count_label(*, bold: bool = False) -> QLabel:
-            return _value_label(bold=bold, width=44)
+            return meter_grid_value_label(bold=bold, min_width=_METER_COUNT_MIN_WIDTH)
 
         def _register_amount(key: str, code: str, lbl: QLabel) -> None:
             self._transfer_amount_labels[key] = lbl
@@ -1830,15 +2077,13 @@ class SasVerifyDialog(QDialog):
                 bold=True,
                 align=Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
             )
-            amt_hdr.setMinimumWidth(76)
-            amt_hdr.setMaximumWidth(84)
+            amt_hdr.setMinimumWidth(_METER_TRANSFER_AMOUNT_WIDTH)
             cnt_hdr = _cell_label(
                 "Count",
                 bold=True,
                 align=Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
             )
-            cnt_hdr.setMinimumWidth(44)
-            cnt_hdr.setMaximumWidth(52)
+            cnt_hdr.setMinimumWidth(_METER_COUNT_MIN_WIDTH)
             grid.addWidget(amt_hdr, row, 1)
             grid.addWidget(cnt_hdr, row, 2)
             return row + 1
@@ -1920,7 +2165,6 @@ class SasVerifyDialog(QDialog):
             grid.setColumnStretch(0, 1)
             grid.setColumnStretch(1, 0)
             grid.setColumnStretch(2, 0)
-            box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             center_layout_in_group_box(box, grid)
             return box
 
@@ -1970,45 +2214,23 @@ class SasVerifyDialog(QDialog):
         )
         self._transfer_ticket_box = ticket
         self._transfer_cashless_box = cashless
-        outer.addWidget(ticket, stretch=1)
-        outer.addWidget(cashless, stretch=1)
+        tab_layout = meter_tab_outer_layout(body)
+        center_widget_in_panel(tab_layout, meter_panel_cluster(ticket, cashless))
         return body
 
     def _build_security_tab(self) -> QWidget:
         """EGM-style Door Open Count / Games Since panels."""
         body = QWidget()
-        outer = QHBoxLayout(body)
-        outer.setContentsMargins(4, 4, 4, 4)
-        outer.setSpacing(6)
-
-        def _row_label(text: str) -> QLabel:
-            lbl = QLabel(text)
-            font = lbl.font()
-            font.setPointSize(9)
-            lbl.setFont(font)
-            lbl.setMinimumHeight(18)
-            lbl.setMaximumHeight(20)
-            return lbl
-
-        def _value_label() -> QLabel:
-            lbl = QLabel("—")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            font = lbl.font()
-            font.setPointSize(9)
-            lbl.setFont(font)
-            lbl.setMinimumHeight(18)
-            lbl.setMaximumHeight(20)
-            return lbl
 
         def _build_panel(title: str, rows: tuple[tuple[str, tuple[str, ...]], ...]) -> QGroupBox:
             box = QGroupBox(title)
             form = meter_subpanel_form_layout()
             for label, state_keys in rows:
                 key = label.lower().replace(" ", "_")
-                val = _value_label()
+                val = meter_value_label()
                 self._security_value_labels[key] = val
                 self._security_state_keys[key] = state_keys
-                form.addRow(_row_label(label), val)
+                form.addRow(meter_row_label(label), val)
             center_layout_in_group_box(box, form)
             return box
 
@@ -2016,8 +2238,8 @@ class SasVerifyDialog(QDialog):
         games = _build_panel("Games Since", SECURITY_GAMES_ROWS)
         self._security_doors_box = doors
         self._security_games_box = games
-        outer.addWidget(doors, stretch=1)
-        outer.addWidget(games, stretch=1)
+        tab_layout = meter_tab_outer_layout(body)
+        center_widget_in_panel(tab_layout, meter_panel_cluster(doors, games))
         return body
 
     @staticmethod
@@ -2089,6 +2311,9 @@ class SasVerifyDialog(QDialog):
         self._game_perf_box.setStyleSheet(panel_style)
         self._game_residual_box.setStyleSheet(panel_style)
         self._game_chart_box.setStyleSheet(panel_style)
+        if self._accounting_box is not None:
+            self._accounting_box.setStyleSheet(panel_style)
+        self._table.setStyleSheet(table_style)
         reject_font = self._bill_reject_label.font()
         reject_font.setPointSize(9)
         self._bill_reject_label.setFont(reject_font)
@@ -2350,6 +2575,7 @@ class SasVerifyDialog(QDialog):
         for tbl in self._verify_tables:
             for col, act in self._column_actions.items():
                 tbl.setColumnHidden(col, not act.isChecked())
+            fit_verify_table_columns(tbl)
 
     def _column_visibility_map(self) -> dict[int, bool]:
         return {col: act.isChecked() for col, act in self._column_actions.items()}
@@ -2401,7 +2627,14 @@ class SasVerifyDialog(QDialog):
         self._stop_onehand_check_thread(wait_ms=500)
         self._cached_meter_result = None
         self._meter_fetch_error = None
-        super().closeEvent(event)
+        if hasattr(self._vm, "invalidate_accounting_registers_cache"):
+            try:
+                self._vm.invalidate_accounting_registers_cache()
+            except Exception:
+                pass
+        event.accept()
+        # Exit dlg.exec() for title-bar X and taskbar/system-menu Close (SC_CLOSE).
+        self.done(QDialog.DialogCode.Rejected)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
@@ -2418,6 +2651,12 @@ class SasVerifyDialog(QDialog):
         QTimer.singleShot(0, self._start_prefetch)
 
     def _on_scan_root_edit_changed(self) -> None:
+        sr = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        if hasattr(self._vm, "invalidate_accounting_registers_cache"):
+            try:
+                self._vm.invalidate_accounting_registers_cache(sr)
+            except Exception:
+                pass
         self._schedule_onehand_check()
         if not self._prefetch_started:
             return
@@ -2443,6 +2682,7 @@ class SasVerifyDialog(QDialog):
         if self._prefetch_started:
             return
         self._prefetch_started = True
+        self._meter_prefetch_retried = False
         self._scan_root = (self._scan_root_edit.text() or self._scan_root or "").strip()
         self._update_prefetch_status("Prefetching: starting…")
         if self._scan_root:
@@ -2459,24 +2699,46 @@ class SasVerifyDialog(QDialog):
             self._begin_meter_fetch(prefetch=True)
         self._update_prefetch_status()
 
+    def _sync_get_meters_button_label(self) -> None:
+        if self._meter_fetch_running():
+            self._btn_get_meters.setText("Capturing COM…")
+            return
+        if self._meter_fetch_user_clicked_apply or self._last_parsed_rows:
+            self._btn_get_meters.setText("Refresh Meters")
+        else:
+            self._btn_get_meters.setText("Get Meters")
+
+    def _auto_apply_cached_meters_if_needed(self) -> None:
+        if self._meter_fetch_running() or self._meter_fetch_user_clicked_apply:
+            return
+        if self._cached_meter_result is None:
+            return
+        try:
+            if self._apply_meter_fetch_result(self._cached_meter_result):
+                self._meter_fetch_user_clicked_apply = True
+        except Exception:
+            traceback.print_exc()
+        finally:
+            self._update_prefetch_status()
+
     def _update_prefetch_status(self, override: str | None = None) -> None:
+        self._sync_get_meters_button_label()
         if override:
             self._prefetch_status_label.setText(override)
             return
         if self._cached_meter_result is not None and self._cabinet_cache_valid():
             if self._meter_fetch_user_clicked_apply:
                 self._prefetch_status_label.setText(
-                    "Meters displayed — click Get Meters again to refresh from COM."
+                    "Meters displayed — click Refresh Meters to capture again from COM."
                 )
             else:
-                self._prefetch_status_label.setText(
-                    "Ready — click Get Meters to review captured serial data."
-                )
+                self._prefetch_status_label.setText("Applying prefetched COM meters…")
+                QTimer.singleShot(0, self._auto_apply_cached_meters_if_needed)
             return
         if self._meter_fetch_error and not self._cached_meter_result:
             self._prefetch_status_label.setText(
                 f"COM capture failed: {self._meter_fetch_error} "
-                "(click Get Meters to retry)"
+                "(click Refresh Meters to retry)"
             )
             return
         parts: list[str] = []
@@ -2492,25 +2754,24 @@ class SasVerifyDialog(QDialog):
         if self._cached_meter_result is not None:
             if self._meter_fetch_user_clicked_apply:
                 self._prefetch_status_label.setText(
-                    "Meters displayed — click Get Meters again to refresh from COM."
+                    "Meters displayed — click Refresh Meters to capture again from COM."
                 )
             else:
-                self._prefetch_status_label.setText(
-                    "COM meters ready — click Get Meters to review."
-                )
+                self._prefetch_status_label.setText("Applying prefetched COM meters…")
+                QTimer.singleShot(0, self._auto_apply_cached_meters_if_needed)
             return
         if self._cabinet_cache_valid():
             self._prefetch_status_label.setText(
-                "Cabinet loaded — click Get Meters to capture serial SAS data."
+                "Cabinet loaded — prefetching COM meters (tables fill automatically)…"
             )
             return
         if not self._current_com_port():
             self._prefetch_status_label.setText(
-                "Set COM port, then click Get Meters to capture serial data."
+                "Set COM port — prefetch will capture SAS meters when the dialog opens."
             )
             return
         self._prefetch_status_label.setText(
-            "Cabinet loading… click Get Meters to capture serial SAS data."
+            "Cabinet loading… COM meters will appear automatically when capture finishes."
         )
 
     def _paste_fingerprint(self, paste_text: str) -> str:
@@ -2527,6 +2788,10 @@ class SasVerifyDialog(QDialog):
         return fp == self._last_displayed_paste_fingerprint and bool(self._last_parsed_rows)
 
     def _begin_meter_fetch(self, *, prefetch: bool, force: bool = False) -> bool:
+        """Start background COM capture (IGT 200 ms GP cadence in ``sas_serial_meters``).
+
+        Prefetch skips bill long polls for speed; use a manual refresh for full bill LPs.
+        """
         port = self._current_com_port()
         if not port:
             return False
@@ -2551,7 +2816,6 @@ class SasVerifyDialog(QDialog):
             com_port=port,
             com_baud=int(getattr(self, "_com_baud", DEFAULT_SAS_COM_BAUD)),
             skip_bill_polls=prefetch,
-            fast_capture=prefetch,
             cached_profile=getattr(self, "_cached_serial_profile", None),
         )
         self._meter_fetch_worker.moveToThread(self._meter_fetch_thread)
@@ -2573,6 +2837,14 @@ class SasVerifyDialog(QDialog):
         self._meter_fetch_thread.start()
         return True
 
+    def _flush_pending_cabinet_ui_refresh(self) -> None:
+        """Apply deferred cabinet panel refresh once COM work is finished."""
+        if not self._cabinet_ui_refresh_pending:
+            return
+        if self._meter_fetch_running():
+            return
+        self._run_cabinet_ui_refresh()
+
     def _apply_meter_fetch_result(self, result: object, *, switch_tab: bool = False) -> bool:
         paste_text = getattr(result, "paste_text", None)
         port_used = getattr(result, "port_used", "") or ""
@@ -2591,6 +2863,7 @@ class SasVerifyDialog(QDialog):
         if self._cached_meter_result is not None:
             self._update_onehand_warning_label(self._onehand_check_ip or "local")
         if not paste_text:
+            self._flush_pending_cabinet_ui_refresh()
             return False
         paste_str = str(paste_text)
         if self._meter_result_already_displayed(result):
@@ -2602,6 +2875,7 @@ class SasVerifyDialog(QDialog):
                 elif self._last_bill_in_rows or self._last_bill_out_rows:
                     self._meter_tabs.setCurrentIndex(TAB_BILLS)
                 self._paste.setFocus()
+            self._flush_pending_cabinet_ui_refresh()
             return bool(self._last_parsed_rows or self._last_bill_in_rows)
         has_6f = False
         display_rows: list = []
@@ -2660,19 +2934,12 @@ class SasVerifyDialog(QDialog):
                     )
         except Exception:
             pass
+        self._flush_pending_cabinet_ui_refresh()
         return has_6f or bool(display_rows)
 
     def _on_meter_fetch_thread_finished(self) -> None:
         self._meter_fetch_thread = None
         self._meter_fetch_worker = None
-
-    def _apply_meter_fetch_apply_clicked(self) -> None:
-        if not self._worker_signals_enabled():
-            return
-        try:
-            self._apply_meter_fetch_result(self._cached_meter_result)
-        except Exception:
-            traceback.print_exc()
 
     def _begin_get_meters_capture(self) -> None:
         if not self._worker_signals_enabled():
@@ -2699,7 +2966,7 @@ class SasVerifyDialog(QDialog):
             self._begin_cabinet_compare(prefetch=True)
         if not self._begin_meter_fetch(prefetch=False, force=True):
             self._btn_get_meters.setEnabled(True)
-            self._btn_get_meters.setText("Get Meters")
+            self._sync_get_meters_button_label()
             QMessageBox.warning(
                 self,
                 "Get Meters",
@@ -2720,11 +2987,6 @@ class SasVerifyDialog(QDialog):
             fetch_running=self._meter_fetch_running(),
             user_already_applied=self._meter_fetch_user_clicked_apply,
         )
-        if action == "apply":
-            self._meter_fetch_user_clicked_apply = True
-            self._update_prefetch_status()
-            QTimer.singleShot(0, self._apply_meter_fetch_apply_clicked)
-            return
         if action == "wait":
             QMessageBox.information(
                 self,
@@ -2748,12 +3010,15 @@ class SasVerifyDialog(QDialog):
         self._cached_meter_result = result
         self._meter_fetch_error = None
         self._btn_get_meters.setEnabled(True)
-        self._btn_get_meters.setText("Get Meters")
         self._meter_fetch_prefetch = False
+        displayed = False
         try:
-            self._apply_meter_fetch_result(result)
+            displayed = bool(self._apply_meter_fetch_result(result))
         except Exception:
             traceback.print_exc()
+        if displayed:
+            self._meter_fetch_user_clicked_apply = True
+        self._flush_pending_cabinet_ui_refresh()
         self._update_prefetch_status()
 
     def _on_meter_fetch_error(self, message: str) -> None:
@@ -2761,10 +3026,26 @@ class SasVerifyDialog(QDialog):
             return
         self._meter_fetch_error = message or "Serial meter fetch failed."
         self._btn_get_meters.setEnabled(True)
-        self._btn_get_meters.setText("Get Meters")
         was_prefetch = self._meter_fetch_prefetch
         self._meter_fetch_prefetch = False
         self._refresh_com_port_list(preserve_text=True)
+        self._flush_pending_cabinet_ui_refresh()
+        msg = self._meter_fetch_error or ""
+        if was_prefetch and not self._meter_prefetch_retried:
+            retry_markers = (
+                "SAS link not responding",
+                "No bytes were received",
+                "Only idle 0x00",
+                "No SAS 6F response",
+            )
+            if any(marker in msg for marker in retry_markers):
+                self._meter_prefetch_retried = True
+                self._meter_fetch_error = None
+                self._update_prefetch_status(
+                    "COM sync retrying with full SAS timing (like IGT tester)…"
+                )
+                QTimer.singleShot(1000, lambda: self._begin_meter_fetch(prefetch=True, force=True))
+                return
         self._update_prefetch_status()
         if was_prefetch:
             return
@@ -2773,7 +3054,7 @@ class SasVerifyDialog(QDialog):
             ip = self._cabinet_ip_from_scan_root() or "the cabinet"
             msg += (
                 f"\n\nOneHand.exe is not running on {ip}. "
-                "Start the game client on the EGM, then click Get Meters again."
+                "Start the game client on the EGM, then click Refresh Meters."
             )
         QMessageBox.warning(
             self,
@@ -2842,7 +3123,7 @@ class SasVerifyDialog(QDialog):
             self.ui.compare_btn.setEnabled(False)
             self.ui.compare_btn.setText("Scanning Cabinet...")
 
-        self._stop_compare_thread(wait_ms=300)
+        self._stop_compare_thread(wait_ms=0)
         if not self._cabinet_cache_valid():
             self._machine_state_loaded = False
             if self._scan_root != self._loaded_cabinet_scan_root:
@@ -2890,9 +3171,26 @@ class SasVerifyDialog(QDialog):
             else:
                 self._machine_state = {}
                 self._machine_state_loaded = False
+            if self._meter_fetch_running():
+                # COM capture is still running — defer panel refresh until it finishes.
+                self._cabinet_ui_refresh_pending = True
+                return
+            self._run_cabinet_ui_refresh()
+        except Exception:
+            traceback.print_exc()
+        finally:
+            self.ui.compare_btn.setEnabled(True)
+            self.ui.compare_btn.setText("Compare")
+            self._btn_get_meters.setEnabled(True)
+            self._cabinet_compare_prefetch = False
+            self._update_prefetch_status()
+
+    def _run_cabinet_ui_refresh(self) -> None:
+        self._cabinet_ui_refresh_pending = False
+        self.setUpdatesEnabled(False)
+        try:
             self._currency = _detect_egm_currency(self._scan_root, self._vm)
             self._update_dollar_toggle_label()
-            self._reload_game_theme_catalog()
             self._render(
                 parsed_rows=self._last_parsed_rows,
                 allow_machine_lookup=self._machine_state_loaded,
@@ -2916,14 +3214,9 @@ class SasVerifyDialog(QDialog):
                     out_rows=bill_out_display,
                     machine_state=self._machine_state,
                 )
-        except Exception:
-            traceback.print_exc()
         finally:
-            self.ui.compare_btn.setEnabled(True)
-            self.ui.compare_btn.setText("Compare")
-            self._btn_get_meters.setEnabled(True)
-            self._cabinet_compare_prefetch = False
-            self._update_prefetch_status()
+            self.setUpdatesEnabled(True)
+        QTimer.singleShot(0, self._reload_game_theme_catalog)
 
     def _on_worker_error(self, msg: str) -> None:
         if not self._worker_signals_enabled():
@@ -3093,6 +3386,7 @@ class SasVerifyDialog(QDialog):
                             item.setForeground(QColor("#b45309"))
                         else:
                             item.setForeground(QColor())
+            fit_verify_table_columns(tbl)
         self._update_game_summary()
         self._update_master_summary()
         self._update_transfer_summary()
@@ -3315,8 +3609,8 @@ class SasVerifyDialog(QDialog):
             lbl.setText("—")
         for lbl in self._game_residual_labels.values():
             lbl.setText("—")
-        if self._game_yield_chart_label is not None:
-            self._game_yield_chart_label.setText("—")
+        if self._game_yield_chart is not None:
+            self._game_yield_chart.set_values(None, None)
 
     def _update_game_summary(self, *, allow_machine_lookup: bool | None = None) -> None:
         if allow_machine_lookup is None:
@@ -3420,9 +3714,13 @@ class SasVerifyDialog(QDialog):
                 lbl.setText(format_master_amount_display(raw, symbol=sym))
             else:
                 lbl.setText(format_transfer_count_display(raw))
-        if self._game_yield_chart_label is not None:
-            yield_text = amount_map.get("yield", "—")
-            self._game_yield_chart_label.setText(yield_text)
+        if self._game_yield_chart is not None:
+            yield_pct = totals.get("yield_pct")
+            hold_pct = totals.get("hold_pct")
+            if isinstance(yield_pct, (int, float)):
+                self._game_yield_chart.set_values(float(yield_pct), float(hold_pct) if hold_pct is not None else None)
+            else:
+                self._game_yield_chart.set_values(None, None)
 
     def _reset_master_summary(self) -> None:
         for lbl in self._master_value_labels.values():
@@ -3536,26 +3834,12 @@ class SasVerifyDialog(QDialog):
                 meter_name = ""
                 code_6f, wire_id, igt_poll, igt_meter = rid, "", "", ""
             machine_v = ""
-            if allow_machine_lookup and self._machine_state_loaded and self._machine_state:
-                try:
-                    machine_v = (
-                        getattr(self._vm, "get_gm2u_value_for_sas_code")(rid, self._machine_state) or ""
-                    ).strip()
-                except Exception:
-                    machine_v = ""
-                if not machine_v:
-                    try:
-                        machine_v = (
-                            getattr(self._vm, "emergency_lookup_value_for_sas_code_from_logs")(
-                                self._scan_root, rid
-                            )
-                            or ""
-                        ).strip()
-                    except Exception:
-                        machine_v = ""
-            machine_missing = not machine_v
+            machine_missing = True
+            if allow_machine_lookup and self._machine_state_loaded:
+                machine_v = self._machine_value_for_code(rid, allow_machine_lookup=True)
+                machine_missing = not machine_v
             sas_norm = self._normalize_int_for_compare(sas_v) if has_sas else ""
-            mac_norm = self._normalize_int_for_compare(machine_v)
+            mac_norm = self._normalize_int_for_compare(machine_v) if machine_v else ""
             if rid == "000B" and has_sas and machine_v:
                 from network.meter_comparator import align_bills_in_sas_credits
 
@@ -3675,29 +3959,38 @@ class SasVerifyDialog(QDialog):
                 st.setFont(f)
                 st.setForeground(Qt.GlobalColor.red)
             table.setItem(row, COL_STATUS, st)
+        fit_verify_table_columns(table)
 
     def _render(self, *, parsed_rows: list[Sas6FRow], allow_machine_lookup: bool = True) -> None:
-        self._refresh_2f_from_paste()
-        self._apply_value_headers()
-        self._maybe_show_2f_paste_hint()
+        self.setUpdatesEnabled(False)
         try:
-            if self._machine_state:
-                p = self.parent()
-                if p is not None and hasattr(p, "statusBar"):
-                    sb = p.statusBar()
-                    if sb is not None:
-                        sb.showMessage("Path Loaded", 4000)
-        except Exception:
-            pass
-        self._render_table(self._table, parsed_rows, allow_machine_lookup=allow_machine_lookup)
-        self._render_coins(
-            machine_state=self._machine_state or None,
-            allow_machine_lookup=allow_machine_lookup,
-        )
-        self._update_game_summary(allow_machine_lookup=allow_machine_lookup)
-        self._update_master_summary(allow_machine_lookup=allow_machine_lookup)
-        self._update_transfer_summary(allow_machine_lookup=allow_machine_lookup)
-        self._update_security_summary(allow_machine_lookup=allow_machine_lookup)
+            self._refresh_2f_from_paste()
+            self._apply_value_headers()
+            self._maybe_show_2f_paste_hint()
+            try:
+                if self._machine_state:
+                    p = self.parent()
+                    if p is not None and hasattr(p, "statusBar"):
+                        sb = p.statusBar()
+                        if sb is not None:
+                            sb.showMessage("Path Loaded", 4000)
+            except Exception:
+                pass
+            self._render_table(
+                self._table,
+                parsed_rows,
+                allow_machine_lookup=allow_machine_lookup,
+            )
+            self._render_coins(
+                machine_state=self._machine_state or None,
+                allow_machine_lookup=allow_machine_lookup,
+            )
+            self._update_game_summary(allow_machine_lookup=allow_machine_lookup)
+            self._update_master_summary(allow_machine_lookup=allow_machine_lookup)
+            self._update_transfer_summary(allow_machine_lookup=allow_machine_lookup)
+            self._update_security_summary(allow_machine_lookup=allow_machine_lookup)
+        finally:
+            self.setUpdatesEnabled(True)
 
     def _format_bill_dollars(self, amount_cents: int) -> str:
         return format_bill_amount_display(amount_cents)
@@ -4187,17 +4480,20 @@ class SasVerifyDialog(QDialog):
                     text_resolver=text_resolver,
                 )
             )
-        col_menu = menu.addMenu("Copy column")
-        col_menu.setEnabled(bool(visible_cols))
-        for c in visible_cols:
+        col_label = ""
+        if col >= 0 and not table.isColumnHidden(col):
             try:
-                col_label = headers[visible_cols.index(c)]
+                col_label = headers[visible_cols.index(col)]
             except ValueError:
-                col_label = table.horizontalHeaderItem(c)
-                col_label = col_label.text() if col_label else f"Column {c + 1}"
-            act_col = col_menu.addAction(col_label)
+                header_item = table.horizontalHeaderItem(col)
+                col_label = header_item.text() if header_item else f"Column {col + 1}"
+        act_col = menu.addAction(
+            f"Copy column: {col_label}" if col_label else "Copy column"
+        )
+        act_col.setEnabled(bool(col_label))
+        if col_label:
             act_col.triggered.connect(
-                lambda _checked=False, column=c: self._copy_table_column_tsv(
+                lambda _checked=False, column=col: self._copy_table_column_tsv(
                     table,
                     headers,
                     column,
@@ -4296,9 +4592,10 @@ class SasVerifyDialog(QDialog):
                 self._render_bills(machine_state=self._machine_state or None)
 
     def mismatch_detected(self) -> bool:
-        for i in range(self._table.rowCount()):
-            it = self._table.item(i, COL_STATUS)
-            if it and it.text().strip().upper() == "MISMATCH":
-                return True
+        for tbl in self._verify_tables:
+            for i in range(tbl.rowCount()):
+                it = tbl.item(i, COL_STATUS)
+                if it and it.text().strip().upper() == "MISMATCH":
+                    return True
         return False
 

@@ -35,8 +35,6 @@ DEFAULT_WIRE_MODE = "raw"  # IGT SAS tester Mark/Space; "mux" = GoldClub 1B 80/0
 DEFAULT_PORT_WAIT_S = 12.0
 DEFAULT_PORT_RETRY_DELAY_S = 0.45
 DEFAULT_FORCE_CAPTURE_WAIT_S = 15.0
-DEFAULT_FORCE_LINK_SYNC_S = 6.0
-DEFAULT_FAST_LINK_SYNC_S = 1.2
 # Windows executables that commonly hold the host SAS COM port open.
 _IGT_COM_BLOCKER_EXE_NAMES: tuple[str, ...] = (
     "SASTest.exe",
@@ -47,9 +45,14 @@ _IGT_COM_BLOCKER_EXE_NAMES: tuple[str, ...] = (
 )
 # sastest.ini [SAS Protocols] Wakeup Delay = 2, Poll Rate = 200 (ms)
 DEFAULT_WAKEUP_DELAY_S = 2.0
-DEFAULT_FAST_WAKEUP_DELAY_S = 0.35
-DEFAULT_LINK_SYNC_S = 3.0
-DEFAULT_LINK_POLL_INTERVAL_S = 0.2
+# IGT SAS tester (sastest.ini Poll Rate = 200 ms): steady GP cadence, not long sync floods.
+DEFAULT_IGT_POLL_INTERVAL_S = 0.2
+DEFAULT_IGT_LINK_SYNC_POLLS = 10
+DEFAULT_IGT_INTER_BATCH_POLLS = 3
+DEFAULT_IGT_PORT_SETTLE_S = 0.5
+DEFAULT_6F_BATCH_READ_S = 3.0
+DEFAULT_6F_BATCH_RETRIES = 4
+DEFAULT_LINK_POLL_INTERVAL_S = DEFAULT_IGT_POLL_INTERVAL_S  # poll keeper scripts
 DEFAULT_RESPONSE_TIMEOUT_S = 15.0
 DEFAULT_RESPONSE_IDLE_MS = 350
 DEFAULT_AUTO_PROBE_RESPONSE_S = 15.0
@@ -262,7 +265,7 @@ def run_sas_general_poll_loop(
     *,
     wire: SasWire | None = None,
     address: int = DEFAULT_SAS_ADDRESS,
-    poll_interval_s: float = DEFAULT_LINK_POLL_INTERVAL_S,
+    poll_interval_s: float = DEFAULT_IGT_POLL_INTERVAL_S,
     stop_event=None,
 ) -> None:
     """IGT-tester-style alternating 80/81 general polls until ``stop_event`` is set."""
@@ -479,8 +482,9 @@ class SasMeterFetchResult:
 def _extract_6f_response_frame(raw: bytes, *, address: int = DEFAULT_SAS_ADDRESS) -> bytes:
     """Return the first complete addr/6F/len/data/CRC frame inside ``raw``."""
     addr = address & 0xFF
+    addr_mark = addr | 0x80
     for i in range(len(raw)):
-        if raw[i] != addr or i + 3 >= len(raw) or raw[i + 1] != 0x6F:
+        if raw[i] not in (addr, addr_mark) or i + 3 >= len(raw) or raw[i + 1] != 0x6F:
             continue
         data_len = int(raw[i + 2])
         end = i + 3 + data_len + 2
@@ -629,45 +633,67 @@ def _gp_response_is_stable(rx: bytes) -> bool:
     return any(b != 0 for b in rx)
 
 
-def _establish_sas_link(
+def _drain_serial_rx(ser) -> bytes:
+    """Read and discard any bytes already queued (never reset_input_buffer)."""
+    chunks: list[bytes] = []
+    try:
+        while True:
+            waiting = int(getattr(ser, "in_waiting", 0) or 0)
+            if waiting <= 0:
+                break
+            chunks.append(ser.read(waiting))
+    except Exception:
+        pass
+    return b"".join(chunks)
+
+
+def _sync_sas_link_igt(
     ser,
     *,
     wire: SasWire,
     address: int = DEFAULT_SAS_ADDRESS,
-    duration_s: float = DEFAULT_LINK_SYNC_S,
-    poll_interval_s: float = DEFAULT_LINK_POLL_INTERVAL_S,
+    poll_count: int = DEFAULT_IGT_LINK_SYNC_POLLS,
+    poll_interval_s: float = DEFAULT_IGT_POLL_INTERVAL_S,
     min_stable_gps: int = 2,
 ) -> tuple[bool, bytes]:
-    """Sync with alternating general polls; return (saw_rx, last_rx_chunk)."""
+    """IGT SAS tester cadence: alternating GP @ ~200 ms until the link answers."""
     polls = _general_poll_alternation(address)
-    deadline = time.monotonic() + max(0.3, float(duration_s))
-    idx = 0
     saw_rx = False
     last_rx = b""
     stable = 0
     need_stable = max(1, int(min_stable_gps))
-    while time.monotonic() < deadline:
-        poll = polls[idx % 2]
-        idx += 1
-        wire.send_general_poll(poll)
-        # EGM replies on the ~200 ms poll cadence (sastest.ini Poll Rate = 200).
-        time.sleep(max(0.05, poll_interval_s))
+    for idx in range(max(4, int(poll_count))):
+        wire.send_general_poll(polls[idx % 2])
+        time.sleep(max(0.05, float(poll_interval_s)))
         rx = _read_after_poll(ser, idle_ms=80)
         if rx:
             saw_rx = True
             last_rx = rx
-            if _gp_response_is_stable(rx):
+            if _gp_response_is_stable(rx) and len(rx) >= 3:
                 stable += 1
                 if stable >= need_stable:
                     return True, last_rx
             else:
-                stable = 0
-    if saw_rx and stable >= need_stable:
-        return True, last_rx
-    # Any non-idle RX means the link is alive even if cadence was irregular.
+                stable = max(0, stable - 1)
     if saw_rx and last_rx and any(b != 0 for b in last_rx):
         return True, last_rx
     return False, last_rx
+
+
+def _inter_poll_between_6f_batches(
+    ser,
+    *,
+    wire: SasWire,
+    address: int = DEFAULT_SAS_ADDRESS,
+    poll_count: int = DEFAULT_IGT_INTER_BATCH_POLLS,
+    poll_interval_s: float = DEFAULT_IGT_POLL_INTERVAL_S,
+) -> None:
+    """Resume IGT general-poll cadence between 6F batches (scripts/sas_host_loop.py)."""
+    polls = _general_poll_alternation(address)
+    for idx in range(max(1, int(poll_count))):
+        wire.send_general_poll(polls[idx % 2])
+        time.sleep(max(0.05, float(poll_interval_s)))
+        _read_after_poll(ser, idle_ms=60)
 
 
 def _read_6f_response(
@@ -677,17 +703,19 @@ def _read_6f_response(
     address: int = DEFAULT_SAS_ADDRESS,
     overall_timeout_s: float = DEFAULT_RESPONSE_TIMEOUT_S,
 ) -> tuple[bytes, bytes, float]:
-    """Read the 6F reply without interleaving general polls.
+    """Read a 6F reply while maintaining IGT ~200 ms GP cadence.
 
-    IGT tester capture (TXRXData.dat) shows the 6F reply immediately after
-    the long poll. Sending GP during the response window flips parity to MARK
-    and corrupts the incoming frame on Windows.
+    Some EGMs/MUX paths defer the full 6F meter frame until the host keeps
+    polling. A short listen window runs first so an immediate reply is not
+    corrupted by an early GP.
     """
-    del wire
     started = time.monotonic()
     deadline = started + max(0.5, float(overall_timeout_s))
+    polls = _general_poll_alternation(address)
+    idx = 0
     chunks: list[bytes] = []
     _ensure_space_rx(ser)
+    listen_until = started + min(0.15, float(overall_timeout_s) * 0.05)
     while time.monotonic() < deadline:
         waiting = int(getattr(ser, "in_waiting", 0) or 0)
         if waiting:
@@ -696,8 +724,20 @@ def _read_6f_response(
             frame = _find_6f_response(raw, address=address)
             if frame:
                 return frame, raw, time.monotonic() - started
-            continue
-        time.sleep(0.005)
+        now = time.monotonic()
+        if now >= listen_until:
+            wire.send_general_poll(polls[idx % 2])
+            idx += 1
+            time.sleep(max(0.05, DEFAULT_IGT_POLL_INTERVAL_S))
+            rx = _read_after_poll(ser, idle_ms=80)
+            if rx:
+                chunks.append(rx)
+                raw = b"".join(chunks)
+                frame = _find_6f_response(raw, address=address)
+                if frame:
+                    return frame, raw, time.monotonic() - started
+        else:
+            time.sleep(0.005)
     raw = b"".join(chunks)
     return _find_6f_response(raw, address=address), raw, time.monotonic() - started
 
@@ -745,26 +785,28 @@ def _format_no_response_error(
 
 
 def _prime_before_long_poll(wire: SasWire, *, address: int = DEFAULT_SAS_ADDRESS) -> None:
-    """One general poll immediately before the 6F (matches TXRXData.dat)."""
+    """One general poll immediately before a long poll (IGT cadence slot)."""
     wire.send_general_poll(_general_poll_alternation(address)[0])
-    time.sleep(0.02)
-    ser = wire._ser
-    _ensure_space_rx(ser)
-    waiting = int(getattr(ser, "in_waiting", 0) or 0)
-    if waiting:
-        ser.read(waiting)
+    time.sleep(DEFAULT_IGT_POLL_INTERVAL_S)
+    _read_after_poll(wire._ser, idle_ms=80)
 
 
-def _wakeup_serial(ser, *, delay_s: float = DEFAULT_WAKEUP_DELAY_S) -> None:
+def _wakeup_serial(
+    ser,
+    *,
+    delay_s: float = DEFAULT_WAKEUP_DELAY_S,
+    reset_buffers: bool = False,
+) -> None:
     """sastest.ini Wakeup Delay before polling (DTR already asserted on open)."""
     delay = max(0.0, float(delay_s))
     if delay > 0:
         time.sleep(delay)
-    try:
-        ser.reset_input_buffer()
-        ser.reset_output_buffer()
-    except Exception:
-        pass
+    if reset_buffers:
+        try:
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+        except Exception:
+            pass
 
 
 def force_release_com_port_blockers(*, wait_s: float = 2.0) -> list[str]:
@@ -827,7 +869,8 @@ def _serial_open_kwargs(
             params = inspect.signature(serial_module.Serial).parameters
         except (TypeError, ValueError):
             params = {}
-        if "exclusive" in params:
+        # pyserial on win32 rejects exclusive=False; omit the kwarg unless explicitly True.
+        if "exclusive" in params and sys.platform != "win32":
             kwargs["exclusive"] = True
     return kwargs
 
@@ -867,7 +910,7 @@ def _open_serial_with_retry(
             )
             time.sleep(retry_delay_s)
             continue
-        if force_capture and not nudged:
+        if force_capture and last_exc is not None and not nudged:
             _nudge_com_port_driver(serial_module, target)
             nudged = True
         try:
@@ -881,11 +924,9 @@ def _open_serial_with_retry(
                 )
             )
             _configure_serial_port(ser, wire_mode=mode, rts=rts)
-            try:
-                ser.reset_input_buffer()
-                ser.reset_output_buffer()
-            except Exception:
-                pass
+            if force_capture:
+                time.sleep(DEFAULT_IGT_PORT_SETTLE_S)
+            _drain_serial_rx(ser)
             return ser, target
         except Exception as exc:  # noqa: BLE001
             if _is_retryable_serial_error(exc):
@@ -948,26 +989,16 @@ def fetch_meters_over_serial(
     poll_batches: tuple[tuple[str, ...], ...] | None = None,
     timeout_s: float = DEFAULT_RESPONSE_TIMEOUT_S,
     port_wait_s: float = 4.0,
-    link_sync_s: float = DEFAULT_LINK_SYNC_S,
     wakeup_delay_s: float = DEFAULT_WAKEUP_DELAY_S,
     wire_mode: str = DEFAULT_WIRE_MODE,
     auto_baud: bool = True,
     auto_wire: bool = True,
     force_capture: bool = True,
     skip_bill_polls: bool = True,
-    fast_capture: bool = False,
     cached_profile: tuple[str, int, bool] | None = None,
 ) -> SasMeterFetchResult:
     if force_capture:
         port_wait_s = max(float(port_wait_s), DEFAULT_FORCE_CAPTURE_WAIT_S)
-        if fast_capture:
-            link_sync_s = min(
-                max(float(link_sync_s), DEFAULT_FAST_LINK_SYNC_S),
-                DEFAULT_FORCE_LINK_SYNC_S,
-            )
-            wakeup_delay_s = min(float(wakeup_delay_s), DEFAULT_FAST_WAKEUP_DELAY_S)
-        else:
-            link_sync_s = max(float(link_sync_s), DEFAULT_FORCE_LINK_SYNC_S)
     if cached_profile:
         mode_key, baud_try, rts_try = cached_profile
         combos: tuple[tuple[str, int, bool], ...] = (
@@ -1005,13 +1036,11 @@ def fetch_meters_over_serial(
                 poll_batches=poll_batches,
                 timeout_s=probe_timeout,
                 port_wait_s=port_wait_s,
-                link_sync_s=link_sync_s,
                 wakeup_delay_s=wakeup_delay_s,
                 wire_mode=mode_key,
                 rts=rts_try,
                 force_capture=force_capture,
                 skip_bill_polls=skip_bill_polls,
-                fast_capture=fast_capture,
             )
         except RuntimeError as exc:
             last_err = exc
@@ -1049,13 +1078,11 @@ def _fetch_meters_once(
     poll_batches: tuple[tuple[str, ...], ...] | None = None,
     timeout_s: float = DEFAULT_RESPONSE_TIMEOUT_S,
     port_wait_s: float = DEFAULT_PORT_WAIT_S,
-    link_sync_s: float = DEFAULT_LINK_SYNC_S,
     wakeup_delay_s: float = DEFAULT_WAKEUP_DELAY_S,
     wire_mode: str = DEFAULT_WIRE_MODE,
     rts: bool = False,
     force_capture: bool = False,
     skip_bill_polls: bool = True,
-    fast_capture: bool = False,
 ) -> SasMeterFetchResult:
     serial = _require_pyserial()
     mode_key = (wire_mode or DEFAULT_WIRE_MODE).strip().lower()
@@ -1079,8 +1106,7 @@ def _fetch_meters_once(
     paste_lines: list[str] = []
     if force_capture:
         paste_lines.append(
-            "; Force COM capture: exclusive open, IGT tester stop, port retry, GP sync"
-            + (" (fast)" if fast_capture else "")
+            "; IGT host capture: 200 ms GP cadence, 6F batches, no buffer reset"
             + ("; 6F only (bill LPs skipped)" if skip_bill_polls else "")
         )
     first_tx = b""
@@ -1088,13 +1114,14 @@ def _fetch_meters_once(
     bill_rows: tuple = ()
     bill_out_rows = catalog_bill_out_rows()
     try:
-        _wakeup_serial(ser, delay_s=wakeup_delay_s)
-        link_ok, sync_rx = _establish_sas_link(
+        if not force_capture:
+            _wakeup_serial(ser, delay_s=wakeup_delay_s, reset_buffers=False)
+        link_ok, sync_rx = _sync_sas_link_igt(
             ser,
             wire=wire,
             address=address,
-            duration_s=link_sync_s,
-            min_stable_gps=1 if force_capture else 2,
+            poll_count=DEFAULT_IGT_LINK_SYNC_POLLS,
+            min_stable_gps=2,
         )
         if not link_ok:
             raise RuntimeError(
@@ -1102,25 +1129,41 @@ def _fetch_meters_once(
                     port_used,
                     baud=baud,
                     wire_mode=mode_key,
-                    sync_s=link_sync_s,
+                    sync_s=DEFAULT_IGT_LINK_SYNC_POLLS * DEFAULT_IGT_POLL_INTERVAL_S,
                     rts=rts,
                     last_rx=sync_rx,
                 )
             )
+        batch_read_s = min(float(timeout_s), DEFAULT_6F_BATCH_READ_S)
         for batch_index, batch in enumerate(batches):
             tx = build_igt_tester_6f_poll_frame(batch, address=address)
             if not first_tx:
                 first_tx = tx
-            _prime_before_long_poll(wire, address=address)
-            wire.send_frame(tx)
-            rx, rx_raw, elapsed = _read_6f_response(
-                ser, wire=wire, address=address, overall_timeout_s=timeout_s
-            )
+            rx = b""
+            rx_raw = b""
+            elapsed = 0.0
+            for attempt in range(DEFAULT_6F_BATCH_RETRIES):
+                if attempt:
+                    _inter_poll_between_6f_batches(
+                        ser,
+                        wire=wire,
+                        address=address,
+                        poll_count=4,
+                    )
+                wire.send_frame(tx)
+                rx, rx_raw, elapsed = _read_6f_response(
+                    ser,
+                    wire=wire,
+                    address=address,
+                    overall_timeout_s=batch_read_s,
+                )
+                if rx:
+                    break
             if not rx:
                 raise RuntimeError(
                     _format_no_response_error(
                         port_used,
-                        timeout_s=timeout_s,
+                        timeout_s=batch_read_s,
                         elapsed_s=elapsed,
                         baud=baud,
                         wire_mode=mode_key,
@@ -1133,7 +1176,7 @@ def _fetch_meters_once(
             paste_lines.append(format_sas_traffic_line("TX>=", tx))
             paste_lines.append(format_sas_traffic_line("RX<=", rx))
             if batch_index + 1 < len(batches):
-                time.sleep(0.05)
+                _inter_poll_between_6f_batches(ser, wire=wire, address=address)
         if not skip_bill_polls:
             time.sleep(DEFAULT_POST_6F_BILL_DELAY_S)
             bill_result = fetch_bill_meters_in_session(
@@ -1685,10 +1728,6 @@ def _resync_link_before_bill_polls(
         time.sleep(0.12)
         _read_after_poll(ser, idle_ms=60)
     _ensure_space_rx(ser)
-    try:
-        ser.reset_input_buffer()
-    except Exception:
-        pass
 
 
 def fetch_bill_meters_in_session(
@@ -1710,10 +1749,6 @@ def fetch_bill_meters_in_session(
         _prime_before_long_poll(wire, address=address)
         tx = build_simple_long_poll(address=address, cmd=cmd)
         _ensure_space_rx(ser)
-        try:
-            ser.reset_input_buffer()
-        except Exception:
-            pass
         wire.send_frame(tx)
         rx, rx_raw, _elapsed = _read_simple_meter_response(
             ser,

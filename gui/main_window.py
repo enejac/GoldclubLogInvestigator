@@ -30,6 +30,7 @@ from PySide6.QtCore import (
     Signal,
     QStandardPaths,
     QRunnable,
+    QThread,
     QThreadPool,
     QTimer,
     QUrl,
@@ -251,6 +252,9 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Log Investigator")
+        from gui.app_branding import apply_window_branding
+
+        apply_window_branding(self)
         self.resize(1280, 780)
 
         self._vm = IncidentViewModel(self)
@@ -840,6 +844,18 @@ class MainWindow(QMainWindow):
 
         sb = QStatusBar()
         self.setStatusBar(sb)
+        from gui.app_branding import status_bar_brand_pixmap
+
+        self._status_brand = QLabel()
+        self._status_brand.setPixmap(status_bar_brand_pixmap(size=18))
+        self._status_brand.setToolTip(
+            "Log Investigator — cabinet log analysis, SAS meter verification, and fleet triage"
+        )
+        self._status_brand.setContentsMargins(0, 0, 6, 0)
+        sb.addWidget(self._status_brand)
+        self._status_app_label = QLabel("Log Investigator")
+        self._status_app_label.setStyleSheet("QLabel { padding-right: 10px; }")
+        sb.addWidget(self._status_app_label)
         self._status = QLabel("Ready")
         sb.addWidget(self._status, stretch=1)
 
@@ -1233,9 +1249,9 @@ class MainWindow(QMainWindow):
         self._tray = None
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
-        pix = QPixmap(48, 48)
-        pix.fill(Qt.GlobalColor.darkRed)
-        self._tray = QSystemTrayIcon(QIcon(pix), self)
+        from gui.app_branding import app_icon
+
+        self._tray = QSystemTrayIcon(app_icon(), self)
         self._tray.setToolTip("Log Investigator — live CRITICAL alerts")
         self._tray.show()
 
@@ -3175,8 +3191,15 @@ class MainWindow(QMainWindow):
             self._vm,
             self._vm.thread_pool(),
             scan_root=path,
-            parent=self,
+            parent=None,
         )
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        if self.isVisible():
+            center = self.frameGeometry().center()
+            dlg.move(
+                center.x() - max(dlg.width(), dlg.minimumWidth()) // 2,
+                center.y() - max(dlg.height(), dlg.minimumHeight()) // 2,
+            )
         dlg.exec()
         if dlg.mismatch_detected():
             self._last_sas_verification_summary = (
@@ -3504,12 +3527,33 @@ class MainWindow(QMainWindow):
         self._active_ai_emitters.clear()
         self._pending_ai_tasks = 0
 
-    def _has_blocking_background_work(self) -> bool:
-        if self._pending_ai_tasks > 0:
-            return True
-        if self._worker is not None and self._worker.isRunning():
-            return True
-        return False
+    def _dismiss_open_dialogs(self) -> None:
+        """Close visible modal/top-level dialogs so taskbar Close can exit ``exec()`` loops."""
+        app = QApplication.instance()
+        if app is None:
+            return
+        for widget in list(app.topLevelWidgets()):
+            if widget is self:
+                continue
+            if widget.isWindow() and widget.isVisible():
+                widget.close()
+        modal = QApplication.activeModalWidget()
+        if modal is not None and modal is not self and modal.isVisible():
+            modal.close()
+
+    @staticmethod
+    def _detach_running_thread(thread: QThread | None, *, wait_ms: int = 400) -> None:
+        """Stop a worker thread; orphan it if blocking I/O prevents a timely quit."""
+        if thread is None:
+            return
+        try:
+            if thread.isRunning():
+                thread.requestInterruption()
+                thread.quit()
+                if not thread.wait(wait_ms):
+                    thread.setParent(None)
+        except Exception:
+            pass
 
     def _persist_window_state_only(self) -> None:
         SettingsManager.save_main_window_geometry(self)
@@ -3534,74 +3578,78 @@ class MainWindow(QMainWindow):
             )
         )
 
-    def _finalize_close_event(self) -> None:
+    def _begin_app_shutdown(self) -> None:
+        """Tear down workers and exit the process (title-bar X, taskbar Close, Alt+F4)."""
         if self._shutdown_cleanup_started:
             return
         self._shutdown_cleanup_started = True
-        QApplication.instance().setQuitOnLastWindowClosed(False)
-        SettingsManager.save_table_state(
-            bytes(self._table.horizontalHeader().saveState())
-        )
-        self._persist_window_state_only()
-        self.hide()
-        QTimer.singleShot(3000, self._force_exit_if_still_alive)
+        self._shutdown_force_quit = True
+
+        self._dismiss_open_dialogs()
+
+        tray = self._tray
+        if tray is not None:
+            tray.hide()
+
+        self._disconnect_active_ai_emitters()
         self._stop_live_watch_ui()
-        if self._shutdown_force_quit:
-            self._disconnect_active_ai_emitters()
+        self._detach_running_thread(self._worker)
+        self._worker = None
         if self._janitor_worker is not None and self._janitor_worker.isRunning():
             self._janitor_worker.requestInterruption()
             if self._janitor_busy_ip:
                 self._fleet_tab.set_janitor_busy(self._janitor_busy_ip, False)
                 self._janitor_busy_ip = None
             self._fleet_tab.set_busy_text(self._fleet_tab.default_fleet_status_text())
+            self._detach_running_thread(self._janitor_worker)
+            self._janitor_worker = None
         if self._fleet_heartbeat and self._fleet_heartbeat.isRunning():
             self._fleet_heartbeat.requestInterruption()
+            self._detach_running_thread(self._fleet_heartbeat)
+
+        SettingsManager.save_table_state(
+            bytes(self._table.horizontalHeader().saveState())
+        )
+        self._persist_window_state_only()
         self._save_connection_settings()
         self._start_async_session_save()
 
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(True)
+            app.quit()
+        QTimer.singleShot(750, lambda: os._exit(0))
+
     def _complete_async_shutdown(self) -> None:
         self._shutdown_save_emitter = None
-        QApplication.quit()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+        QTimer.singleShot(100, lambda: os._exit(0))
 
-    def _force_exit_if_still_alive(self) -> None:
-        """Nuclear option, but only if background work still appears active."""
-        try:
-            if self._shutdown_cleanup_started and self._has_blocking_background_work():
-                os._exit(0)
-        except Exception:
-            os._exit(0)
+    def nativeEvent(self, eventType, message):  # type: ignore[override]
+        # Hidden windows may not receive a second closeEvent; hard-exit on WM_CLOSE.
+        if sys.platform == "win32" and self._shutdown_started:
+            try:
+                if eventType in (b"windows_generic_MSG", "windows_generic_MSG"):
+                    from ctypes import wintypes
+
+                    msg = wintypes.MSG.from_address(int(message))
+                    if msg.message == 0x10:  # WM_CLOSE
+                        os._exit(0)
+            except Exception:
+                pass
+        return super().nativeEvent(eventType, message)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._shutdown_started:
             event.accept()
+            os._exit(0)
             return
-
-        if self._has_blocking_background_work():
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Information)
-            msg.setWindowTitle("Shutting down")
-            msg.setText(
-                "Cleaning up background tasks and saving state…\n\n"
-                "Choose Wait to let the scan or analysis tasks finish, "
-                "or Close Anyways to exit immediately (background analysis callbacks will disconnect)."
-            )
-            btn_wait = msg.addButton("Wait", QMessageBox.ButtonRole.AcceptRole)
-            btn_wait.setObjectName("wait_shutdown_btn")
-            btn_anyway = msg.addButton(
-                "Close Anyways", QMessageBox.ButtonRole.DestructiveRole
-            )
-            btn_anyway.setObjectName("close_anyways_btn")
-            btn_anyway.setProperty("destructive", "true")
-            msg.setDefaultButton(btn_wait)
-            msg.exec()
-            if msg.clickedButton() == btn_anyway:
-                self._shutdown_force_quit = True
-            else:
-                self._shutdown_force_quit = False
 
         self._shutdown_started = True
         event.accept()
-        self._finalize_close_event()
+        self._begin_app_shutdown()
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
@@ -3610,8 +3658,14 @@ class MainWindow(QMainWindow):
 def run_app() -> int:
     fleet_timesync_logger()
     app = QApplication.instance() or QApplication([])
+    app.setApplicationName("Log Investigator")
+    app.setApplicationDisplayName("Log Investigator")
+    app.setQuitOnLastWindowClosed(True)
     app.setStyle("Fusion")
+    from gui.app_branding import apply_app_icon
     from gui.win_title_bar import apply_title_bar_theme, install_title_bar_theme_filter
+
+    apply_app_icon(app)
 
     install_title_bar_theme_filter(app, SettingsManager.get_theme)
     apply_theme(app, SettingsManager.get_theme())

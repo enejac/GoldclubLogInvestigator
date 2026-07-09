@@ -34,6 +34,8 @@
  *   * passthru : divert the connection and forward every packet unchanged (delta
  *                stays 0). Proves the divert/rewrite/forward is safe. Injects nothing.
  *   * poll     : additionally inject the alternating poll cadence server->client.
+ *   * pollaft  : poll cadence + one 0x1B-framed AFT (0x72) inject after warmup, then
+ *                continue polls until runSeconds (Invoke-WinDivertAft.ps1 no-COM path).
  *
  * WinDivert hygiene (identical policy to WdInject / WdRespond)
  *   * Idempotent CloseOnce() (WinDivertShutdown + Close) from finally / Ctrl-C /
@@ -45,8 +47,10 @@
  * Requires WinDivert.dll + WinDivert64.sys next to the exe at runtime.
  *
  * Usage:
- *   WdPollInject.exe <mode=passthru|poll> <ephemPort> <runSeconds> [intervalMs=200]
+ *   WdPollInject.exe <mode=passthru|poll|pollaft> <ephemPort> <runSeconds> [intervalMs=200]
  *                    [drainReserveSec=3] [pollFrames=1B81,1B80] [serverPort=31150]
+ *                    [injectHex=] [injectAfterMs=2500]
+ *   pollaft requires injectHex (full 0x1B+SAS bridge payload, same as WdInject.exe).
  */
 
 using System;
@@ -122,6 +126,13 @@ internal static class WdPollInject
 
     private static volatile bool _draining = false;
 
+    // pollaft: one-shot AFT bridge payload (0x1B + SAS 0x72...) after warmup.
+    private static byte[] _aftPayload = null;
+    private static int _aftInjectAfterMs = 2500;
+    private static volatile bool _aftInjected = false;
+    private static long _templateReadyMs = -1;
+    private static long _aftInjectedAtMs = -1;
+
     private static void CloseOnce()
     {
         if (Interlocked.Exchange(ref _closed, 1) != 0) { return; }
@@ -136,14 +147,14 @@ internal static class WdPollInject
     {
         if (args.Length < 3)
         {
-            Console.Error.WriteLine("usage: WdPollInject.exe <passthru|poll> <ephemPort> <runSeconds> [intervalMs=200] [drainReserveSec=3] [pollFrames=1B81,1B80] [serverPort=31150]");
+            Console.Error.WriteLine("usage: WdPollInject.exe <passthru|poll|pollaft> <ephemPort> <runSeconds> [intervalMs=200] [drainReserveSec=3] [pollFrames=1B81,1B80] [serverPort=31150] [injectHex=] [injectAfterMs=2500]");
             return 2;
         }
 
         string mode = args[0].Trim().ToLowerInvariant();
-        if (mode != "passthru" && mode != "poll")
+        if (mode != "passthru" && mode != "poll" && mode != "pollaft")
         {
-            Console.Error.WriteLine("bad mode '" + args[0] + "' (expected passthru|poll)");
+            Console.Error.WriteLine("bad mode '" + args[0] + "' (expected passthru|poll|pollaft)");
             return 2;
         }
 
@@ -188,6 +199,27 @@ internal static class WdPollInject
             return 3;
         }
 
+        if (mode == "pollaft")
+        {
+            string injectSpec = args.Length >= 8 ? args[7].Trim() : string.Empty;
+            if (string.IsNullOrEmpty(injectSpec))
+            {
+                Console.Error.WriteLine("REFUSE: pollaft mode requires injectHex (arg 8) — full 0x1B+SAS bridge payload.");
+                return 3;
+            }
+            try
+            {
+                _aftPayload = HexToBytes(injectSpec);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("REFUSE: bad injectHex: " + ex.Message);
+                return 3;
+            }
+            if (args.Length >= 9) { _aftInjectAfterMs = ParseIntOr(args[8], 2500); }
+            if (_aftInjectAfterMs < 500) { _aftInjectAfterMs = 500; }
+        }
+
         string filter = string.Format(CultureInfo.InvariantCulture,
             "loopback and tcp and ((tcp.SrcPort == {0} and tcp.DstPort == {1}) or (tcp.SrcPort == {1} and tcp.DstPort == {0}))",
             _serverPort, _ephem);
@@ -197,7 +229,8 @@ internal static class WdPollInject
         Log("POLL FRAMES (verbatim) = {0}", string.Join(",", frameLabels.ToArray()));
         Log("FILTER {0}", filter);
         if (mode == "passthru") { Log("[*] passthru: forwards every packet unchanged (delta stays 0); injects nothing."); }
-        else { Log("[*] poll: injects the alternating cadence server->client every {0}ms; maintains delta + ack rewrite; drains on exit.", intervalMs); }
+        else if (mode == "poll") { Log("[*] poll: injects the alternating cadence server->client every {0}ms; maintains delta + ack rewrite; drains on exit.", intervalMs); }
+        else { Log("[*] pollaft: poll cadence every {0}ms, then one AFT inject after {1}ms from template ready; drains on exit.", intervalMs, _aftInjectAfterMs); }
 
         _handle = WinDivertOpen(filter, LAYER_NETWORK, 0, FLAG_NONE);
         if (_handle == INVALID || _handle == IntPtr.Zero)
@@ -219,17 +252,27 @@ internal static class WdPollInject
         // Watchdog: hard stop at runSeconds (wakes a blocked Recv via Close).
         var watchdog = new Thread(delegate ()
         {
-            for (int i = 0; i < runSeconds && _running; i++) { Thread.Sleep(1000); }
+            for (int i = 0; i < runSeconds && _running; i++)
+            {
+                if (mode == "pollaft" && _aftInjected && _aftInjectedAtMs >= 0 &&
+                    (sw.ElapsedMilliseconds - _aftInjectedAtMs) >= (drainReserveSec * 1000L + 500L))
+                {
+                    _running = false;
+                    CloseOnce();
+                    return;
+                }
+                Thread.Sleep(1000);
+            }
             _running = false;
             CloseOnce();
         });
         watchdog.IsBackground = true;
         watchdog.Start();
 
-        // Inject cadence thread (poll mode only). Time-driven so the cadence is held even
+        // Inject cadence thread (poll / pollaft). Time-driven so the cadence is held even
         // when the connection is otherwise idle (no real S2C packets to anchor on).
         Thread injector = null;
-        if (mode == "poll")
+        if (mode == "poll" || mode == "pollaft")
         {
             injector = new Thread(delegate ()
             {
@@ -254,6 +297,30 @@ internal static class WdPollInject
                             // No S2C template/seq learned yet -- cannot inject safely.
                             continue;
                         }
+
+                        // pollaft: one AFT bridge payload after warmup; then drain (no more polls).
+                        if (mode == "pollaft" && !_aftInjected && _aftPayload != null &&
+                            _templateReadyMs >= 0 &&
+                            (now - _templateReadyMs) >= _aftInjectAfterMs)
+                        {
+                            uint aftSeq = (uint)(_serverSndNxt + (uint)_delta);
+                            uint aftAck = _haveClient ? _clientSndNxt : _s2cAckField;
+                            SendS2cData(aftSeq, aftAck, _serverWindow, _aftPayload, 0, _aftPayload.Length);
+                            _delta += _aftPayload.Length;
+                            _aftInjected = true;
+                            _aftInjectedAtMs = sw.ElapsedMilliseconds;
+                            _draining = true;
+                            Log("AFT_INJECTED clientSeq={0} bytes={1} delta={2} at {3}ms",
+                                aftSeq, _aftPayload.Length, _delta, sw.ElapsedMilliseconds);
+                            Log("DRAIN begin after AFT (pollaft); ceasing further poll injects");
+                            continue;
+                        }
+
+                        if (mode == "pollaft" && _aftInjected)
+                        {
+                            continue;
+                        }
+
                         byte[] frame = frames[frameIdx % frames.Count];
                         string label = frameLabels[frameIdx % frameLabels.Count];
                         frameIdx++;
@@ -324,6 +391,7 @@ internal static class WdPollInject
                             _s2cHdr = new byte[ipLen + tcpLen];
                             Array.Copy(packet, 0, _s2cHdr, 0, ipLen + tcpLen);
                             _s2cAddr = addr; _haveS2c = true; s2cTemplates++;
+                            if (_templateReadyMs < 0) { _templateReadyMs = sw.ElapsedMilliseconds; }
                             Log("S2C template captured seq={0} ack={1} payLen={2} win={3}", seq, ackf, payLen, _serverWindow);
                         }
 
@@ -364,13 +432,21 @@ internal static class WdPollInject
                         uint cnext = (uint)(cseq + (uint)payLen);
                         if (!_haveClient || Seq32Ge(cnext, _clientSndNxt)) { _clientSndNxt = cnext; _haveClient = true; }
                         _clientWindow = ReadU16(packet, t + 14);
+                        uint cack = ReadU32(packet, t + 8);
                         if (!_haveC2s && !isSyn)
                         {
                             _c2sIpLen = ipLen; _c2sTcpLen = tcpLen;
                             _c2sHdr = new byte[ipLen + tcpLen];
                             Array.Copy(packet, 0, _c2sHdr, 0, ipLen + tcpLen);
                             _c2sAddr = addr; _haveC2s = true; c2sTemplates++;
-                            Log("C2S template captured seq={0} win={1}", cseq, _clientWindow);
+                            Log("C2S template captured seq={0} ack={1} win={2}", cseq, cack, _clientWindow);
+                        }
+                        // Silent-but-ESTABLISHED: Aurum may only emit C2S keepalives (01) while
+                        // CommCtrlSAS sends nothing S2C. Mirror the C2S header to bootstrap an
+                        // S2C inject template using ack as server SND.NXT (same idea as WdInject ACK anchor).
+                        if (!_haveS2c && _haveC2s && !isSyn)
+                        {
+                            TryBootstrapS2cFromC2s(packet, ipLen, tcpLen, ref addr, cseq, cack, payLen);
                         }
                         // Rewrite Aurum's ack DOWN by delta so CommCtrlSAS only sees acks for
                         // bytes it really sent.
@@ -390,8 +466,12 @@ internal static class WdPollInject
             _running = false;
             CloseOnce();
             long finalDelta; lock (_sync) { finalDelta = _delta; }
-            Log("DONE mode={0} injected={1} s2c={2} c2s={3} swallowed={4} s2cTemplates={5} c2sTemplates={6} finalDelta={7}",
-                mode, injected, s2c, c2s, swallowed, s2cTemplates, c2sTemplates, finalDelta);
+            Log("DONE mode={0} injected={1} aftInjected={2} s2c={3} c2s={4} swallowed={5} s2cTemplates={6} c2sTemplates={7} finalDelta={8}",
+                mode, injected, _aftInjected, s2c, c2s, swallowed, s2cTemplates, c2sTemplates, finalDelta);
+            if (mode == "pollaft" && !_aftInjected)
+            {
+                Log("WARNING: pollaft finished without AFT_INJECTED (template/seq never ready, or run window too short).");
+            }
             if (finalDelta != 0) { Log("WARNING: stopped with delta={0} -- the 31150 SAS link may RST/reconnect (recoverable churn).", finalDelta); }
             else { Log("Connection left in sync (delta=0)."); }
             Log("CLOSE ok");
@@ -462,6 +542,45 @@ internal static class WdPollInject
         {
             Log("WARN ack-to-server send failed err={0}", Marshal.GetLastWin32Error());
         }
+    }
+
+    // When the poll connection is idle S2C, learn inject headers from the first C2S segment
+    // (typically Aurum 01 keepalive). Aurum's ack field is the server's SND.NXT.
+    private static void TryBootstrapS2cFromC2s(byte[] c2sPkt, int ipLen, int tcpLen, ref WinDivertAddress c2sAddr,
+        uint cseq, uint cack, int payLen)
+    {
+        if (_haveS2c || cack == 0) { return; }
+        int t = ipLen;
+        var hdr = new byte[ipLen + tcpLen];
+        Array.Copy(c2sPkt, 0, hdr, 0, ipLen + tcpLen);
+        // Swap IPv4 src/dst.
+        for (int i = 0; i < 4; i++)
+        {
+            byte tmp = hdr[12 + i];
+            hdr[12 + i] = hdr[16 + i];
+            hdr[16 + i] = tmp;
+        }
+        // Swap TCP src/dst ports.
+        int srcPort = ReadU16(hdr, t + 0);
+        int dstPort = ReadU16(hdr, t + 2);
+        WriteU16(hdr, t + 0, (uint)dstPort);
+        WriteU16(hdr, t + 2, (uint)srcPort);
+        // Zero seq/ack/checksum; filled per inject.
+        WriteU32(hdr, t + 4, 0);
+        WriteU32(hdr, t + 8, 0);
+        WriteU16(hdr, t + 16, 0);
+
+        _s2cIpLen = ipLen; _s2cTcpLen = tcpLen;
+        _s2cHdr = hdr;
+        _s2cAddr = c2sAddr;
+        _haveS2c = true;
+        _serverSndNxt = cack;
+        _haveServerSnd = true;
+        _serverWindow = Math.Max(ReadU16(c2sPkt, t + 14), 8192);
+        _s2cAckField = (uint)(cseq + (uint)payLen);
+        if (_templateReadyMs < 0) { _templateReadyMs = 0; }
+        Log("S2C template bootstrapped from C2S (silent bridge) serverSndNxt={0} clientSndNxt={1} win={2}",
+            _serverSndNxt, _s2cAckField, _serverWindow);
     }
 
     private static bool Seq32Ge(uint a, uint b) { return (int)(a - b) >= 0; }

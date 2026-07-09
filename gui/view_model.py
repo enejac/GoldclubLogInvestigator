@@ -594,6 +594,7 @@ class IncidentViewModel(QObject):
         self._env_os: str | None = None
         self._env_enriched = False
         self._onehand_version: str | None = None
+        self._accounting_registers_cache: dict[str, dict[str, int]] = {}
         self.current_product_name: str | None = None
         self.current_software_version: str | None = None
         self._software_version_product_raw: str | None = None
@@ -1454,6 +1455,15 @@ class IncidentViewModel(QObject):
             out[m.group(1)] = int(m.group(2))
         return out
 
+    def invalidate_accounting_registers_cache(self, log_root: str | None = None) -> None:
+        """Drop cached SlotLog register tails (scan root changed or dialog closed)."""
+        if log_root is None:
+            self._accounting_registers_cache.clear()
+            return
+        key = (log_root or "").strip().lower()
+        if key:
+            self._accounting_registers_cache.pop(key, None)
+
     def _latest_accounting_registers_from_logs(self, log_root: str) -> dict[str, int]:
         """
         Merge accounting fields from tail of SlotLog-ish files; **last** value wins per key.
@@ -1462,6 +1472,11 @@ class IncidentViewModel(QObject):
         root_raw = (log_root or "").strip()
         if not root_raw:
             return {}
+        cache_key = root_raw.lower()
+        cached = self._accounting_registers_cache.get(cache_key)
+        if cached is not None:
+            return dict(cached)
+
         root = Path(root_raw)
         try:
             if root.is_file():
@@ -1484,7 +1499,8 @@ class IncidentViewModel(QObject):
                     continue
                 for k, v in self._parse_accounting_register_tokens(line).items():
                     merged[k.lower()] = v
-        return merged
+        self._accounting_registers_cache[cache_key] = dict(merged)
+        return dict(merged)
 
     def compare_sas_with_accounting(self, sas_hex_block: str, *, log_root: str) -> str:
         """

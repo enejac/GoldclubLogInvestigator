@@ -89,6 +89,99 @@ def test_general_poll_alternation() -> None:
     assert _general_poll_alternation(2) == (0x82, 0x83)
 
 
+def test_extract_6f_finds_frame_after_leading_noise() -> None:
+    from network.sas_serial_meters import _extract_6f_response_frame
+
+    frame = bytes.fromhex(
+        "016f620000170009000000000000600000a00009000000000000500000"
+        "a20009000000000000000000a40009000000000000100000180009000000000000000000"
+        "b80009000000000000000000ba0009000000000000000000bc00090000000000000000006040"
+    )
+    got = _extract_6f_response_frame(frame, address=1)
+    assert got == frame
+    assert _extract_6f_response_frame(b"\xff\xff" + frame, address=1) == frame
+
+
+def test_fetch_meters_once_mock_serial_single_batch() -> None:
+    from unittest.mock import patch
+
+    from network.sas_serial_meters import (
+        _extract_6f_response_frame,
+        _fetch_meters_once,
+        append_sas_crc,
+        build_igt_tester_6f_poll_frame,
+    )
+
+    body = bytes.fromhex("016f00")
+    sample_rx = append_sas_crc(body)
+    assert _extract_6f_response_frame(sample_rx) == sample_rx
+
+    class ScriptedSerial:
+        def __init__(self) -> None:
+            self._rx = bytearray()
+            self._tx = bytearray()
+            self.timeout = 0.05
+            self.parity = None
+            self.dtr = False
+            self.rts = False
+            self._closed = False
+
+        @property
+        def in_waiting(self) -> int:
+            return len(self._rx)
+
+        @property
+        def out_waiting(self) -> int:
+            return 0
+
+        def read(self, size: int = 1) -> bytes:
+            if not self._rx:
+                return b""
+            n = len(self._rx) if size is None or size < 0 else min(int(size), len(self._rx))
+            out = bytes(self._rx[:n])
+            del self._rx[:n]
+            return out
+
+        def write(self, data: bytes) -> int:
+            self._tx.extend(data)
+            if len(self._tx) == 1 and self._tx[0] in (0x80, 0x81):
+                self._rx.extend(bytes([0x01, 0xFF, 0x7E, 0x00]))
+                self._tx.clear()
+            elif len(self._tx) >= 3 and self._tx[0] == 0x01 and self._tx[1] == 0x6F:
+                expected = build_igt_tester_6f_poll_frame(["0000"])
+                if bytes(self._tx) == expected:
+                    self._rx.extend(sample_rx)
+                    self._tx.clear()
+            return len(data)
+
+        def flush(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self._closed = True
+
+    fake = ScriptedSerial()
+    with patch(
+        "network.sas_serial_meters._open_serial_with_retry",
+        return_value=(fake, "COM99"),
+    ):
+        result = _fetch_meters_once(
+            port="COM99",
+            baud=19200,
+            poll_batches=(("0000",),),
+            timeout_s=2.0,
+            port_wait_s=0.5,
+            force_capture=True,
+            skip_bill_polls=True,
+        )
+    assert fake._closed
+    assert result.port_used == "COM99"
+    assert "TX>=" in result.paste_text
+    assert "RX<=" in result.paste_text
+    assert "01 6F" in result.paste_text
+    assert result.rx_frame[1] == 0x6F
+
+
 def test_build_igt_tester_6f_poll_frame() -> None:
     from network.sas_serial_meters import (
         IGT_TESTER_6F_POLL_BATCHES,
@@ -441,7 +534,7 @@ def test_should_skip_cabinet_reload_when_loaded_and_same_root() -> None:
     )
 
 
-def test_meter_fetch_display_action_apply_when_cached() -> None:
+def test_meter_fetch_display_action_capture_when_cached() -> None:
     from gui.sas_verify_dialog import meter_fetch_display_action
 
     assert (
@@ -449,7 +542,7 @@ def test_meter_fetch_display_action_apply_when_cached() -> None:
             cached_result=object(),
             fetch_running=False,
         )
-        == "apply"
+        == "capture"
     )
 
 
@@ -645,6 +738,54 @@ def test_verify_game_tab_spec_ok() -> None:
     ) == []
 
 
+def test_build_yield_chart_slices_reference() -> None:
+    from gui.machine_yield_chart import build_yield_chart_slices, format_yield_chart_pct
+
+    slices = build_yield_chart_slices(69.45, 30.55)
+    assert len(slices) == 2
+    assert abs(slices[0].pct - 69.45) < 0.001
+    assert abs(slices[1].pct - 30.55) < 0.001
+    assert format_yield_chart_pct(69.45) == "69.45 %"
+
+
+def test_build_yield_chart_slices_empty_without_bet() -> None:
+    from gui.machine_yield_chart import build_yield_chart_slices
+
+    assert build_yield_chart_slices(None, None) == ()
+
+
+def test_pie_geometry_centered_in_pie_rect() -> None:
+    from PySide6.QtCore import QRectF
+
+    from gui.machine_yield_chart import chart_layout, pie_geometry
+
+    rect = QRectF(0, 0, 300, 220)
+    pie_rect, legend_rect = chart_layout(rect)
+    cx, cy, rx, ry, _, _ = pie_geometry(pie_rect)
+    assert pie_rect.right() < legend_rect.left() + 2
+    assert abs(cx - pie_rect.center().x()) < 0.01
+    assert rx > 0 and ry > 0
+
+
+def test_center_widget_in_panel_top_stuck_layout() -> None:
+    from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+
+    from gui.sas_verify_dialog import (
+        center_widget_in_panel,
+        meter_tab_outer_layout,
+        verify_center_widget_in_panel_layout,
+    )
+
+    app = QApplication.instance() or QApplication([])
+    body = QWidget()
+    layout = meter_tab_outer_layout(body)
+    cluster = QWidget()
+    center_widget_in_panel(layout, cluster)
+    assert verify_center_widget_in_panel_layout(layout) == []
+    assert layout.itemAt(0).layout() is not None
+    assert layout.itemAt(layout.count() - 1).spacerItem() is not None
+
+
 def test_parse_game_catalog_theme_ids() -> None:
     from network.accounting_state_loader import parse_game_catalog_entries, parse_game_catalog_theme_ids
 
@@ -755,3 +896,98 @@ def test_verify_coins_table_spec_ok() -> None:
         vertical_header_hidden=True,
         row_count=_COINS_CATALOG_ROW_COUNT + 1,
     ) == []
+
+
+def test_verify_accounting_tab_spec_ok() -> None:
+    from gui.sas_verify_dialog import _METER_TAB_NAMES, verify_accounting_tab_spec
+    from network.sas_serial_meters import DEFAULT_6F_VERIFY_POLL_CODES
+
+    assert verify_accounting_tab_spec(
+        tab_names=_METER_TAB_NAMES,
+        has_accounting_panel=True,
+        verify_row_count=len(DEFAULT_6F_VERIFY_POLL_CODES),
+        expected_row_count=len(DEFAULT_6F_VERIFY_POLL_CODES),
+    ) == []
+
+
+def test_filter_verify_6f_rows_subset() -> None:
+    from gui.sas_verify_dialog import (
+        build_verify_6f_rows_from_paste,
+        filter_verify_6f_rows,
+    )
+    from network.sas_serial_meters import IGT_TESTER_6F_POLL_BATCHES
+
+    line = "RX<= 01 6F 00 01 00 00 00 02 00 34"
+    all_rows = build_verify_6f_rows_from_paste(line)
+    batch1 = filter_verify_6f_rows(all_rows, IGT_TESTER_6F_POLL_BATCHES[0])
+    assert len(batch1) == 7
+    assert next(r for r in batch1 if r.meter_id == "0000").sas_value_text == "34"
+
+
+def test_accounting_tab_gui_layout_automated() -> None:
+    """Headless Qt GUI test: Accounting Meters panel centered and columns compact."""
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    from gui.sas_verify_dialog import (
+        COL_METER_NAME,
+        COL_STATUS,
+        SasVerifyDialog,
+        TAB_ACCOUNTING,
+        _METER_TAB_NAMES,
+        _VERIFY_METER_NAME_MAX_WIDTH,
+        build_verify_6f_rows_from_paste,
+        verify_accounting_tab_layout,
+        verify_stretch_widget_in_panel_layout,
+    )
+    from network.sas_serial_meters import DEFAULT_6F_VERIFY_POLL_CODES
+
+    app = QApplication.instance() or QApplication([])
+    vm = SimpleNamespace(current_product_name="GUI-Test")
+    dlg = SasVerifyDialog(vm, QThreadPool.globalInstance(), scan_root="")
+    dlg._prefetch_started = True  # avoid COM/cabinet prefetch side effects in CI
+    dlg.resize(1180, 780)
+
+    sample_paste = "\n".join(
+        [
+            "RX<= 01 6F 00 01 00 00 00 02 00 34",
+            "RX<= 01 6F 00 01 00 05 00 02 00 82",
+            "RX<= 01 6F 00 01 00 06 00 02 00 28",
+        ]
+    )
+    dlg._paste.setPlainText(sample_paste)
+    parsed = build_verify_6f_rows_from_paste(sample_paste)
+    dlg._render(parsed_rows=parsed, allow_machine_lookup=False)
+    app.processEvents()
+
+    assert dlg._meter_tabs.currentIndex() == TAB_ACCOUNTING
+    tab_layout = dlg._accounting_tab.layout()
+    assert tab_layout is not None
+    assert verify_stretch_widget_in_panel_layout(tab_layout) == []
+
+    issues = verify_accounting_tab_layout(
+        accounting_tab=dlg._accounting_tab,
+        accounting_box=dlg._accounting_box,
+        table=dlg._table,
+        tab_names=_METER_TAB_NAMES,
+    )
+    assert issues == [], f"layout issues: {issues}"
+
+    assert dlg._table.rowCount() == len(DEFAULT_6F_VERIFY_POLL_CODES)
+    assert not dlg._table.isColumnHidden(COL_STATUS)
+    assert dlg._table.columnWidth(COL_METER_NAME) <= _VERIFY_METER_NAME_MAX_WIDTH
+    assert dlg._table.horizontalScrollBar().maximum() == 0
+    status_item = dlg._table.item(0, COL_STATUS)
+    assert status_item is not None
+    assert status_item.text() in {"MATCH", "MISMATCH", "PENDING"}
+
+
+def test_sas_verify_window_flags_include_system_menu() -> None:
+    from PySide6.QtCore import Qt
+
+    from gui.sas_verify_dialog import _SAS_VERIFY_WINDOW_FLAGS
+
+    assert _SAS_VERIFY_WINDOW_FLAGS & Qt.WindowType.WindowSystemMenuHint
+    assert _SAS_VERIFY_WINDOW_FLAGS & Qt.WindowType.WindowCloseButtonHint

@@ -43,12 +43,13 @@
 param(
     [Alias('IP')]
     [string] $ComputerName = '10.0.0.171',
-    [ValidateSet('passthru', 'poll')]
+    [ValidateSet('passthru', 'poll', 'pollaft')]
     [string] $Mode = 'passthru',
     [int]    $Seconds = 15,
     [int]    $IntervalMs = 200,
     [int]    $DrainReserveSeconds = 3,
     [int]    $ServerPort = 31150,
+    [int]    $EphemWaitSec = 90,
     [ValidateSet('1B81,1B80', '1B80,1B81', '1B81', '1B80')]
     [string] $PollFrames = '1B81,1B80',
     [string] $PsExecPath = 'C:\Tools\PSTools\PsExec.exe',
@@ -60,6 +61,29 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Resolve-WinDivertDir {
+    param([string] $Preferred)
+    $candidates = @()
+    if ($Preferred) { $candidates += $Preferred }
+    $candidates += @(
+        'C:\Tools\WinDivert\extracted\WinDivert-2.2.2-A\x64',
+        'C:\Tools\WinDivert\x64'
+    )
+    foreach ($dir in ($candidates | Select-Object -Unique)) {
+        $dll = Join-Path $dir 'WinDivert.dll'
+        $sys = Join-Path $dir 'WinDivert64.sys'
+        if ((Test-Path -LiteralPath $dll) -and (Test-Path -LiteralPath $sys)) {
+            return $dir
+        }
+    }
+    throw @(
+        'WinDivert x64 not found. Expected WinDivert.dll + WinDivert64.sys under one of:',
+        '  C:\Tools\WinDivert\x64',
+        '  C:\Tools\WinDivert\extracted\WinDivert-2.2.2-A\x64',
+        'Pass -WinDivertDir <folder>.'
+    ) -join "`n"
+}
 
 $script:PsExecAuthArgs = @()
 $labRemoteTransportPath = Join-Path $PSScriptRoot 'LabRemoteTransport.ps1'
@@ -105,6 +129,7 @@ else { "WINDIVERT_NOT_STOPPED_SKIP_DELETE" }
 }
 
 # ------------------------------------------------------------------ preconditions ----
+$WinDivertDir = Resolve-WinDivertDir -Preferred $WinDivertDir
 $dll = Join-Path $WinDivertDir 'WinDivert.dll'
 $sys = Join-Path $WinDivertDir 'WinDivert64.sys'
 $csSrc = Join-Path $PSScriptRoot 'WdPollInject.cs'
@@ -122,7 +147,7 @@ $logLocal = Join-Path $OutDir $logName
 
 Write-Host ''
 Write-Host '=== Option-D loopback host-poll injector (WdPollInject) ===' -ForegroundColor White
-Write-Host "Cabinet : $ComputerName  |  Mode: $Mode  |  Window: ${Seconds}s  |  serverPort: $ServerPort"
+Write-Host "Cabinet : $ComputerName  |  Mode: $Mode  |  Window: ${Seconds}s  |  serverPort: $ServerPort  |  ephemWait: ${EphemWaitSec}s"
 Write-Host "Poll    : frames=$PollFrames intervalMs=$IntervalMs drainReserveSec=$DrainReserveSeconds"
 Write-Host "Output  : $logLocal" -ForegroundColor DarkGray
 if ($Mode -eq 'passthru') {
@@ -171,15 +196,23 @@ try {
     if (-not (Test-Path $exe)) {
         "COMPILE_FAILED" | Out-File -FilePath $out -Encoding utf8 -Append
     } else {
-        # Discover the live Aurum ephemeral for the server port, retrying briefly because
+        # Discover the live Aurum ephemeral for the server port, retrying because
         # the loopback connection reconnects.
         $ephem = 0
-        for ($i = 0; $i -lt 20; $i++) {
+        $deadline = (Get-Date).AddSeconds(__EPHEMWAIT__)
+        do {
             $c = Get-NetTCPConnection -LocalPort __SERVERPORT__ -State Established -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($c) { $ephem = [int]$c.RemotePort; break }
-            Start-Sleep -Milliseconds 300
-        }
+            Start-Sleep -Milliseconds 500
+        } while ((Get-Date) -lt $deadline)
         if ($ephem -eq 0) {
+            "BRIDGE_STATE (no Established on __SERVERPORT__ after __EPHEMWAIT__s):" | Out-File -FilePath $out -Encoding utf8 -Append
+            Get-Process CommCtrlSAS,GoldClub.Aurum.Services -ErrorAction SilentlyContinue |
+                Select-Object Name, Id | Format-Table -AutoSize | Out-String |
+                Out-File -FilePath $out -Encoding utf8 -Append
+            Get-NetTCPConnection -LocalPort __SERVERPORT__ -ErrorAction SilentlyContinue |
+                Select-Object LocalPort, RemotePort, State, OwningProcess |
+                Format-Table -AutoSize | Out-String | Out-File -FilePath $out -Encoding utf8 -Append
             "NO_ESTABLISHED___SERVERPORT__" | Out-File -FilePath $out -Encoding utf8 -Append
         } else {
             "DISCOVERED_EPHEM=$ephem" | Out-File -FilePath $out -Encoding utf8 -Append
@@ -205,17 +238,18 @@ $remoteScript = $remoteTemplate.
     Replace('__INTERVALMS__', [string]$IntervalMs).
     Replace('__DRAIN__', [string]$DrainReserveSeconds).
     Replace('__FRAMES__', $PollFrames).
-    Replace('__SERVERPORT__', [string]$ServerPort)
+    Replace('__SERVERPORT__', [string]$ServerPort).
+    Replace('__EPHEMWAIT__', [string]$EphemWaitSec)
 $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($remoteScript))
 
-$winRmTimeoutMs = ([Math]::Max($Seconds + $DrainReserveSeconds + 30, 60)) * 1000
+$winRmTimeoutMs = ([Math]::Max($EphemWaitSec + $Seconds + $DrainReserveSeconds + 30, 90)) * 1000
 $transportPlan = Get-LabRemoteTransportPlan -ComputerName $ComputerName -Credential $Credential `
     -CredentialFromLab:$labCtx.CredentialFromLab
 $transportLog = Join-Path $env:TEMP ("wdpollinject_{0}.log" -f $stamp)
 $usedTransport = Invoke-LabRemoteEncodedWithFallback -TransportOrder $transportPlan.TransportOrder `
     -Computer $ComputerName -Enc $enc -LogPath $transportLog -Credential $Credential `
     -PsExecPath $PsExecPath -PsExecAuthArgs $script:PsExecAuthArgs `
-    -WinRmOperationTimeoutMs $winRmTimeoutMs -PsExecTimeoutSec ([Math]::Max($Seconds + $DrainReserveSeconds + 15, 60))
+    -WinRmOperationTimeoutMs $winRmTimeoutMs -PsExecTimeoutSec ([Math]::Max($EphemWaitSec + $Seconds + $DrainReserveSeconds + 15, 90))
 if (-not $usedTransport) {
     throw 'No remote transport succeeded (WinRM and PsExec both failed).'
 }
@@ -231,6 +265,10 @@ if (Test-Path -LiteralPath $outUnc) {
 }
 if (-not (Test-Path -LiteralPath $logUnc)) {
     Write-Host "[!] No injector log produced at $logUnc (connection may not have been ESTABLISHED; see remote run log above)." -ForegroundColor Red
+    if ($runlog -match 'NO_ESTABLISHED') {
+        Write-Host '    CommCtrlSAS/Aurum processes may be running while bridge TCP is down (31150 not LISTENING/ESTABLISHED).' -ForegroundColor Yellow
+        Write-Host '    Wait for comm unlock / natural reconnect — do not restart services from this tool.' -ForegroundColor Yellow
+    }
     exit 1
 }
 Copy-Item -LiteralPath $logUnc -Destination $logLocal -Force

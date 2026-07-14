@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.notepad_pp import open_with_notepad_pp
+from gui.palette_adapt import muted_text, text_success
 from gui.theme import COLOR_ACCENT, COLOR_MEDIUM
 from parser import Incident
 from parser_rules import (

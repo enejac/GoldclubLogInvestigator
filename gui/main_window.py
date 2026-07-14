@@ -123,6 +123,7 @@ from gui.timeline_widget import SessionTimelineWidget
 from gui.incident_table_model import IncidentTableModel
 from gui.filter_chips import FilterChipsBar
 from gui.live_watch_thread import LiveWatchThread
+from gui.log_highlighter import LogSyntaxHighlighter
 from gui.rule_editor_dialog import RuleEditorDialog
 from gui.accounting_scan_worker import AccountingScanEmitter, schedule_accounting_scan
 from gui.sas_dialog import SASVerificationReportDialog

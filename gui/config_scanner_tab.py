@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from config_manager import SettingsManager
 from config_scanner.scanner import snapshot_content_root
 from gui.notepad_pp import attach_open_with_npp_menu, extend_menu_with_npp_action, open_with_notepad_pp
 from config_scanner.service import (

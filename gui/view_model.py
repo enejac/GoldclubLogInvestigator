@@ -50,6 +50,7 @@ from parser import (
     _ONEHAND_SLOT_VER_RE,
     extract_env_fingerprint_from_logtree,
 )
+from reporter import incident_group_key
 from timeline_engine import EnvFingerprint, ParseResult
 from network.meter_comparator import SAS_TO_XML
 from network.sas_parser import last_rx_code_values_from_text
@@ -493,20 +494,17 @@ class DisplayRow:
 def collapse_consecutive_incidents_to_rows(
     incidents: list[Incident], collapse: bool
 ) -> list[DisplayRow]:
-    """Group consecutive incidents with same severity, error_type, and game."""
+    """Group consecutive incidents with same severity, error type, game, and signature body."""
     if not incidents:
         return []
     if not collapse:
         return [DisplayRow(incident=inc, count=1) for inc in incidents]
     rows: list[DisplayRow] = []
     for inc in incidents:
+        key = incident_group_key(inc)
         if rows:
             prev = rows[-1].incident
-            if (
-                prev.severity == inc.severity
-                and prev.error_type == inc.error_type
-                and prev.game == inc.game
-            ):
+            if incident_group_key(prev) == key:
                 last = rows[-1]
                 rows[-1] = DisplayRow(incident=last.incident, count=last.count + 1)
                 continue
@@ -609,7 +607,7 @@ class IncidentViewModel(QObject):
         self._bookmarks: dict[str, str] = {}
         self._time_slice_start: datetime | None = None
         self._time_slice_end: datetime | None = None
-        self._collapse_duplicates: bool = False
+        self._collapse_duplicates: bool = True
         self._display_rows: list[DisplayRow] = []
         self._remote_ram_target_ip: str | None = None
         self._ram_fetch_emitter = RamFetchEmitter(self)

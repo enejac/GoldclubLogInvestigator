@@ -26,17 +26,40 @@ def _severity_rank(severity: str) -> int:
         return len(_SEVERITY_ORDER)
 
 
+def _strip_log_line_prefix(text: str) -> str:
+    """Remove timestamp and log-level tokens for signature / collapse grouping."""
+    s = text.strip()
+    s = re.sub(
+        r"^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s*",
+        "",
+        s,
+    )
+    s = re.sub(r"\b(?:INFO|WARN|ERRO|CRIT|ERROR|DEBUG)\b\s*", "", s, flags=re.I)
+    s = re.sub(r"\[:[^\]]*\]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 def _normalize_signature(inc: Incident) -> str:
     """Collapse noisy snippets into a stable crash signature for summary tables."""
-    text = (inc.line_snippet or inc.error_type or "").strip()
-    text = re.sub(r"^\d{4}-\d{2}-\d{2}T[\d:.+-]+Z?\s*", "", text)
-    text = re.sub(r"\b(?:INFO|WARN|ERRO|CRIT|ERROR|DEBUG)\b\s*", "", text, flags=re.I)
-    text = re.sub(r"\[:[^\]]*\]", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = _strip_log_line_prefix(inc.line_snippet or inc.error_type or "")
     if len(text) > 120:
         text = text[:117] + "..."
     label = (inc.error_type or "Unknown").strip()
     return f"{label}: {text}" if text else label
+
+
+def incident_group_key(inc: Incident) -> tuple[str, str, str, str]:
+    """Key for collapsing consecutive rows with the same underlying fault."""
+    body = _strip_log_line_prefix(inc.line_snippet or "")
+    if len(body) > 100:
+        body = body[:97] + "..."
+    return (
+        (inc.severity or "").strip(),
+        (inc.error_type or "").strip(),
+        (inc.game or "").strip(),
+        body,
+    )
 
 
 def _incident_summary_sections(rows: list[Incident]) -> list[str]:

@@ -211,6 +211,35 @@ SEVERITY_RULES: Final[list[SeverityRule]] = [
         ],
     },
     {
+        "name": "godot_unhandled_exception",
+        "label": "Godot Unhandled Exception",
+        "severity": "CRITICAL",
+        "patterns": [
+            r"\bERROR\b[^\n]*Unhandled exception:\s*System\.\w+Exception",
+            r"Unhandled exception:\s*System\.\w+Exception",
+        ],
+    },
+    {
+        "name": "godot_process_crash",
+        "label": "Godot Process Crash / Forced Exit",
+        "severity": "CRITICAL",
+        "patterns": [
+            r"Ruleta process:\s*\d+\s+ended\.\s*Exiting",
+            r"Godot did not exit in expected time.*killing process",
+            r"\bProces(?:s)? with ID \d+ exited unexpectedly",
+            r"Godot process.*(?:crashed|terminated|killed)",
+        ],
+    },
+    {
+        "name": "godot_queue_data_exception",
+        "label": "Godot QueueData Exception",
+        "severity": "CRITICAL",
+        "patterns": [
+            r"Exception while reading QueueData\s+System\.\w+Exception",
+            r"PLAYER\d+:\s*Exception while reading QueueData",
+        ],
+    },
+    {
         "name": "message_dispatcher_fault",
         "label": "MessageDispatcher Fault",
         "severity": "CRITICAL",
@@ -245,6 +274,23 @@ SEVERITY_RULES: Final[list[SeverityRule]] = [
             r"\bFATAL\b",
             r"\bFatal\b",
             r"\bNullReference\b",
+        ],
+    },
+    {
+        "name": "godot_missing_node",
+        "label": "Godot Missing Scene Node",
+        "severity": "MEDIUM",
+        "patterns": [
+            r"\bWARN\b[^\n]*Missing node\.",
+            r"Missing node\.\s+/root/",
+        ],
+    },
+    {
+        "name": "godot_bet_config_error",
+        "label": "Godot Bet Limits Config Error",
+        "severity": "MEDIUM",
+        "patterns": [
+            r"PLAYER\d+:\s*No parameters for min and max bets",
         ],
     },
     {
@@ -304,6 +350,10 @@ FIRST_CAUSE_ANOMALY_PATTERNS: Final[list[str]] = [
     r"\bDispose\b",
     r"state does not exist",
     r"MessageDispatcher\.PostMessage",
+    r"Unhandled exception:",
+    r"Missing node\.",
+    r"Godot did not exit",
+    r"exited unexpectedly",
 ]
 
 # Stack / continuation lines to skip when classifying “start” of a block (optional)
@@ -343,6 +393,30 @@ PROBABLE_CAUSE_RULES: Final[list[ProbableCauseRule]] = [
             "CRITICAL: Corrupt or empty persisted state blob — check var\\state caches, "
             "recent factory reset, and config saves before reboot."
         ),
+    },
+    {
+        "pattern": r"Unhandled exception:.*PayoutPressed|MainScreen\.PayoutPressed",
+        "cause": "CRITICAL: Godot roulette GUI crashed on payout — NullReference in MainScreen/BarsButtonController; check missing TokenSpawner nodes and pay-table state.",
+    },
+    {
+        "pattern": r"Unhandled exception:",
+        "cause": "CRITICAL: Unhandled Godot C# exception — GUI process may restart; capture godot\\ log stack and preceding Missing node WARN lines.",
+    },
+    {
+        "pattern": r"Exception while reading QueueData",
+        "cause": "CRITICAL: Godot failed deserializing UI queue payload — often null lock/bet state from backend; check ruleta MessageDispatcher faults in same window.",
+    },
+    {
+        "pattern": r"Ruleta process:.*ended\. Exiting|Godot did not exit|exited unexpectedly",
+        "cause": "CRITICAL: Godot renderer process ended or was killed — parent ruleta service may have restarted it; check ruleta\\ log for shutdown/kill reason.",
+    },
+    {
+        "pattern": r"Missing node\.",
+        "cause": "MEDIUM: Godot scene node missing from layout — UI may be broken before payout/spin; verify theme pack and TokenSpawner paths.",
+    },
+    {
+        "pattern": r"No parameters for min and max bets",
+        "cause": "MEDIUM: Godot player bet limits not configured — check ruleta setup.xml / paytable load for PLAYER0.",
     },
     {
         "pattern": r"MessageDispatcher\.PostMessage",

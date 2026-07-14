@@ -85,6 +85,45 @@
       "jiraBugKey": "TBD-GC-ROULETTE-005",
       "jiraTestKeys": [],
       "localTicket": null
+    },
+    {
+      "id": "GCI-GODOT-001",
+      "name": "Godot unhandled GUI exception",
+      "triggerPatterns": [
+        "Unhandled exception:\\s*System\\.\\w+Exception",
+        "MainScreen\\.PayoutPressed"
+      ],
+      "severityFilter": "CRITICAL",
+      "probableCause": "Known issue GCI-GODOT-001: Godot roulette GUI unhandled exception (often NullReference on payout). Check Missing node WARN for TokenSpawner/TouchInner and backend pay state.",
+      "jiraBugKey": "TBD-GC-GODOT-001",
+      "jiraTestKeys": [],
+      "localTicket": null
+    },
+    {
+      "id": "GCI-GODOT-002",
+      "name": "Godot process killed or unexpected exit",
+      "triggerPatterns": [
+        "Godot did not exit in expected time",
+        "exited unexpectedly",
+        "Ruleta process:\\s*\\d+\\s+ended\\.\\s*Exiting"
+      ],
+      "severityFilter": "CRITICAL",
+      "probableCause": "Known issue GCI-GODOT-002: Godot renderer hung, crashed, or parent ruleta process ended — correlate godot\\ and ruleta\\ timestamps.",
+      "jiraBugKey": "TBD-GC-GODOT-002",
+      "jiraTestKeys": [],
+      "localTicket": null
+    },
+    {
+      "id": "GCI-GODOT-003",
+      "name": "Godot QueueData deserialization fault",
+      "triggerPatterns": [
+        "Exception while reading QueueData"
+      ],
+      "severityFilter": "CRITICAL",
+      "probableCause": "Known issue GCI-GODOT-003: Godot UI queue payload fault — null lock/bet state from backend; pair with ruleta MessageDispatcher errors.",
+      "jiraBugKey": "TBD-GC-GODOT-003",
+      "jiraTestKeys": [],
+      "localTicket": null
     }
   ]
 }

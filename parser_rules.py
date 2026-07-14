@@ -139,6 +139,24 @@ KNOWN_RULES: list[TriageRule] = [
         ),
     ),
     TriageRule(
+        name="Godot Unhandled Exception",
+        trigger_text="Unhandled exception:",
+        severity_filter="CRITICAL",
+        probable_cause=(
+            "CRITICAL: Godot roulette GUI unhandled C# exception — process may restart. "
+            "Check godot\\ log stack (PayoutPressed, QueueData) and Missing node WARN lines before fault."
+        ),
+    ),
+    TriageRule(
+        name="Godot Process Forced Exit",
+        trigger_text="Godot did not exit in expected time",
+        severity_filter="CRITICAL",
+        probable_cause=(
+            "CRITICAL: Godot renderer hung on exit and was killed — often follows GUI fault or "
+            "ruleta service restart. Check paired godot\\ and ruleta\\ logs."
+        ),
+    ),
+    TriageRule(
         name="Empty Stream Deserialization",
         trigger_text="Attempting to deserialize an empty stream",
         severity_filter="CRITICAL",

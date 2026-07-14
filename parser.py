@@ -139,6 +139,8 @@ def subsystem_label_from_log_path(path: Path | str) -> str:
     low = folder.casefold()
     if "ruleta" in low:
         return "Roulette"
+    if low.startswith("godot"):
+        return "Godot UI"
     if low.startswith("bios") or low == "bios":
         return "BiOS"
     if "aurum" in low:
@@ -823,7 +825,7 @@ def create_live_state_at_eof(path: Path) -> LiveFileParseState | None:
         byte_offset=size,
         pending_fragment="",
         next_line_number=lines + 1,
-        current_game="unknown",
+        current_game=subsystem_label_from_log_path(path),
         last_known_game=None,
         buffer=deque(maxlen=FIRST_CAUSE_LOOKBACK_LINES),
     )
@@ -870,34 +872,16 @@ def feed_live_byte_chunk(
         effective_ts = (
             extracted_ts if extracted_ts is not None else state.current_file_timestamp
         )
-        custom = _try_custom_rule_match(line)
-        if custom:
-            err_type, severity = custom
-            if not _should_suppress_incident_line(line):
-                incidents.append(
-                    _incident_for_classified_line(
-                        timestamp=effective_ts,
-                        game=state.current_game,
-                        last_known_game=state.last_known_game,
-                        severity=severity,
-                        error_type=err_type,
-                        path_str=state.path_str,
-                        lineno=lineno,
-                        line=line,
-                        buffer=state.buffer,
-                    )
-                )
-        else:
-            _maybe_append_classified_incident(
-                line=line,
-                incidents=incidents,
-                timestamp=effective_ts,
-                current_game=state.current_game,
-                last_known_game=state.last_known_game,
-                path_str=state.path_str,
-                lineno=lineno,
-                buffer=state.buffer,
-            )
+        _maybe_append_classified_incident(
+            line=line,
+            incidents=incidents,
+            timestamp=effective_ts,
+            current_game=state.current_game,
+            last_known_game=state.last_known_game,
+            path_str=state.path_str,
+            lineno=lineno,
+            buffer=state.buffer,
+        )
 
         state.buffer.append((lineno, line))
 
@@ -1090,34 +1074,16 @@ def parse_log_file(
             line, current_game, last_known_game
         )
 
-        custom = _try_custom_rule_match(line)
-        if custom:
-            err_type, severity = custom
-            if not _should_suppress_incident_line(line):
-                incidents.append(
-                    _incident_for_classified_line(
-                        timestamp=effective_ts,
-                        game=current_game,
-                        last_known_game=last_known_game,
-                        severity=severity,
-                        error_type=err_type,
-                        path_str=str(path),
-                        lineno=lineno,
-                        line=line,
-                        buffer=buffer,
-                    )
-                )
-        else:
-            _maybe_append_classified_incident(
-                line=line,
-                incidents=incidents,
-                timestamp=effective_ts,
-                current_game=current_game,
-                last_known_game=last_known_game,
-                path_str=str(path),
-                lineno=lineno,
-                buffer=buffer,
-            )
+        _maybe_append_classified_incident(
+            line=line,
+            incidents=incidents,
+            timestamp=effective_ts,
+            current_game=current_game,
+            last_known_game=last_known_game,
+            path_str=str(path),
+            lineno=lineno,
+            buffer=buffer,
+        )
 
         stb.on_line(
             lineno,

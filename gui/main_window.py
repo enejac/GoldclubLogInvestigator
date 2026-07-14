@@ -699,9 +699,10 @@ class MainWindow(QMainWindow):
             alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
         )
         self._collapse_dup_chk = QCheckBox("Collapse duplicates")
+        self._collapse_dup_chk.setChecked(True)
         self._collapse_dup_chk.setToolTip(
-            "Merge consecutive rows that share the same severity, error type, and game "
-            "into one row with a [Nx] count (first row’s timestamp)."
+            "Merge consecutive rows that share the same severity, error type, game, and "
+            "message signature into one row with a [Nx] count (first row's timestamp)."
         )
         self._collapse_dup_chk.toggled.connect(self._vm.set_collapse_duplicates)
         chips_row.addWidget(

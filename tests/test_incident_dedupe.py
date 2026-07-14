@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 
 from parser import Incident
-from gui.view_model import IncidentViewModel, _logical_incident_key
+from gui.view_model import IncidentViewModel, _logical_incident_key, collapse_consecutive_incidents_to_rows
 
 
 def _sample(path: str, line_no: int) -> Incident:
@@ -54,3 +54,23 @@ def test_distinct_snippet_not_deduped() -> None:
     )
     vm.append_live_incidents([a, b])
     assert len(vm.all_incidents) == 2
+
+
+def test_collapse_groups_same_signature_different_timestamps() -> None:
+    a = _sample("a.log", 1)
+    b = Incident(
+        timestamp=datetime(2026, 3, 24, 8, 0, 0, tzinfo=timezone.utc),
+        game=a.game,
+        severity=a.severity,
+        error_type=a.error_type,
+        probable_cause=a.probable_cause,
+        log_file_path="a.log",
+        line_number=2,
+        line_snippet=(
+            "2026-03-24T08:00:00.000+00:00 WARN [SlotMachine] OneHand.Utilities.RhEffect - "
+            "RhEffect::Dispose called without disposing Effect object."
+        ),
+    )
+    rows = collapse_consecutive_incidents_to_rows([a, b], collapse=True)
+    assert len(rows) == 1
+    assert rows[0].count == 2

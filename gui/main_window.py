@@ -3316,12 +3316,16 @@ class MainWindow(QMainWindow):
         if not path:
             QMessageBox.warning(self, "Path Required", "Please set a Scan Root path first.")
             return
-        from network.goldclub_paths import extract_ip_from_path, resolve_log_scan_root
+        from network.goldclub_paths import extract_ip_from_path, portable_app_dir, resolve_log_scan_root
 
         remote_ip = None
         if self._radio_remote.isChecked():
             remote_ip = self._ip_edit.text().strip() or None
-        discovery = resolve_log_scan_root(path, remote_ip=remote_ip or extract_ip_from_path(path))
+        discovery = resolve_log_scan_root(
+            path,
+            remote_ip=remote_ip or extract_ip_from_path(path),
+            exe_dir=portable_app_dir(),
+        )
         resolved = discovery.scan_root
         if resolved != path and discovery.game_kind:
             self._status.setText(
@@ -3330,7 +3334,7 @@ class MainWindow(QMainWindow):
         dlg = SasVerifyDialog(
             self._vm,
             self._vm.thread_pool(),
-            scan_root=path,
+            scan_root=resolved,
             remote_ip=remote_ip,
             parent=None,
         )

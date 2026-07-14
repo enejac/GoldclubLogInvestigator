@@ -4,6 +4,7 @@ from network.goldclub_paths import (
     GoldclubLayoutKind,
     discover_portable_scan_roots,
     discover_startup_scan_target,
+    is_usb_log_export_path,
     resolve_goldclub_layout,
     resolve_log_scan_root,
 )
@@ -31,6 +32,12 @@ def test_resolve_usb_export_with_embedded_state(tmp_path: Path) -> None:
     assert layout.kind == GoldclubLayoutKind.USB_EXPORT
     assert layout.state_gcmessenger == export / "state" / "GoldClub.Aurum.Services" / "GCMessenger"
     assert layout.themes_root == export
+
+
+def test_is_usb_log_export_path() -> None:
+    assert is_usb_log_export_path(r"H:\tools\_LogFiles\log_14_07_2026")
+    assert not is_usb_log_export_path(r"C:\Goldclub\var\log")
+    assert not is_usb_log_export_path("")
 
 
 def test_discover_portable_scan_roots_finds_usb_export(tmp_path: Path) -> None:

@@ -1491,18 +1491,23 @@ class MeterFetchWorker(QObject):
         com_baud: int,
         skip_bill_polls: bool = True,
         cached_profile: tuple[str, int, bool] | None = None,
+        prefetch: bool = False,
     ) -> None:
         super().__init__(None)
         self._com_port = (com_port or "").strip()
         self._com_baud = int(com_baud)
         self._skip_bill_polls = skip_bill_polls
         self._cached_profile = cached_profile
+        self._prefetch = prefetch
 
     def run(self) -> None:
         try:
             import sys
 
-            from network.sas_serial_meters import fetch_meters_over_serial
+            from network.sas_serial_meters import (
+                DEFAULT_RESPONSE_TIMEOUT_S,
+                fetch_meters_over_serial,
+            )
 
             sys.__stdout__.write(
                 f"[COM-FETCH] Starting on {self._com_port} "
@@ -1514,6 +1519,9 @@ class MeterFetchWorker(QObject):
                 force_capture=True,
                 skip_bill_polls=self._skip_bill_polls,
                 cached_profile=self._cached_profile,
+                port_wait_s=6.0 if self._prefetch else 4.0,
+                timeout_s=8.0 if self._prefetch else DEFAULT_RESPONSE_TIMEOUT_S,
+                max_combos=2 if self._prefetch and not self._cached_profile else None,
             )
             lines = (getattr(result, "paste_text", "") or "").count("\n") + 1
             sys.__stdout__.write(
@@ -1542,12 +1550,17 @@ class SasVerifyDialog(QDialog):
         super().__init__(parent)
         self._vm = vm
         self._pool = pool
-        from network.goldclub_paths import extract_ip_from_path, resolve_log_scan_root
+        from network.goldclub_paths import (
+            extract_ip_from_path,
+            portable_app_dir,
+            resolve_log_scan_root,
+        )
 
         hint = (scan_root or "").strip()
         discovery = resolve_log_scan_root(
             hint,
             remote_ip=remote_ip or extract_ip_from_path(hint) or None,
+            exe_dir=portable_app_dir(),
         )
         self._scan_root = discovery.scan_root
         self._scan_game_kind = discovery.game_kind
@@ -2474,11 +2487,16 @@ class SasVerifyDialog(QDialog):
         )
 
         current = self._current_com_port() if preserve_text else ""
+        ports = enumerate_serial_ports()
         if not current:
             current = normalize_com_port(getattr(self, "_preferred_com_port", DEFAULT_SAS_COM_PORT))
+        from network.sas_serial_meters import pick_sas_com_port
+
+        picked = pick_sas_com_port(current, ports)
+        if picked:
+            current = picked
         self._com_port_combo.blockSignals(True)
         self._com_port_combo.clear()
-        ports = enumerate_serial_ports()
         for info in ports:
             label = info.device
             if info.description:
@@ -2708,6 +2726,43 @@ class SasVerifyDialog(QDialog):
             machine_state_loaded=self._machine_state_loaded,
         )
 
+    def _offline_log_scan(self) -> bool:
+        """USB log export or other offline snapshot — no live COM prefetch."""
+        from network.goldclub_paths import (
+            GoldclubLayoutKind,
+            is_usb_log_export_path,
+            resolve_goldclub_layout,
+        )
+
+        sr = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        if not sr:
+            return False
+        if is_usb_log_export_path(sr):
+            return True
+        layout = resolve_goldclub_layout(sr)
+        return layout is not None and layout.kind == GoldclubLayoutKind.USB_EXPORT
+
+    def _resolved_com_port_for_fetch(self) -> str:
+        from network.sas_serial_meters import (
+            enumerate_serial_ports,
+            normalize_com_port,
+            pick_sas_com_port,
+        )
+
+        requested = self._current_com_port()
+        picked = pick_sas_com_port(requested, enumerate_serial_ports())
+        return normalize_com_port(picked or requested or "")
+
+    def _seed_verify_rows_from_cabinet_if_needed(self) -> None:
+        if self._last_parsed_rows or not self._machine_state_loaded:
+            return
+        from network.sas_serial_meters import DEFAULT_6F_VERIFY_POLL_CODES
+
+        self._last_parsed_rows = [
+            Sas6FRow(meter_id=code, sas_value_text="")
+            for code in DEFAULT_6F_VERIFY_POLL_CODES
+        ]
+
     def _start_prefetch(self) -> None:
         if self._prefetch_started:
             return
@@ -2720,13 +2775,15 @@ class SasVerifyDialog(QDialog):
         ip = self._cabinet_ip_from_scan_root()
         if ip:
             QTimer.singleShot(1500, self._run_onehand_check)
-        # USB log exports are offline snapshots — do not grab the live COM port.
-        from network.goldclub_paths import GoldclubLayoutKind, resolve_goldclub_layout
-
-        layout = resolve_goldclub_layout(self._scan_root) if self._scan_root else None
-        live_com = layout is None or layout.kind != GoldclubLayoutKind.USB_EXPORT
-        if live_com and self._current_com_port():
+        offline = self._offline_log_scan()
+        if not offline and self._resolved_com_port_for_fetch():
             self._begin_meter_fetch(prefetch=True)
+        elif offline:
+            self._update_prefetch_status(
+                "USB log export — loading cabinet meters from snapshot "
+                "(live COM skipped; click Refresh Meters on the cabinet)."
+            )
+            return
         self._update_prefetch_status()
 
     def _sync_get_meters_button_label(self) -> None:
@@ -2822,7 +2879,7 @@ class SasVerifyDialog(QDialog):
 
         Prefetch skips bill long polls for speed; use a manual refresh for full bill LPs.
         """
-        port = self._current_com_port()
+        port = self._resolved_com_port_for_fetch()
         if not port:
             return False
         if self._meter_fetch_running():
@@ -2847,6 +2904,7 @@ class SasVerifyDialog(QDialog):
             com_baud=int(getattr(self, "_com_baud", DEFAULT_SAS_COM_BAUD)),
             skip_bill_polls=prefetch,
             cached_profile=getattr(self, "_cached_serial_profile", None),
+            prefetch=prefetch,
         )
         self._meter_fetch_worker.moveToThread(self._meter_fetch_thread)
         self._meter_fetch_thread.started.connect(self._meter_fetch_worker.run)
@@ -3201,7 +3259,7 @@ class SasVerifyDialog(QDialog):
             else:
                 self._machine_state = {}
                 self._machine_state_loaded = False
-            if self._meter_fetch_running():
+            if self._meter_fetch_running() and not self._offline_log_scan():
                 # COM capture is still running — defer panel refresh until it finishes.
                 self._cabinet_ui_refresh_pending = True
                 return
@@ -3217,6 +3275,7 @@ class SasVerifyDialog(QDialog):
 
     def _run_cabinet_ui_refresh(self) -> None:
         self._cabinet_ui_refresh_pending = False
+        self._seed_verify_rows_from_cabinet_if_needed()
         self.setUpdatesEnabled(False)
         try:
             self._currency = _detect_egm_currency(self._scan_root, self._vm)

@@ -13,6 +13,10 @@ from PySide6.QtWidgets import QMenu, QPlainTextEdit, QTextEdit, QWidget
 
 NPP_PORTABLE_ROOT = Path(r"H:\npp.8.7.7.portable.x64")
 NPP_PORTABLE_ROOT_ENV = "LOGINV_NPP_ROOT"
+NPP_PORTABLE_FOLDER_NAMES = (
+    "npp.8.7.7.portable.x64",
+    "npp.portable.x64",
+)
 
 _TEXT_SUFFIXES = frozenset(
     {
@@ -46,11 +50,45 @@ _NPP_EXE_NAMES = ("notepad++.exe", "Notepad++.exe")
 
 
 def _portable_root() -> Path:
-    """Portable Notepad++ folder; override with LOGINV_NPP_ROOT."""
+    """Primary portable Notepad++ folder; override with LOGINV_NPP_ROOT."""
+    return _portable_search_roots()[0]
+
+def _portable_search_roots() -> list[Path]:
+    """Candidate portable Notepad++ install folders (USB, EGM D:, exe drive)."""
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Path) -> None:
+        key = os.path.normcase(str(path))
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(path)
+
     override = (os.environ.get(NPP_PORTABLE_ROOT_ENV) or "").strip()
     if override:
-        return Path(override)
-    return NPP_PORTABLE_ROOT
+        _add(Path(override))
+
+    drives: list[str] = []
+    for drive in (r"H:", r"D:", _executable_drive()):
+        if drive and drive not in drives:
+            drives.append(drive)
+
+    for drive in drives:
+        for name in NPP_PORTABLE_FOLDER_NAMES:
+            _add(Path(drive) / name)
+
+    try:
+        exe_drive = Path(sys.executable).resolve().anchor
+        if exe_drive:
+            for name in NPP_PORTABLE_FOLDER_NAMES:
+                _add(Path(exe_drive) / name)
+    except OSError:
+        pass
+
+    if not roots:
+        _add(NPP_PORTABLE_ROOT)
+    return roots
 
 
 def _is_windows() -> bool:
@@ -172,8 +210,7 @@ def _native_install_dirs() -> list[Path]:
     return dirs
 
 
-def _find_portable_npp_exe() -> Path | None:
-    root = _portable_root()
+def _find_portable_npp_exe_in_root(root: Path) -> Path | None:
     direct = _first_existing_exe(_exe_candidates_in_dir(root))
     if direct is not None:
         return direct
@@ -186,6 +223,14 @@ def _find_portable_npp_exe() -> Path | None:
                     return path
     except OSError:
         return None
+    return None
+
+
+def _find_portable_npp_exe() -> Path | None:
+    for root in _portable_search_roots():
+        found = _find_portable_npp_exe_in_root(root)
+        if found is not None:
+            return found
     return None
 
 
@@ -235,10 +280,11 @@ def open_with_notepad_pp(path: str | Path) -> tuple[bool, str]:
 
     npp = resolve_notepad_pp_exe()
     if npp is None:
+        checked = ", ".join(str(p) for p in _portable_search_roots())
         return (
             False,
-            "Notepad++ not found. Checked portable install "
-            f"({_portable_root()}) and common native install locations.",
+            "Notepad++ not found. Checked portable installs "
+            f"({checked}) and common native install locations.",
         )
 
     try:

@@ -539,6 +539,19 @@ def _refine_log_scan_root_from_install(
     )
 
 
+def portable_app_dir() -> Path:
+    """Directory containing LogInvestigator.exe (USB stick root when run portably)."""
+    return Path(sys.executable).resolve().parent
+
+
+def is_usb_log_export_path(path: str | Path | None) -> bool:
+    """True for portable log export folders ``log_DD_MM_YYYY``."""
+    normalized = normalize_path_str(str(path or ""))
+    if not normalized:
+        return False
+    return bool(_RE_USB_LOG_FOLDER.match(Path(normalized).name or ""))
+
+
 def resolve_log_scan_root(
     hint: str | None = None,
     *,
@@ -558,7 +571,10 @@ def resolve_log_scan_root(
     hint_norm = normalize_path_str(hint or "")
     ip = extract_ip_from_path(hint_norm) or ((remote_ip or "").strip() or None)
 
-    startup = discover_startup_scan_target(remote_ip=remote_ip, exe_dir=exe_dir)
+    startup = discover_startup_scan_target(
+        remote_ip=remote_ip,
+        exe_dir=exe_dir or portable_app_dir(),
+    )
     if not hint_norm.startswith("\\\\") and startup.game_kind in (
         "slot",
         "roulette",
@@ -591,7 +607,7 @@ def discover_portable_scan_roots(*, exe_dir: Path | None = None) -> tuple[str, .
             seen.add(s)
             out.append(s)
 
-    base = exe_dir or Path(sys.executable).resolve().parent
+    base = exe_dir or portable_app_dir()
     search_dirs: list[Path] = [base]
     logfiles = base / "_LogFiles"
     if _path_exists_dir(logfiles):

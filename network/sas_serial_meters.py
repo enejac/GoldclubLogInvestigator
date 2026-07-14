@@ -111,6 +111,11 @@ _SAS_PORT_HINTS = (
     "commctrl",
     "serial",
 )
+_NON_SAS_PORT_HINTS = (
+    "ticket",
+    "printer",
+    "receipt",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +162,16 @@ def enumerate_serial_ports() -> list[SerialPortInfo]:
     return out
 
 
+def _serial_port_score(info: SerialPortInfo) -> int:
+    blob = f"{info.description} {info.hwid}".lower()
+    score = sum(1 for hint in _SAS_PORT_HINTS if hint in blob)
+    if any(hint in blob for hint in _NON_SAS_PORT_HINTS):
+        score -= 10
+    if info.device.upper() == normalize_com_port(DEFAULT_SAS_COM_PORT):
+        score += 2
+    return score
+
+
 def pick_sas_com_port(
     requested: str | None,
     available: list[SerialPortInfo] | None = None,
@@ -168,21 +183,23 @@ def pick_sas_com_port(
     by_name = {info.device.upper(): info.device for info in ports}
     req = normalize_com_port(requested or "")
     if req and req in by_name:
-        return by_name[req]
+        req_info = next(p for p in ports if p.device.upper() == req)
+        if _serial_port_score(req_info) >= 0 or len(ports) == 1:
+            return by_name[req]
     default = normalize_com_port(DEFAULT_SAS_COM_PORT)
     if default in by_name:
-        return by_name[default]
+        default_info = next(p for p in ports if p.device.upper() == default)
+        if _serial_port_score(default_info) >= 0:
+            return by_name[default]
     if len(ports) == 1:
         return ports[0].device
     scored: list[tuple[int, str]] = []
     for info in ports:
-        blob = f"{info.description} {info.hwid}".lower()
-        score = sum(1 for hint in _SAS_PORT_HINTS if hint in blob)
-        if info.device.upper() == default:
-            score += 2
-        scored.append((score, info.device))
+        scored.append((_serial_port_score(info), info.device))
     scored.sort(key=lambda item: (-item[0], _com_sort_key(item[1])))
     if scored and scored[0][0] > 0:
+        return scored[0][1]
+    if scored:
         return scored[0][1]
     return None
 
@@ -996,6 +1013,7 @@ def fetch_meters_over_serial(
     force_capture: bool = True,
     skip_bill_polls: bool = True,
     cached_profile: tuple[str, int, bool] | None = None,
+    max_combos: int | None = None,
 ) -> SasMeterFetchResult:
     if force_capture:
         port_wait_s = max(float(port_wait_s), DEFAULT_FORCE_CAPTURE_WAIT_S)
@@ -1022,6 +1040,8 @@ def fetch_meters_over_serial(
         combos = (
             ((wire_mode or DEFAULT_WIRE_MODE).strip().lower(), int(baud), False),
         )
+    if max_combos is not None and max_combos > 0:
+        combos = combos[: int(max_combos)]
     probe_timeout = float(timeout_s)
     last_err: RuntimeError | None = None
     attempt_notes: list[str] = []

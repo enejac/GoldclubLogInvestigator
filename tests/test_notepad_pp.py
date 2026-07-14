@@ -101,6 +101,22 @@ def test_is_windows_true_on_nt_platform(monkeypatch: pytest.MonkeyPatch) -> None
     assert npp._is_windows() is True
 
 
+def test_resolve_finds_d_drive_portable_on_egm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    portable_dir = tmp_path / "D_npp"
+    portable_dir.mkdir()
+    portable_exe = portable_dir / "notepad++.exe"
+    portable_exe.write_text("", encoding="utf-8")
+
+    def fake_roots() -> list[Path]:
+        return [tmp_path / "missing_h", portable_dir]
+
+    monkeypatch.setattr(npp, "_portable_search_roots", fake_roots)
+    monkeypatch.setattr(npp, "_running_from_removable_drive", lambda: False)
+    monkeypatch.setattr(npp, "_native_install_dirs", lambda: [])
+
+    assert npp.resolve_notepad_pp_exe() == portable_exe
+
+
 def test_open_with_notepad_pp_not_blocked_on_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(npp.os, "name", "nt")
     monkeypatch.setattr(npp.sys, "platform", "win32")

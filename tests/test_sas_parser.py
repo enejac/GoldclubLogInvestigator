@@ -73,6 +73,17 @@ def test_pick_sas_com_port() -> None:
     assert pick_sas_com_port("", [SerialPortInfo("COM4", "USB Serial Port")]) == "COM4"
 
 
+def test_pick_sas_com_port_skips_ticket_printer() -> None:
+    from network.sas_serial_meters import SerialPortInfo, pick_sas_com_port
+
+    ports = [
+        SerialPortInfo("COM4", "Ticket Printer (COM:4)"),
+        SerialPortInfo("COM11", "FTDI USB Serial"),
+    ]
+    assert pick_sas_com_port("COM4", ports) == "COM11"
+    assert pick_sas_com_port("", ports) == "COM11"
+
+
 def test_auto_wire_baud_combos_prefers_raw_19200() -> None:
     from network.sas_serial_meters import AUTO_WIRE_BAUD_COMBOS, _probe_should_continue
 

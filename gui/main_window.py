@@ -770,7 +770,7 @@ class MainWindow(QMainWindow):
         _hdr1.setTextFormat(Qt.TextFormat.RichText)
         il.addWidget(_hdr1)
         self._known_issues_panel = KnownIssuesPanel(inspect)
-        il.addWidget(self._known_issues_panel)
+        il.addWidget(self._known_issues_panel, stretch=0)
         self._refresh_known_issues_session_counts()
         self._inspector_meta = QPlainTextEdit()
         self._inspector_meta.setReadOnly(True)
@@ -1279,6 +1279,11 @@ class MainWindow(QMainWindow):
         self._tray.setToolTip("Log Investigator — live CRITICAL alerts")
         self._tray.show()
 
+    def _update_live_watch_button_label(self) -> None:
+        self._live_toggle.setText(
+            "Stop Live Watch" if self._live_toggle.isChecked() else "Live Watch"
+        )
+
     def _stop_live_watch_ui(self) -> None:
         self._reset_live_watch_elapsed_timer()
         self._teardown_live_thread()
@@ -1286,6 +1291,7 @@ class MainWindow(QMainWindow):
             self._live_toggle.blockSignals(True)
             self._live_toggle.setChecked(False)
             self._live_toggle.blockSignals(False)
+        self._update_live_watch_button_label()
         self._rec_pulse.stop()
         fx = self._rec_label.graphicsEffect()
         if isinstance(fx, QGraphicsOpacityEffect):
@@ -1309,6 +1315,7 @@ class MainWindow(QMainWindow):
                 self._live_toggle.blockSignals(True)
                 self._live_toggle.setChecked(False)
                 self._live_toggle.blockSignals(False)
+                self._update_live_watch_button_label()
                 return
             p = Path(root)
             try:
@@ -1324,6 +1331,7 @@ class MainWindow(QMainWindow):
                 self._live_toggle.blockSignals(True)
                 self._live_toggle.setChecked(False)
                 self._live_toggle.blockSignals(False)
+                self._update_live_watch_button_label()
                 return
             self._rec_label.setVisible(True)
             self._rec_pulse.start()
@@ -1344,6 +1352,7 @@ class MainWindow(QMainWindow):
             self._reset_live_watch_elapsed_timer()
             self._teardown_live_thread()
             self._status.setText("Live watch stopped.")
+        self._update_live_watch_button_label()
 
     def _on_live_incidents_batch(self, batch: object) -> None:
         incs: list
@@ -2789,8 +2798,12 @@ class MainWindow(QMainWindow):
         if not raw:
             return
         ok, msg = open_with_notepad_pp(raw)
-        if not ok:
-            QMessageBox.warning(self, "Open in Notepad++", msg)
+        if ok:
+            return
+        url = QUrl.fromLocalFile(str(Path(raw).resolve()))
+        if QDesktopServices.openUrl(url):
+            return
+        QMessageBox.warning(self, "Open in Notepad++", msg)
 
     def _on_create_case_pack_clicked(self) -> None:
         rows = self._vm.filtered_incidents_flat()
@@ -3303,10 +3316,22 @@ class MainWindow(QMainWindow):
         if not path:
             QMessageBox.warning(self, "Path Required", "Please set a Scan Root path first.")
             return
+        from network.goldclub_paths import extract_ip_from_path, resolve_log_scan_root
+
+        remote_ip = None
+        if self._radio_remote.isChecked():
+            remote_ip = self._ip_edit.text().strip() or None
+        discovery = resolve_log_scan_root(path, remote_ip=remote_ip or extract_ip_from_path(path))
+        resolved = discovery.scan_root
+        if resolved != path and discovery.game_kind:
+            self._status.setText(
+                f"SAS verify: auto-detected {discovery.game_kind} logs at {resolved}"
+            )
         dlg = SasVerifyDialog(
             self._vm,
             self._vm.thread_pool(),
             scan_root=path,
+            remote_ip=remote_ip,
             parent=None,
         )
         dlg.setWindowModality(Qt.WindowModality.ApplicationModal)

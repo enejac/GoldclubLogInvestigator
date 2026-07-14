@@ -416,12 +416,169 @@ def discover_startup_scan_target(
             )
 
     ip = (remote_ip or DEFAULT_REMOTE_IP).strip() or DEFAULT_REMOTE_IP
+    refined = _refine_log_scan_root_from_install(
+        hint=format_unc_log_root(ip),
+        remote_ip=ip,
+    )
+    if refined is not None:
+        return refined
     return StartupScanDiscovery(
         mode="remote",
         scan_root=format_unc_log_root(ip),
         game_kind=None,
         remote_ip=ip,
     )
+
+
+def _path_is_generic_var_log(path_str: str) -> bool:
+    """True when *path_str* is ``…/var/log`` (not already ``…/var/log/ruleta``)."""
+    p = Path(normalize_path_str(path_str))
+    return p.name.lower() == "log"
+
+
+def _install_root_from_scan_hint(scan_root: str) -> Path | None:
+    """Goldclub or roulette USB drive root inferred from a log scan path."""
+    normalized = normalize_path_str(scan_root)
+    if not normalized:
+        return None
+
+    layout = resolve_goldclub_layout(normalized)
+    if layout is not None:
+        if layout.goldclub_root is not None and _path_exists_dir(layout.goldclub_root):
+            return layout.goldclub_root
+        if layout.cabinet_ip:
+            unc = Path(rf"\\{layout.cabinet_ip}\c$\Goldclub")
+            if _path_exists_dir(unc):
+                return unc
+
+    path = Path(normalized)
+    goldclub = _goldclub_root_from_path(path)
+    if goldclub is not None and _path_exists_dir(goldclub):
+        return goldclub
+
+    cur: Path | None = path
+    for _ in range(8):
+        if cur is None:
+            break
+        if _path_exists_dir(cur / "ruleta"):
+            return cur
+        nxt = cur.parent
+        cur = nxt if nxt != cur else None
+    return None
+
+
+def _detect_game_kind_at_install_root(install_root: Path) -> str | None:
+    slot_dir = install_root / "slot"
+    if _path_exists_dir(slot_dir):
+        for rel in ("OneHand.exe", "game-start.exe", "bin/OneHand.exe"):
+            if _path_exists_file(slot_dir / rel.replace("/", "\\")):
+                return "slot"
+    ruleta = install_root / "ruleta"
+    if _path_exists_dir(ruleta):
+        for name in ("Ruleta.exe", "ruleta.exe"):
+            if _path_exists_file(ruleta / name):
+                return "roulette"
+        try:
+            for exe in ruleta.glob("*.exe"):
+                if exe.name.lower() == "ruleta.exe":
+                    return "roulette"
+        except OSError:
+            pass
+    return None
+
+
+def _refine_log_scan_root_from_install(
+    *,
+    hint: str,
+    remote_ip: str | None,
+) -> StartupScanDiscovery | None:
+    """Pick ``var/log`` vs ``var/log/ruleta`` from OneHand / Ruleta install markers."""
+    hint_norm = normalize_path_str(hint)
+    if not hint_norm:
+        return None
+
+    ip = extract_ip_from_path(hint_norm) or ((remote_ip or "").strip() or None)
+    hint_path = Path(hint_norm)
+    if hint_path.name.lower() == "ruleta" and _path_exists_dir(hint_path):
+        mode = "remote" if hint_norm.startswith("\\\\") else "local"
+        return StartupScanDiscovery(
+            mode=mode,
+            scan_root=hint_norm,
+            game_kind="roulette",
+            remote_ip=ip,
+        )
+
+    install_root = _install_root_from_scan_hint(hint_norm)
+    if install_root is None and ip:
+        unc = Path(rf"\\{ip}\c$\Goldclub")
+        if _path_exists_dir(unc):
+            install_root = unc
+    if install_root is None:
+        return None
+
+    kind = _detect_game_kind_at_install_root(install_root)
+    if kind == "slot":
+        slot_root = install_root / "slot"
+        log_root = _log_root_for_slot_install(
+            slot_root if _path_exists_dir(slot_root) else install_root
+        )
+    elif kind == "roulette":
+        log_root = _log_root_for_roulette_install(install_root)
+    else:
+        return None
+
+    if log_root is None:
+        return None
+
+    mode = "remote" if hint_norm.startswith("\\\\") else "local"
+    return StartupScanDiscovery(
+        mode=mode,
+        scan_root=str(log_root),
+        game_kind=kind,
+        remote_ip=ip,
+    )
+
+
+def resolve_log_scan_root(
+    hint: str | None = None,
+    *,
+    remote_ip: str | None = None,
+    exe_dir: Path | None = None,
+) -> StartupScanDiscovery:
+    """
+    Resolve the log scan folder for SAS verification and log scanning.
+
+    Slot cabinets use ``…\\var\\log`` (SlotLog and Aurum subfolders).
+    Roulette cabinets prefer ``…\\var\\log\\ruleta`` when present.
+
+    Reuses :func:`discover_startup_scan_target` for local/USB installs and
+    refines generic ``…\\var\\log`` hints (including UNC) using OneHand vs
+    Ruleta markers on the cabinet share.
+    """
+    hint_norm = normalize_path_str(hint or "")
+    ip = extract_ip_from_path(hint_norm) or ((remote_ip or "").strip() or None)
+
+    startup = discover_startup_scan_target(remote_ip=remote_ip, exe_dir=exe_dir)
+    if not hint_norm.startswith("\\\\") and startup.game_kind in (
+        "slot",
+        "roulette",
+        "export",
+    ):
+        if not hint_norm or _path_is_generic_var_log(hint_norm):
+            return startup
+
+    if hint_norm:
+        refined = _refine_log_scan_root_from_install(hint=hint_norm, remote_ip=ip)
+        if refined is not None:
+            return refined
+        mode = "remote" if hint_norm.startswith("\\\\") else "local"
+        return StartupScanDiscovery(
+            mode=mode,
+            scan_root=hint_norm,
+            game_kind=None,
+            remote_ip=ip,
+        )
+    return startup
 
 
 def discover_portable_scan_roots(*, exe_dir: Path | None = None) -> tuple[str, ...]:

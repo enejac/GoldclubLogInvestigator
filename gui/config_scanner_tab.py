@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QTableView,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -233,36 +234,45 @@ class ConfigScannerTabWidget(QFrame):
         self._compare_btn = QPushButton("Compare")
         self._compare_btn.clicked.connect(self._on_compare_clicked)
         btn_row.addWidget(self._compare_btn)
-        self._compare_latest_btn = QPushButton("Compare latest two")
+        self._compare_latest_btn = QPushButton("Quick compare")
+        self._compare_latest_btn.setToolTip(
+            "Baseline vs newest scan when a baseline exists; "
+            "otherwise diff the two newest snapshots."
+        )
         self._compare_latest_btn.clicked.connect(self._on_compare_latest_clicked)
         btn_row.addWidget(self._compare_latest_btn)
-        self._set_baseline_btn = QPushButton("Set baseline")
-        self._set_baseline_btn.setToolTip(
+
+        self._more_btn = QToolButton()
+        self._more_btn.setText("More")
+        self._more_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        more_menu = QMenu(self)
+        self._set_baseline_action = QAction("Set baseline", self)
+        self._set_baseline_action.setToolTip(
             "Rename the selected snapshot to slot_baseline or "
             "roulette_baseline_build… and register it as the compare baseline."
         )
-        self._set_baseline_btn.clicked.connect(self._on_set_baseline_clicked)
-        btn_row.addWidget(self._set_baseline_btn)
-        self._delete_btn = QPushButton("Delete snapshot")
-        self._delete_btn.setToolTip(
+        self._set_baseline_action.triggered.connect(self._on_set_baseline_clicked)
+        more_menu.addAction(self._set_baseline_action)
+        self._delete_action = QAction("Delete snapshot", self)
+        self._delete_action.setToolTip(
             "Delete the selected snapshot from the table (or Target combo). "
             "Right-click a row for the same action."
         )
-        self._delete_btn.clicked.connect(self._on_delete_clicked)
-        btn_row.addWidget(self._delete_btn)
-        self._compare_baseline_btn = QPushButton("Compare to baseline")
-        self._compare_baseline_btn.clicked.connect(self._on_compare_baseline_clicked)
-        btn_row.addWidget(self._compare_baseline_btn)
-        self._open_report_btn = QPushButton("Open report")
-        self._open_report_btn.clicked.connect(self._on_open_report_clicked)
-        self._open_report_btn.setEnabled(False)
-        btn_row.addWidget(self._open_report_btn)
-        self._open_snapshots_btn = QPushButton("Open snapshots folder")
-        self._open_snapshots_btn.clicked.connect(self._on_open_snapshots_clicked)
-        btn_row.addWidget(self._open_snapshots_btn)
-        self._open_reports_btn = QPushButton("Open reports folder")
-        self._open_reports_btn.clicked.connect(self._on_open_reports_clicked)
-        btn_row.addWidget(self._open_reports_btn)
+        self._delete_action.triggered.connect(self._on_delete_clicked)
+        more_menu.addAction(self._delete_action)
+        more_menu.addSeparator()
+        self._open_report_action = QAction("Open report", self)
+        self._open_report_action.triggered.connect(self._on_open_report_clicked)
+        self._open_report_action.setEnabled(False)
+        more_menu.addAction(self._open_report_action)
+        self._open_snapshots_action = QAction("Open snapshots folder", self)
+        self._open_snapshots_action.triggered.connect(self._on_open_snapshots_clicked)
+        more_menu.addAction(self._open_snapshots_action)
+        self._open_reports_action = QAction("Open reports folder", self)
+        self._open_reports_action.triggered.connect(self._on_open_reports_clicked)
+        more_menu.addAction(self._open_reports_action)
+        self._more_btn.setMenu(more_menu)
+        btn_row.addWidget(self._more_btn)
         btn_row.addStretch(1)
         root.addLayout(btn_row)
 
@@ -431,6 +441,9 @@ class ConfigScannerTabWidget(QFrame):
                 lambda checked=False, name=snapshot.name: self._compare_snapshot_with_baseline(name)
             )
         menu.addAction(compare_action)
+        baseline_action = QAction("Set as baseline", self)
+        baseline_action.triggered.connect(self._on_set_baseline_clicked)
+        menu.addAction(baseline_action)
         write_action = QAction("Write snapshot…", self)
         has_archive = self._snapshot_has_archive(snapshot.name)
         write_action.setEnabled(has_archive)
@@ -616,11 +629,11 @@ class ConfigScannerTabWidget(QFrame):
         self._scan_btn.setEnabled(not busy)
         self._compare_btn.setEnabled(not busy)
         self._compare_latest_btn.setEnabled(not busy)
-        self._compare_baseline_btn.setEnabled(not busy)
         self._detect_btn.setEnabled(not busy)
         self._refresh_btn.setEnabled(not busy)
-        self._set_baseline_btn.setEnabled(not busy)
-        self._delete_btn.setEnabled(not busy)
+        self._more_btn.setEnabled(not busy)
+        self._set_baseline_action.setEnabled(not busy)
+        self._delete_action.setEnabled(not busy)
         self._baseline_combo.setEnabled(not busy)
         self._target_combo.setEnabled(not busy)
         self._drive_edit.setEnabled(not busy)
@@ -630,9 +643,9 @@ class ConfigScannerTabWidget(QFrame):
             and self._last_report_path is not None
             and self._last_report_path.is_file()
         )
-        self._open_report_btn.setEnabled(report_ok)
-        self._open_snapshots_btn.setEnabled(not busy)
-        self._open_reports_btn.setEnabled(not busy)
+        self._open_report_action.setEnabled(report_ok)
+        self._open_snapshots_action.setEnabled(not busy)
+        self._open_reports_action.setEnabled(not busy)
 
     def _on_progress(self, message: str) -> None:
         self._log.appendPlainText(message)
@@ -762,7 +775,7 @@ class ConfigScannerTabWidget(QFrame):
             self.refresh_snapshots()
             if self._service.get_baseline_name():
                 self._log.appendPlainText(
-                    "Tip: click Compare to baseline to diff against the registered baseline."
+                    "Tip: click Quick compare to diff against the registered baseline."
                 )
         elif not ok:
             QMessageBox.critical(self, "Config Scanner", message)
@@ -869,22 +882,13 @@ class ConfigScannerTabWidget(QFrame):
             else:
                 QMessageBox.critical(self, "Config Scanner", f"Set baseline failed:\n\n{message}")
 
-    def _on_compare_baseline_clicked(self) -> None:
-        if self._busy:
-            return
-        baseline = self._service.get_baseline_name()
-        if not baseline:
-            QMessageBox.warning(self, "Config Scanner", "No baseline set yet.")
-            return
-        self._compare_baseline_with_latest(baseline)
-
     def _on_compare_finished(self, ok: bool, result: object, message: str) -> None:
         self._set_busy(False)
         if ok and isinstance(result, CompareResult):
             self._log.appendPlainText(f"OK: Compare finished ({result.report_path.name}).")
             self._last_report_path = result.report_path
             self._last_compare_target_snapshot = result.target_snapshot
-            self._open_report_btn.setEnabled(True)
+            self._open_report_action.setEnabled(True)
             summary = result.summary
             warning_text = ""
             if result.warnings:

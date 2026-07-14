@@ -12,6 +12,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QPlainTextEdit, QTextEdit, QWidget
 
 NPP_PORTABLE_ROOT = Path(r"H:\npp.8.7.7.portable.x64")
+NPP_PORTABLE_ROOT_ENV = "LOGINV_NPP_ROOT"
 
 _TEXT_SUFFIXES = frozenset(
     {
@@ -21,6 +22,7 @@ _TEXT_SUFFIXES = frozenset(
         ".md",
         ".xml",
         ".json",
+        ".jsonl",
         ".conf",
         ".ini",
         ".ps1",
@@ -43,6 +45,18 @@ _TEXT_SUFFIXES = frozenset(
 _NPP_EXE_NAMES = ("notepad++.exe", "Notepad++.exe")
 
 
+def _portable_root() -> Path:
+    """Portable Notepad++ folder; override with LOGINV_NPP_ROOT."""
+    override = (os.environ.get(NPP_PORTABLE_ROOT_ENV) or "").strip()
+    if override:
+        return Path(override)
+    return NPP_PORTABLE_ROOT
+
+
+def _is_windows() -> bool:
+    return sys.platform == "win32" or os.name == "nt"
+
+
 def _executable_drive() -> str:
     try:
         return Path(sys.executable).drive
@@ -51,7 +65,7 @@ def _executable_drive() -> str:
 
 
 def _is_removable_drive(drive: str) -> bool:
-    if os.name != "win32" or not drive:
+    if not _is_windows() or not drive:
         return False
     try:
         import ctypes
@@ -86,7 +100,7 @@ def _exe_candidates_in_dir(directory: Path) -> tuple[Path, ...]:
 
 
 def _registry_npp_install_dirs() -> list[Path]:
-    if os.name != "win32":
+    if not _is_windows():
         return []
     try:
         import winreg
@@ -159,14 +173,15 @@ def _native_install_dirs() -> list[Path]:
 
 
 def _find_portable_npp_exe() -> Path | None:
-    direct = _first_existing_exe(_exe_candidates_in_dir(NPP_PORTABLE_ROOT))
+    root = _portable_root()
+    direct = _first_existing_exe(_exe_candidates_in_dir(root))
     if direct is not None:
         return direct
     try:
-        if not NPP_PORTABLE_ROOT.is_dir():
+        if not root.is_dir():
             return None
         for pattern in _NPP_EXE_NAMES:
-            for path in NPP_PORTABLE_ROOT.rglob(pattern):
+            for path in root.rglob(pattern):
                 if path.is_file():
                     return path
     except OSError:
@@ -203,7 +218,7 @@ def is_text_file_path(path: str | Path | None) -> bool:
 
 def open_with_notepad_pp(path: str | Path) -> tuple[bool, str]:
     """Launch Notepad++ for an existing text file. Returns (ok, message)."""
-    if os.name != "win32":
+    if not _is_windows():
         return False, "Notepad++ launch is only supported on Windows."
 
     raw = str(path or "").strip()
@@ -223,7 +238,7 @@ def open_with_notepad_pp(path: str | Path) -> tuple[bool, str]:
         return (
             False,
             "Notepad++ not found. Checked portable install "
-            f"({NPP_PORTABLE_ROOT}) and common native install locations.",
+            f"({_portable_root()}) and common native install locations.",
         )
 
     try:

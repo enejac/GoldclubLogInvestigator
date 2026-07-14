@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -40,6 +42,7 @@ class KnownIssuesPanel(QFrame):
         super().__init__(parent)
         self.setObjectName("knownIssuesPanel")
         self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 8, 10, 8)
@@ -54,9 +57,24 @@ class KnownIssuesPanel(QFrame):
         self._session_lbl.setWordWrap(True)
         root.addWidget(self._session_lbl)
 
-        self._catalog_host = QVBoxLayout()
+        self._catalog_scroll = QScrollArea()
+        self._catalog_scroll.setWidgetResizable(True)
+        self._catalog_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._catalog_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._catalog_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._catalog_scroll.setMinimumHeight(64)
+        self._catalog_scroll.setMaximumHeight(140)
+        self._catalog_scroll.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
+
+        catalog_container = QWidget()
+        self._catalog_host = QVBoxLayout(catalog_container)
+        self._catalog_host.setContentsMargins(0, 0, 4, 0)
         self._catalog_host.setSpacing(4)
-        root.addLayout(self._catalog_host)
+        self._catalog_scroll.setWidget(catalog_container)
+        root.addWidget(self._catalog_scroll)
 
         self._selection_lbl = QLabel("Selected row: —")
         self._selection_lbl.setWordWrap(True)

@@ -12,10 +12,11 @@ import sys
 import threading
 import traceback
 
-from PySide6.QtCore import QEvent, QObject, QSettings, QThread, QThreadPool, Signal, Qt, QPoint, QTimer
+from PySide6.QtCore import QEvent, QObject, QSettings, QThread, QThreadPool, Signal, Qt, QPoint, QSize, QTimer
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractScrollArea,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -1090,6 +1091,13 @@ def center_widget_in_panel(layout: QVBoxLayout, widget: QWidget) -> None:
     layout.addStretch(1)
 
 
+def configure_verify_table_scroll(table: QTableWidget, *, min_height: int = 120) -> None:
+    """Keep verify tables scrollable so they do not lock dialog vertical resize."""
+    table.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored)
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    table.setMinimumHeight(min_height)
+
+
 def stretch_widget_in_panel(layout: QVBoxLayout, widget: QWidget) -> None:
     """Horizontally center *widget* and grow it vertically with the tab panel."""
     widget.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
@@ -1113,9 +1121,9 @@ def center_table_in_group_box(box: QGroupBox, table: QTableWidget) -> None:
 
 def wrap_expand_verify_table_in_group_box(box: QGroupBox, table: QTableWidget) -> None:
     """Accounting verify table: column-fit width, grows vertically when the window is tall."""
+    configure_verify_table_scroll(table)
     table.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     outer = QVBoxLayout(box)
     outer.setContentsMargins(10, 12, 10, 8)
     outer.setSpacing(0)
@@ -1522,11 +1530,27 @@ class MeterFetchWorker(QObject):
 
 
 class SasVerifyDialog(QDialog):
-    def __init__(self, vm: object, pool: QThreadPool, *, scan_root: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        vm: object,
+        pool: QThreadPool,
+        *,
+        scan_root: str,
+        remote_ip: str | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._vm = vm
         self._pool = pool
-        self._scan_root = scan_root
+        from network.goldclub_paths import extract_ip_from_path, resolve_log_scan_root
+
+        hint = (scan_root or "").strip()
+        discovery = resolve_log_scan_root(
+            hint,
+            remote_ip=remote_ip or extract_ip_from_path(hint) or None,
+        )
+        self._scan_root = discovery.scan_root
+        self._scan_game_kind = discovery.game_kind
         self._machine_state: dict[str, str] = {}
         self._machine_state_loaded = False
         self._compare_thread: QThread | None = None
@@ -1710,6 +1734,9 @@ class SasVerifyDialog(QDialog):
         self._apply_meter_panel_styles()
 
         self._meter_tabs = QTabWidget()
+        self._meter_tabs.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self._meter_tabs.setStyleSheet(meter_tabs_stylesheet())
         self._meter_tabs.addTab(self._accounting_tab, _METER_TAB_NAMES[TAB_ACCOUNTING])
         self._meter_tabs.addTab(self._game_tab, _METER_TAB_NAMES[TAB_GAME])
@@ -1819,8 +1846,8 @@ class SasVerifyDialog(QDialog):
         table.verticalHeader().setDefaultSectionSize(20)
         table.horizontalHeader().setFixedHeight(22)
         table.setShowGrid(True)
+        configure_verify_table_scroll(table)
         table.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
-        table.setMinimumHeight(320)
         return table
 
     def _build_accounting_tab(self) -> QWidget:
@@ -2641,6 +2668,9 @@ class SasVerifyDialog(QDialog):
         if not self._window_geometry_restored:
             self._window_geometry_restored = True
             SettingsManager.restore_sas_verify_dialog_geometry(self)
+        # Saved geometry must not pin max height (blocks vertical resize on Windows).
+        self.setMaximumSize(QSize(16777215, 16777215))
+        self.setMinimumSize(800, 560)
         self._reload_game_theme_catalog()
         self._refresh_com_port_list(preserve_text=True)
         if not self._split_meter_dominant_applied:

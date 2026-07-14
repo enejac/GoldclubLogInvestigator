@@ -71,6 +71,13 @@ param(
 
     [string] $SasComPort = 'COM4',
     [switch] $NoAutoSasPoll,
+    [ValidateSet('Auto', 'WinDivert', 'Com', 'None')]
+    [string] $SasPollMode,
+    [switch] $NoAutoWake,
+    [switch] $NoAutoBootstrap,
+
+    # Self-healing remediation cycles before abort (default 4).
+    [int]    $MaxRemediationCycles = 4,
 
     # Maintenance: safely remove the WinDivert driver service on the cabinet, then exit.
     [switch] $RemoveDriver,
@@ -94,10 +101,15 @@ function Show-TestAft1000Help {
 Send-TestAft1000.ps1 — thin wrapper around Invoke-WinDivertAft.ps1 (`$1,000 promo AFT default).
 
 PREREQUISITES
-  Same as Invoke-WinDivertAft.ps1 (SAS tester/host connected, polls live — see $readme).
+  Lab cabinet reachable (default 10.0.0.90). AutoWake restarts bridge if wedged.
+  See aft/PROVEN-INJECT-PROCEDURE.md
 
 MODES
-  Default = DryRun. Pass -Send for live injection.
+  Default = DryRun. Pass -Send for live injection ($1,000 promo AFT).
+
+SIMPLEST LIVE RUN
+  .\Send-TestAft1000.ps1 -Send
+  Send-TestAft1000.cmd -Send          (same; no ".\" required in PowerShell/cmd)
 
 TARGET / AMOUNT / TRANSFER TYPE
   -IP <addr>                  cabinet (default 10.0.0.90)
@@ -188,6 +200,15 @@ if ($NonRestricted) { $invokeArgs.NonRestricted = $true }
 if ($Credential)    { $invokeArgs.Credential = $Credential }
 if ($PSBoundParameters.ContainsKey('SasComPort')) { $invokeArgs.SasComPort = $SasComPort }
 if ($NoAutoSasPoll) { $invokeArgs.NoAutoSasPoll = $true }
+if ($NoAutoWake) { $invokeArgs.NoAutoWake = $true }
+if ($NoAutoBootstrap) { $invokeArgs.NoAutoBootstrap = $true }
+$invokeArgs.MaxRemediationCycles = $MaxRemediationCycles
+if ($PSBoundParameters.ContainsKey('SasPollMode')) {
+    $invokeArgs.SasPollMode = $SasPollMode
+}
+else {
+    $invokeArgs.SasPollMode = 'WinDivert'
+}
 
 if ($PSCmdlet.ParameterSetName -eq 'Send') {
     $invokeArgs.Send = $true

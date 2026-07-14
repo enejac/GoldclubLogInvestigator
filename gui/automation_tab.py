@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.automation_worker import AutomationEmitter, schedule_automation_run
+from gui.notepad_pp import attach_open_with_npp_menu
 
 
 class AutomationTabWidget(QFrame):
@@ -79,8 +80,20 @@ class AutomationTabWidget(QFrame):
         self._log.setPlaceholderText("Run log…")
         self._log.setMaximumBlockCount(4000)
         root.addWidget(self._log, stretch=2)
+        attach_open_with_npp_menu(
+            self._log,
+            path_provider=self._automation_results_path,
+            parent=self,
+            label="Open results.jsonl with Notepad++",
+        )
 
         self._active_out_dir: Path | None = None
+
+    def _automation_results_path(self) -> Path | None:
+        if self._active_out_dir is None:
+            return None
+        path = self._active_out_dir / "results.jsonl"
+        return path if path.is_file() else None
 
     def _on_load_tutankhamen_sweep(self) -> None:
         from automation.tutankhamen_symbols import tutankhamen_symbol_sweep_combos_text

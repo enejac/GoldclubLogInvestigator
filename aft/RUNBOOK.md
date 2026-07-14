@@ -1,23 +1,65 @@
 # AFT Promo-Credit Injection via WinDivert — Runbook
 
-Trigger a **$1,000 promo AFT (cashless) credit** on the lab cabinet by injecting a raw SAS `0x72` "transfer funds" command into the live `CommCtrlSAS -> Aurum` loopback SAS stream — **without using the IGT SAS tester UI** to send the transfer. WinDivert replaces **only the `0x72` AFT frame**; a physical SAS host must still be connected and polling so the session is online.
+Trigger a **$1,000 promo AFT (cashless) credit** on the lab cabinet by injecting into
+the live `CommCtrlSAS -> Aurum` loopback SAS stream — **without the IGT SAS tester UI**
+and, with `-SasPollMode WinDivert`, **without any physical serial polls**.
 
-This is achieved by using WinDivert to inject a single TCP segment, carrying the `0x1B`-framed SAS `0x72` command, **into the existing** `CommCtrlSAS:31150 -> Aurum:<ephemeral>` flow at the correct sequence number, so Aurum reads it as the next in-order bytes on its established SAS session and commits the transfer.
+Two paths exist (see [`no-physical-polls-layers.md`](no-physical-polls-layers.md)):
+
+| Path | Polls | AFT | When to use |
+|------|-------|-----|-------------|
+| **Full simulation** (`-SasPollMode WinDivert`) | `WdPollInject` simulates `1B81`/`1B80` @ 200 ms | `pollaft` injects `0x72` | **Default lab inject** — no IGT/COM/MUX (proven txn 83/84 on `.90`; **txn 84 re-confirmed 2026-07-10**) |
+| **Legacy** (`-SasPollMode None` or external polls already active) | IGT or external host | `WdInject.exe` one-shot | Bridge up and sasmsgr already shows fresh `80/81` |
+
+Both paths inject a TCP segment carrying the `0x1B`-framed SAS `0x72` command **into
+the existing** `CommCtrlSAS:31150 -> Aurum:<ephemeral>` flow at the correct sequence
+number, so Aurum reads it as the next in-order bytes and commits the transfer.
 
 - **Lab cabinet:** `10.0.0.90` (host `GST20664`)
 - **EGM:** `GCC_ST_20664_01`, asset `777`
 - **Registration:** `GAMING_MACHINE_NOT_REGISTERED` (registration key = 20 zero bytes). Transfers still commit unregistered — WAT authorization, not SAS AFT registration, is the active gate.
-- **Status:** working when a SAS host is connected and polling (confirmed 2026-06-17 on `.90`; see §6 and [`README.md`](README.md)).
+- **Status:** full sim path confirmed **2026-07-09** (txn 83) and **2026-07-10** (txn 84 ingest + credit, no physical polls); legacy path confirmed 2026-06-15/17.
+- **Saved procedure:** [`PROVEN-INJECT-PROCEDURE.md`](PROVEN-INJECT-PROCEDURE.md) — wake + inject + verify checklist.
+- **Flow diagrams:** [`diagrams/windivert-pollaft-inject-simple.md`](diagrams/windivert-pollaft-inject-simple.md) (one page) · [`diagrams/windivert-pollaft-inject-flow.md`](diagrams/windivert-pollaft-inject-flow.md) (full)
 
 ## Prerequisites (check before every inject)
 
-1. **SAS tester or SAS host connected** on COM11 / MUX upstream channel.
-2. Steady **`qGMID1:80/81`** in `GoldClub.Aurum.Services sasmsgr of SASControler1` log
-   (or Stage 0 sniff shows `1B80`/`1B81` on `31150`).
+### Layer 0 — CommCtrlSAS bridge infrastructure (required; cannot simulate)
+
+1. **CommCtrlSAS service healthy** — log shows `Listening on port 31100/31150`
+   (`\\10.0.0.90\c$\Goldclub\var\log\CommCtrlSAS\<date>.log`).
+2. **Aurum TCP connected** — `Get-NetTCPConnection -LocalPort 31150 -State Established`
+   on the cabinet, or Aurum log `Port 31100 is opened`.
+
+If L0 is wedged (process running but no listeners), restart the **Windows service**
+`GoldClub Serial Communication Gateway SAS` — do **not** launch bare `CommCtrlSAS.exe`
+(wrong CWD → `Missing CommControler.ini`).
+
+**Silent bridge** (TCP `Established` but pollaft sees `s2c=0 c2s=0`): also restart
+`GoldClub.Aurum.Services`, wait for `WAT2AFT UP`, then inject. Helper:
+
+```powershell
+.\Invoke-WakeSasBridge.ps1 -IP 10.0.0.90 -ClearPendingAft -WaitForWat
+```
+
+If Aurum repeats **exception 69**, clear stale pending state with `-ClearPendingAft`
+(moves `aftPendingTransaction_*.xml` aside).
+
+### Layer 2 — Poll stream (simulated OR organic)
+
+**Full sim (`-SasPollMode WinDivert`):** no external poller needed — `WdPollInject`
+originates `1B81`/`1B80` @ **200 ms** before AFT inject.
+
+**Legacy path:** steady **`qGMID1:80/81`** in sasmsgr (or Stage 0 sniff shows
+`1B80`/`1B81` on `31150`), typically from IGT tester on MUX upstream channel.
+
+### Other
+
 3. **No** `NO OWNED DEVICE FOUND FOR WAT` in WAT2AFT log.
 4. Lab SMB access: `.\Initialize-LabAccess.ps1 -Verify` (credential `GOLD-CLUB\test`).
 
-Without (1)–(2), expect **ingest without credit** — not a tool failure. Full investigation context: [`README.md`](README.md).
+Without L0, expect `NO_ESTABLISHED_31150`. Without L2 on the legacy path, expect
+**ingest without credit**. Full investigation context: [`README.md`](README.md).
 
 ---
 
@@ -26,21 +68,14 @@ Without (1)–(2), expect **ingest without credit** — not a tool failure. Full
 From the repo folder `C:\Users\Ezbogar\GoldclubLogInvestigator`:
 
 ```powershell
-# Simplest — thin wrapper (DryRun is the default; -Send actually injects):
+# One command (auto-wakes wedged bridge, sim polls, inject, verify):
 .\Send-TestAft1000.ps1 -Send
 
-# Or drive the injector directly (auto-picks the next transaction number):
-.\Invoke-WinDivertAft.ps1 -Send
+# Equivalent:
+.\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.90
 
-# Target a different cabinet by IP (-IP is an alias of -ComputerName; default 10.0.0.90):
-.\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.110
-.\Send-TestAft1000.ps1 -Send -IP 10.0.0.110
-
-# Custom amount (raw credits / base units, NOT dollars) into the non-restricted (promo) field:
-.\Send-TestAft1000.ps1 -Send -IP 10.0.0.110 -Amount 1000000 -nr
-
-# Route the same amount into the cashable field instead (-c), or restricted (-r):
-.\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.110 -Amount 1000000 -c
+# Manual wake only (rare — AutoWake handles this on inject):
+.\Invoke-WakeSasBridge.ps1 -IP 10.0.0.90
 ```
 
 ### Amount and transfer-type parameters
@@ -344,8 +379,11 @@ All in `C:\Users\Ezbogar\GoldclubLogInvestigator\`:
 
 | File | Role |
 |---|---|
-| `Invoke-WinDivertAft.ps1` | **Main orchestrator.** Builds the SAS `0x72` + `0x1B` frame, stages WinDivert + `WdInject.cs`, remote-compiles and runs `WdInject.exe` via PsExec as SYSTEM, removes the driver, then verifies via the cabinet logs. ParameterSets: `DryRun` (default, injects nothing) and `Send`. Params: `-ComputerName` (10.0.0.90, alias `-IP`), `-Amount` (raw credits/base units, precedence over `-AmountCents`), `-AmountCents` (100000), transfer type `-c`/`-r`/`-nr` (default `-nr` non-restricted/promo), `-AssetNumber` (777), optional `-TransactionNumber` (auto-generated when omitted/0, and auto-skips ids already seen in today's sasmsgr log), `-Credential` (cabinet admin, enables the faster WinRM transport), `-BridgePort` (31150), `-ObserveMs` (8000), `-AckGraceMs` (600; 0 disables ACK-anchoring), `-MaxRetries` (3). |
-| `WdInject.cs` | The WinDivert P/Invoke injector (x64). Diverts the `31150` outbound loopback flow (now capturing ACK segments too), forwards every packet, and anchors the inject SEQ on the first **payload** segment (`SEQ+payloadLen`, preferred) or, on an idle-but-established link, on a bare **ACK** seq after a short grace window (`-AckGraceMs`). Recomputes checksums, keeps forwarding ~1.5 s, closes. CLI args: `<payloadHex> [srcPort=31150] [observeMs=8000] [ackGraceMs=600]`. |
+| `Invoke-WinDivertAft.ps1` | **Main orchestrator.** `-SasPollMode WinDivert` runs `WdPollInject pollaft` (sim polls + AFT); `None`/external polls uses `WdInject.exe` only. Preflight: Aurum WAT idle + WAT2AFT warmup. See [`PROVEN-INJECT-PROCEDURE.md`](PROVEN-INJECT-PROCEDURE.md). |
+| `Invoke-WakeSasBridge.ps1` | Restart gateway SAS + Aurum; optional `-ClearPendingAft` (exception 69); `-WaitForWat`. |
+| `WdPollInject.cs` | Host poll simulator + optional AFT (`passthru` / `poll` / `pollaft`). Injects verbatim `1B81`/`1B80` @ 200 ms; **continues polls 3 s post-AFT** before drain. |
+| `WdInject.cs` | One-shot AFT `0x72` inject when polls already active. |
+| `Invoke-LoopbackPollInject.ps1` | Poll-only probe driver (`-Mode poll`, no AFT). |
 | `Send-TestAft1000.ps1` | Thin convenience wrapper around `Invoke-WinDivertAft.ps1` (DryRun default; `-Send` to inject). |
 | `Invoke-AurumTrafficCapture.ps1` | Read-only WinDivert netdump capture / recon tool. How the bridge flow and ports were discovered. |
 | `protocol-raw-traffic.md` | Byte-level `0x72`/`0x45` transfer + status-poll decode reference (in this `aft/` folder). |

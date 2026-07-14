@@ -13,12 +13,13 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from gui.palette_adapt import muted_text, text_success
+from gui.notepad_pp import open_with_notepad_pp
 from gui.theme import COLOR_ACCENT, COLOR_MEDIUM
 from parser import Incident
 from parser_rules import (
@@ -210,10 +211,12 @@ class KnownIssuesPanel(QFrame):
         path = self._current_ticket_path
         if path is None or not path.is_file():
             return
+        ok, msg = open_with_notepad_pp(path)
+        if ok:
+            return
         url = QUrl.fromLocalFile(str(path))
         if not QDesktopServices.openUrl(url):
-            if os.name == "nt":
-                subprocess.Popen(["notepad.exe", str(path)], close_fds=True)
+            QMessageBox.warning(self, "Open ticket", msg)
 
     def _on_copy_tracking(self) -> None:
         if self._current_match is None:

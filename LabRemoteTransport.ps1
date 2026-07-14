@@ -64,7 +64,7 @@ function Test-LabWinRmReachable {
     }
 }
 
-function Add-LabTrustedHostIfNeeded {
+function Test-LabTrustedHostConfigured {
     param([string] $Computer)
     try {
         $cur = (Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction Stop).Value
@@ -73,14 +73,31 @@ function Add-LabTrustedHostIfNeeded {
         return $false
     }
     $entries = @($cur -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-    if ($entries -contains '*' -or $entries -contains $Computer) { return $true }
+    return ($entries -contains '*' -or $entries -contains $Computer)
+}
+
+function Add-LabTrustedHostIfNeeded {
+    param(
+        [string] $Computer,
+        [switch] $Quiet
+    )
+    if (Test-LabTrustedHostConfigured -Computer $Computer) { return $true }
+    try {
+        $cur = (Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction Stop).Value
+    }
+    catch {
+        return $false
+    }
+    $entries = @($cur -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     try {
         $new = if ($entries.Count) { ($entries + $Computer) -join ',' } else { $Computer }
         Set-Item WSMan:\localhost\Client\TrustedHosts -Value $new -Force -ErrorAction Stop
         return $true
     }
     catch {
-        Write-Host "[!] Could not add $Computer to client TrustedHosts (need admin): $_" -ForegroundColor Yellow
+        if (-not $Quiet) {
+            Write-Host "[!] Could not add $Computer to client TrustedHosts (need admin): $_" -ForegroundColor Yellow
+        }
         return $false
     }
 }

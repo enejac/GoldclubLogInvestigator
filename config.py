@@ -89,10 +89,19 @@ def resolve_scan_path(
     else:
         path = (local_path or "").strip()
         if not path:
-            from network.goldclub_paths import discover_portable_scan_roots
+            from network.goldclub_paths import discover_startup_scan_target
 
-            discovered = discover_portable_scan_roots()
-            path = discovered[0] if discovered else DEFAULT_LOCAL_LOG_ROOT
+            discovery = discover_startup_scan_target()
+            path = discovery.scan_root
+            if discovery.mode == "remote":
+                return ResolvedScanPath(
+                    path=path,
+                    exists=Path(path).is_dir() if path else False,
+                    is_remote=True,
+                    error_hint=None if (path and Path(path).is_dir()) else (
+                        f"Path not reachable or not a directory: {path}" if path else None
+                    ),
+                )
         is_remote = False
 
     try:
@@ -175,16 +184,64 @@ SEVERITY_RULES: Final[list[SeverityRule]] = [
         ],
     },
     {
+        "name": "aurum_sas_config_missing",
+        "label": "SAS Controller Config Missing",
+        "severity": "CRITICAL",
+        "patterns": [
+            r"CONFIG FOR SASControler\d+ NOT FOUND",
+            r"AurumException.*SASControler",
+        ],
+    },
+    {
+        "name": "ruleta_bios_plugin_missing",
+        "label": "Ruleta BiOS Plugin Missing",
+        "severity": "CRITICAL",
+        "patterns": [
+            r"GoldClub\.BiOS\.Plugin\.Ruleta\.dll",
+            r"Plugin\.Ruleta\.dll",
+        ],
+    },
+    {
+        "name": "serialization_empty_stream",
+        "label": "Empty Stream Deserialization",
+        "severity": "CRITICAL",
+        "patterns": [
+            r"Attempting to deserialize an empty stream",
+            r"SerializationException.*empty stream",
+        ],
+    },
+    {
+        "name": "message_dispatcher_fault",
+        "label": "MessageDispatcher Fault",
+        "severity": "CRITICAL",
+        "patterns": [
+            r"MessageDispatcher\.PostMessage:\s*System\.\w+Exception",
+        ],
+    },
+    {
+        "name": "goldclub_crit_exception",
+        "label": "Critical Log Exception",
+        "severity": "CRITICAL",
+        "patterns": [
+            r"\bCRIT\b[^\n]*\bException:",
+        ],
+    },
+    {
+        "name": "goldclub_warn_argument",
+        "label": "Argument / Interface Warning",
+        "severity": "LOW",
+        "patterns": [
+            r"\bWARN\b[^\n]*Argument exception:",
+            r"\bWARN\b[^\n]*Interface not found",
+        ],
+    },
+    {
         "name": "critical_exception",
         "label": "Exception / Fatal",
         "severity": "CRITICAL",
         "patterns": [
-            # Any .NET exception *type* token, including namespaced/compound names
-            # like ``System.Net.Sockets.SocketException`` or a custom
-            # ``MyApp.Domain.OrderException``. There is no word boundary inside
-            # ``SocketException`` (both halves are word chars), so match a run of
-            # type characters that ends in ``Exception``.
-            r"\w*Exception\b",
+            # PascalCase .NET exception types (avoids English "Argument exception:" in WARN lines).
+            r"\b[A-Z]\w*Exception\b",
             r"\bFATAL\b",
             r"\bFatal\b",
             r"\bNullReference\b",
@@ -207,6 +264,14 @@ SEVERITY_RULES: Final[list[SeverityRule]] = [
         ],
     },
     {
+        "name": "goldclub_erro",
+        "label": "Error Log Line",
+        "severity": "MEDIUM",
+        "patterns": [
+            r"\bERRO\b",
+        ],
+    },
+    {
         "name": "low_state_ui",
         "label": "State / UI / Info pattern",
         "severity": "LOW",
@@ -226,6 +291,8 @@ SEVERITY_RULES: Final[list[SeverityRule]] = [
 # -----------------------------------------------------------------------------
 FIRST_CAUSE_ANOMALY_PATTERNS: Final[list[str]] = [
     r"\bException\b",
+    r"\bCRIT\b",
+    r"\bERRO\b",
     r"\bERROR\b",
     r"\bError\b",
     r"\bWARN\b",
@@ -236,6 +303,7 @@ FIRST_CAUSE_ANOMALY_PATTERNS: Final[list[str]] = [
     r"[Ee]mpty folder",
     r"\bDispose\b",
     r"state does not exist",
+    r"MessageDispatcher\.PostMessage",
 ]
 
 # Stack / continuation lines to skip when classifying “start” of a block (optional)
@@ -253,7 +321,43 @@ class ProbableCauseRule(TypedDict):
 PROBABLE_CAUSE_RULES: Final[list[ProbableCauseRule]] = [
     {
         "pattern": r"AurumSetup\.xml|FileNotFoundException.*AurumSetup",
-        "cause": "CRITICAL: System Setup File Missing",
+        "cause": "CRITICAL: Aurum setup XML missing — verify aurum config path and factory reset / deploy.",
+    },
+    {
+        "pattern": r"CONFIG FOR SASControler\d+ NOT FOUND",
+        "cause": (
+            "CRITICAL: SAS controller messenger config missing — check AurumSetup.xml and "
+            "config\\etc\\application\\aurum\\SASControler1\\ on the roulette image."
+        ),
+    },
+    {
+        "pattern": r"GoldClub\.BiOS\.Plugin\.Ruleta\.dll|Plugin\.Ruleta\.dll",
+        "cause": (
+            "CRITICAL: Ruleta BiOS plugin DLL missing — verify C:\\goldclub\\data\\bios\\plugins "
+            "on the image and BiOS plugin deploy after upgrade."
+        ),
+    },
+    {
+        "pattern": r"Attempting to deserialize an empty stream",
+        "cause": (
+            "CRITICAL: Corrupt or empty persisted state blob — check var\\state caches, "
+            "recent factory reset, and config saves before reboot."
+        ),
+    },
+    {
+        "pattern": r"MessageDispatcher\.PostMessage",
+        "cause": (
+            "CRITICAL: Ruleta UI/message thread fault — often null state or race during "
+            "spin/bonus; capture ruleta\\ log + preceding WARN lines."
+        ),
+    },
+    {
+        "pattern": r"cannot access the file 'c:\\tmp\\'",
+        "cause": "CRITICAL: Temp folder lock — another process holds c:\\tmp\\; check parallel setup scripts.",
+    },
+    {
+        "pattern": r"Argument exception:|Interface not found",
+        "cause": "LOW: BiOS/HW proxy interface missing — often transient during startup or plugin load; check BiOS plugins and HWSubsys order.",
     },
     {
         "pattern": r"ArgumentOutOfRangeException",

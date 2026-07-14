@@ -118,6 +118,94 @@ _THEME_NAME_BRACKET_RE = re.compile(
 
 # Dashboard label when no single game theme is active (game closed, menu, selector).
 MULTIGAME_SELECTOR_GAME = "Multigame Selector"
+
+# GoldClub roulette / Aurum logs emit multi-line exception blocks; only the primary
+# ``Exception:`` / ``MessageDispatcher`` lines should become incidents.
+_GOLDCLUB_EXCEPTION_COMPANION_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bExceptionType:\s", re.IGNORECASE),
+    re.compile(r"\bStackTrace:\s", re.IGNORECASE),
+    re.compile(r"\bInnerException:\s*$", re.IGNORECASE),
+    re.compile(r"\bTargetSite:\s", re.IGNORECASE),
+    re.compile(r"\bCRIT\b.*\bSource:\s", re.IGNORECASE),
+)
+
+
+def subsystem_label_from_log_path(path: Path | str) -> str:
+    """Infer subsystem context from a log file path (roulette folder layout)."""
+    p = Path(path)
+    folder = p.parent.name.strip()
+    if not folder or folder.lower() == "log":
+        return "unknown"
+    low = folder.casefold()
+    if "ruleta" in low:
+        return "Roulette"
+    if low.startswith("bios") or low == "bios":
+        return "BiOS"
+    if "aurum" in low:
+        return "Aurum"
+    if "logdaemon" in low or "logging" in low:
+        return "LogDaemon"
+    if low in {"commctrl", "hwsubsys", "setup", "game-start", "start-game"}:
+        return folder
+    return folder
+
+
+def _should_suppress_incident_line(line: str) -> bool:
+    """Skip stack/continuation lines inside GoldClub CRIT exception dumps."""
+    if any(p.search(line) for p in _GOLDCLUB_EXCEPTION_COMPANION_RES):
+        return True
+    if config.STACK_TRACE_LINE_RE is not None and config.STACK_TRACE_LINE_RE.search(line):
+        return True
+    return False
+
+
+def _maybe_append_classified_incident(
+    *,
+    line: str,
+    incidents: list[Incident],
+    timestamp: datetime | None,
+    current_game: str,
+    last_known_game: str | None,
+    path_str: str,
+    lineno: int,
+    buffer: deque[tuple[int, str]],
+) -> None:
+    if _should_suppress_incident_line(line):
+        return
+    custom = _try_custom_rule_match(line)
+    if custom:
+        err_type, severity = custom
+        incidents.append(
+            _incident_for_classified_line(
+                timestamp=timestamp,
+                game=current_game,
+                last_known_game=last_known_game,
+                severity=severity,
+                error_type=err_type,
+                path_str=path_str,
+                lineno=lineno,
+                line=line,
+                buffer=buffer,
+            )
+        )
+        return
+    classified = _classify_line(line)
+    if not classified:
+        return
+    _, report_label, severity = classified
+    incidents.append(
+        _incident_for_classified_line(
+            timestamp=timestamp,
+            game=current_game,
+            last_known_game=last_known_game,
+            severity=severity,
+            error_type=report_label,
+            path_str=path_str,
+            lineno=lineno,
+            line=line,
+            buffer=buffer,
+        )
+    )
 # Incidents at ERROR/FATAL/CRITICAL may include previous theme after unload / multigame.
 _GAME_PREV_CONTEXT_SEVERITIES = frozenset({"ERROR", "FATAL", "CRITICAL"})
 # Exit sequence: production OneHand / SlotMachine phrases first, then generic heuristics.
@@ -785,36 +873,31 @@ def feed_live_byte_chunk(
         custom = _try_custom_rule_match(line)
         if custom:
             err_type, severity = custom
-            incidents.append(
-                _incident_for_classified_line(
-                    timestamp=effective_ts,
-                    game=state.current_game,
-                    last_known_game=state.last_known_game,
-                    severity=severity,
-                    error_type=err_type,
-                    path_str=state.path_str,
-                    lineno=lineno,
-                    line=line,
-                    buffer=state.buffer,
-                )
-            )
-        else:
-            classified = _classify_line(line)
-            if classified:
-                _, report_label, severity = classified
+            if not _should_suppress_incident_line(line):
                 incidents.append(
                     _incident_for_classified_line(
                         timestamp=effective_ts,
                         game=state.current_game,
                         last_known_game=state.last_known_game,
                         severity=severity,
-                        error_type=report_label,
+                        error_type=err_type,
                         path_str=state.path_str,
                         lineno=lineno,
                         line=line,
                         buffer=state.buffer,
                     )
                 )
+        else:
+            _maybe_append_classified_incident(
+                line=line,
+                incidents=incidents,
+                timestamp=effective_ts,
+                current_game=state.current_game,
+                last_known_game=state.last_known_game,
+                path_str=state.path_str,
+                lineno=lineno,
+                buffer=state.buffer,
+            )
 
         state.buffer.append((lineno, line))
 
@@ -919,6 +1002,7 @@ def parse_log_file(
     skipped; parsing stops after the first line whose effective time is strictly
     after ``scan_end_time`` (assumes chronological logs).
     """
+    path = Path(path)
     if path.name.lower() == "txrxdata.dat":
         return _parse_txrx_sas_file(
             path,
@@ -928,7 +1012,7 @@ def parse_log_file(
 
     incidents: list[Incident] = []
     buffer: deque[tuple[int, str]] = deque(maxlen=FIRST_CAUSE_LOOKBACK_LINES)
-    current_game = "unknown"
+    current_game = subsystem_label_from_log_path(path)
     last_known_game: str | None = None
     bonus_rules = load_roulette_bonus_rules()
     stb = StateTimelineBuilder(str(path), bonus_rules)
@@ -1009,36 +1093,31 @@ def parse_log_file(
         custom = _try_custom_rule_match(line)
         if custom:
             err_type, severity = custom
-            incidents.append(
-                _incident_for_classified_line(
-                    timestamp=effective_ts,
-                    game=current_game,
-                    last_known_game=last_known_game,
-                    severity=severity,
-                    error_type=err_type,
-                    path_str=str(path),
-                    lineno=lineno,
-                    line=line,
-                    buffer=buffer,
-                )
-            )
-        else:
-            classified = _classify_line(line)
-            if classified:
-                _, report_label, severity = classified
+            if not _should_suppress_incident_line(line):
                 incidents.append(
                     _incident_for_classified_line(
                         timestamp=effective_ts,
                         game=current_game,
                         last_known_game=last_known_game,
                         severity=severity,
-                        error_type=report_label,
+                        error_type=err_type,
                         path_str=str(path),
                         lineno=lineno,
                         line=line,
                         buffer=buffer,
                     )
                 )
+        else:
+            _maybe_append_classified_incident(
+                line=line,
+                incidents=incidents,
+                timestamp=effective_ts,
+                current_game=current_game,
+                last_known_game=last_known_game,
+                path_str=str(path),
+                lineno=lineno,
+                buffer=buffer,
+            )
 
         stb.on_line(
             lineno,

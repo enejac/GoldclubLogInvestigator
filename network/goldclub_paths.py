@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from config import DEFAULT_LOCAL_LOG_ROOT
+from config import DEFAULT_LOCAL_LOG_ROOT, DEFAULT_REMOTE_IP, format_unc_log_root
 
 _RE_IPV4 = re.compile(r"(?:[\\/]+)?(\d{1,3}(?:\.\d{1,3}){3})")
 _RE_USB_LOG_FOLDER = re.compile(r"^log_\d{2}_\d{2}_\d{4}$", re.IGNORECASE)
@@ -225,6 +225,203 @@ def device_manager_data_files(state_gcmessenger: Path) -> list[Path]:
 
 def layout_requires_smb(layout: GoldclubLayout | None) -> bool:
     return layout is not None and layout.kind == GoldclubLayoutKind.UNC
+
+
+_PRIORITY_GAME_DRIVES: tuple[str, ...] = (
+    "G:",
+    "C:",
+    "D:",
+    "E:",
+    "F:",
+    "H:",
+    "I:",
+    "J:",
+    "K:",
+    "L:",
+    "M:",
+    "N:",
+    "O:",
+    "P:",
+    "Q:",
+    "R:",
+    "S:",
+    "T:",
+    "U:",
+    "V:",
+    "W:",
+    "X:",
+    "Y:",
+    "Z:",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class StartupScanDiscovery:
+    """Auto-detected scan root at application startup."""
+
+    mode: str  # "local" | "remote"
+    scan_root: str
+    game_kind: str | None = None  # "slot" | "roulette" | "export"
+    remote_ip: str | None = None
+
+
+def _goldclub_root_from_path(path: Path) -> Path | None:
+    parts = [p.lower() for p in path.parts]
+    if "goldclub" not in parts:
+        return None
+    idx = parts.index("goldclub")
+    return Path(*path.parts[: idx + 1])
+
+
+def _find_slot_install_root() -> Path | None:
+    """Return the slot game folder when OneHand.exe (or game-start.exe) is present."""
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add(raw: Path) -> None:
+        key = str(raw).casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(raw)
+
+    for drive in _PRIORITY_GAME_DRIVES:
+        add(Path(f"{drive}\\Goldclub\\slot"))
+    add(LOCAL_GOLDCLUB_ROOT / "slot")
+
+    markers = ("OneHand.exe", "bin/OneHand.exe", "game-start.exe")
+    for root in candidates:
+        for rel in markers:
+            if _path_exists_file(root / rel):
+                return root
+    return None
+
+
+def _find_roulette_install_root() -> Path | None:
+    """Return the roulette USB/cabinet root when ruleta/Ruleta.exe is present."""
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add(raw: Path) -> None:
+        key = str(raw).casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(raw)
+
+    for drive in _PRIORITY_GAME_DRIVES:
+        add(Path(f"{drive}\\"))
+        add(Path(f"{drive}\\Goldclub"))
+
+    for root in candidates:
+        ruleta = root / "ruleta"
+        if not _path_exists_dir(ruleta):
+            continue
+        for name in ("Ruleta.exe", "ruleta.exe"):
+            if _path_exists_file(ruleta / name):
+                return root
+        try:
+            for path in ruleta.glob("*.exe"):
+                if path.name.lower() == "ruleta.exe":
+                    return root
+        except OSError:
+            continue
+    return None
+
+
+def _log_root_for_slot_install(install_root: Path) -> Path | None:
+    goldclub = _goldclub_root_from_path(install_root)
+    candidates: list[Path] = []
+    if goldclub is not None:
+        candidates.append(goldclub / "var" / "log")
+    parent = install_root.parent
+    if parent != install_root:
+        candidates.append(parent / "var" / "log")
+    candidates.extend(
+        (
+            Path(r"G:\Goldclub\var\log"),
+            LOCAL_LOG_ROOT,
+        )
+    )
+    return _first_existing_dir(tuple(candidates))
+
+
+def _log_root_for_roulette_install(install_root: Path) -> Path | None:
+    goldclub = _goldclub_root_from_path(install_root)
+    candidates: list[Path] = []
+    if goldclub is not None:
+        candidates.extend(
+            (
+                goldclub / "var" / "log" / "ruleta",
+                goldclub / "var" / "log",
+            )
+        )
+    candidates.extend(
+        (
+            install_root / "var" / "log" / "ruleta",
+            install_root / "var" / "log",
+            Path(r"G:\Goldclub\var\log\ruleta"),
+            Path(r"G:\Goldclub\var\log"),
+            Path(r"D:\var\log\ruleta"),
+            Path(r"D:\var\log"),
+            Path(r"C:\Goldclub\var\log\ruleta"),
+            LOCAL_LOG_ROOT / "ruleta",
+            LOCAL_LOG_ROOT,
+        )
+    )
+    return _first_existing_dir(tuple(candidates))
+
+
+def discover_startup_scan_target(
+    *,
+    remote_ip: str | None = None,
+    exe_dir: Path | None = None,
+) -> StartupScanDiscovery:
+    """
+    Pick a scan root when the app starts.
+
+    1. USB log export ``log_DD_MM_YYYY`` next to the exe (if present)
+    2. Local slot install (``OneHand.exe`` under ``…\\Goldclub\\slot``) → ``…\\var\\log``
+    3. Local roulette install (``ruleta\\Ruleta.exe``) → ``…\\var\\log\\ruleta`` (or ``…\\var\\log``)
+    4. Remote UNC fallback (``\\\\<ip>\\c$\\Goldclub\\var\\log``)
+    """
+    portable = discover_portable_scan_roots(exe_dir=exe_dir)
+    for raw in portable:
+        folder = Path(raw)
+        if _RE_USB_LOG_FOLDER.match(folder.name or ""):
+            return StartupScanDiscovery(
+                mode="local",
+                scan_root=raw,
+                game_kind="export",
+            )
+
+    slot_install = _find_slot_install_root()
+    if slot_install is not None:
+        log_root = _log_root_for_slot_install(slot_install)
+        if log_root is not None:
+            return StartupScanDiscovery(
+                mode="local",
+                scan_root=str(log_root),
+                game_kind="slot",
+            )
+
+    roulette_install = _find_roulette_install_root()
+    if roulette_install is not None:
+        log_root = _log_root_for_roulette_install(roulette_install)
+        if log_root is not None:
+            return StartupScanDiscovery(
+                mode="local",
+                scan_root=str(log_root),
+                game_kind="roulette",
+            )
+
+    ip = (remote_ip or DEFAULT_REMOTE_IP).strip() or DEFAULT_REMOTE_IP
+    return StartupScanDiscovery(
+        mode="remote",
+        scan_root=format_unc_log_root(ip),
+        game_kind=None,
+        remote_ip=ip,
+    )
 
 
 def discover_portable_scan_roots(*, exe_dir: Path | None = None) -> tuple[str, ...]:

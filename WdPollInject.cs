@@ -130,8 +130,14 @@ internal static class WdPollInject
     private static byte[] _aftPayload = null;
     private static int _aftInjectAfterMs = 2500;
     private static volatile bool _aftInjected = false;
+    private static volatile bool _aftInterrogateInjected = false;
     private static long _templateReadyMs = -1;
     private static long _aftInjectedAtMs = -1;
+    private const int PostAftPollMs = 5000;
+    // Host AFT status interrogate (transfer code 0xFF, index FF) — verbatim from IGT capture
+    // on .90: qGMID1:017202FF000F22 → bridge frame 1B + SAS bytes (aft/protocol-raw-traffic.md §1).
+    private static readonly byte[] AftInterrogateBridgePayload = new byte[] { 0x1B, 0x01, 0x72, 0x02, 0xFF, 0x00, 0x0F, 0x22 };
+    private const int AftInterrogateAfterMs = 1500;
 
     private static void CloseOnce()
     {
@@ -230,7 +236,7 @@ internal static class WdPollInject
         Log("FILTER {0}", filter);
         if (mode == "passthru") { Log("[*] passthru: forwards every packet unchanged (delta stays 0); injects nothing."); }
         else if (mode == "poll") { Log("[*] poll: injects the alternating cadence server->client every {0}ms; maintains delta + ack rewrite; drains on exit.", intervalMs); }
-        else { Log("[*] pollaft: poll cadence every {0}ms, then one AFT inject after {1}ms from template ready; drains on exit.", intervalMs, _aftInjectAfterMs); }
+        else { Log("[*] pollaft: poll cadence every {0}ms, then one AFT inject after {1}ms from template ready; interrogate @ +{2}ms post-AFT; drains on exit.", intervalMs, _aftInjectAfterMs, AftInterrogateAfterMs); }
 
         _handle = WinDivertOpen(filter, LAYER_NETWORK, 0, FLAG_NONE);
         if (_handle == INVALID || _handle == IntPtr.Zero)
@@ -245,6 +251,15 @@ internal static class WdPollInject
 
         var sw = Stopwatch.StartNew();
         int drainStartMs = (runSeconds - drainReserveSec) * 1000;
+        if (mode == "pollaft")
+        {
+            int minDrainStartMs = _aftInjectAfterMs + PostAftPollMs + intervalMs;
+            if (drainStartMs < minDrainStartMs)
+            {
+                Log("pollaft: deferring recv-thread drain start from {0}ms to {1}ms (AFT delay + post-AFT polls)", drainStartMs, minDrainStartMs);
+                drainStartMs = minDrainStartMs;
+            }
+        }
 
         long injected = 0, s2c = 0, c2s = 0, swallowed = 0, s2cTemplates = 0, c2sTemplates = 0;
         int frameIdx = 0;
@@ -298,7 +313,7 @@ internal static class WdPollInject
                             continue;
                         }
 
-                        // pollaft: one AFT bridge payload after warmup; then drain (no more polls).
+                        // pollaft: one AFT bridge payload after warmup; keep polling post-AFT so WAT can commit.
                         if (mode == "pollaft" && !_aftInjected && _aftPayload != null &&
                             _templateReadyMs >= 0 &&
                             (now - _templateReadyMs) >= _aftInjectAfterMs)
@@ -309,15 +324,34 @@ internal static class WdPollInject
                             _delta += _aftPayload.Length;
                             _aftInjected = true;
                             _aftInjectedAtMs = sw.ElapsedMilliseconds;
-                            _draining = true;
                             Log("AFT_INJECTED clientSeq={0} bytes={1} delta={2} at {3}ms",
                                 aftSeq, _aftPayload.Length, _delta, sw.ElapsedMilliseconds);
-                            Log("DRAIN begin after AFT (pollaft); ceasing further poll injects");
+                            Log("Continuing general polls for {0}ms post-AFT (WAT commit needs steady 80/81)", PostAftPollMs);
                             continue;
                         }
 
-                        if (mode == "pollaft" && _aftInjected)
+                        // Phase-A experiment: host interrogate ~1.5s after transfer (IGT reporting tail).
+                        if (mode == "pollaft" && _aftInjected && !_aftInterrogateInjected &&
+                            (now - _aftInjectedAtMs) >= AftInterrogateAfterMs)
                         {
+                            uint iqSeq = (uint)(_serverSndNxt + (uint)_delta);
+                            uint iqAck = _haveClient ? _clientSndNxt : _s2cAckField;
+                            SendS2cData(iqSeq, iqAck, _serverWindow, AftInterrogateBridgePayload, 0, AftInterrogateBridgePayload.Length);
+                            _delta += AftInterrogateBridgePayload.Length;
+                            _aftInterrogateInjected = true;
+                            Log("AFT_INTERROGATE_INJECTED clientSeq={0} bytes={1} delta={2} at {3}ms (1B017202FF000F22)",
+                                iqSeq, AftInterrogateBridgePayload.Length, _delta, sw.ElapsedMilliseconds);
+                            continue;
+                        }
+
+                        if (mode == "pollaft" && _aftInjected &&
+                            (now - _aftInjectedAtMs) >= PostAftPollMs)
+                        {
+                            if (!_draining)
+                            {
+                                _draining = true;
+                                Log("Post-AFT poll window complete; DRAIN begin (delta={0})", _delta);
+                            }
                             continue;
                         }
 
@@ -466,11 +500,15 @@ internal static class WdPollInject
             _running = false;
             CloseOnce();
             long finalDelta; lock (_sync) { finalDelta = _delta; }
-            Log("DONE mode={0} injected={1} aftInjected={2} s2c={3} c2s={4} swallowed={5} s2cTemplates={6} c2sTemplates={7} finalDelta={8}",
-                mode, injected, _aftInjected, s2c, c2s, swallowed, s2cTemplates, c2sTemplates, finalDelta);
+            Log("DONE mode={0} injected={1} aftInjected={2} aftInterrogateInjected={3} s2c={4} c2s={5} swallowed={6} s2cTemplates={7} c2sTemplates={8} finalDelta={9}",
+                mode, injected, _aftInjected, _aftInterrogateInjected, s2c, c2s, swallowed, s2cTemplates, c2sTemplates, finalDelta);
             if (mode == "pollaft" && !_aftInjected)
             {
                 Log("WARNING: pollaft finished without AFT_INJECTED (template/seq never ready, or run window too short).");
+            }
+            if (mode == "pollaft" && _aftInjected && !_aftInterrogateInjected)
+            {
+                Log("WARNING: pollaft finished without AFT_INTERROGATE_INJECTED (run window too short?).");
             }
             if (finalDelta != 0) { Log("WARNING: stopped with delta={0} -- the 31150 SAS link may RST/reconnect (recoverable churn).", finalDelta); }
             else { Log("Connection left in sync (delta=0)."); }

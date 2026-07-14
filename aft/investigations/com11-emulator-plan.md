@@ -129,7 +129,7 @@ violation. That single fact drives the option ranking.
 | A | **External serial peer on the physical MUX** (a real or emulated SAS host wired to the upstream/2nd channel of the `SI 2CH` MUX, polling `80`/`81`) | Possible — this is literally what `.90` has | Low on the cabinet OS (no local process), but needs **hardware/cabling** + a real SAS host poller | Medium: must sustain correct cadence, link-sync toggle, framing/CRC, and an interrogate state machine (see `hop1`) | **None on the cabinet.** Needs external kit. |
 | B | **Local process replaces/stops CommCtrlSAS**, opens COM11 as host, and bridges to Aurum on `31100/31150` directly | Technically feasible | **High** — requires stopping CommCtrlSAS (**forbidden this round**) and re-implementing the bridge + MUX/station negotiation | High: wedges the live session; must reproduce `CheckForMux`, `CH/SA`, `0x1B` framing exactly | Stop CommCtrlSAS; take over COM11 + 4 ports. **Disallowed now.** |
 | C | **Local virtual serial pair / null-modem** feeding CommCtrlSAS | **Not feasible without stopping/reconfiguring CommCtrlSAS** | High | High: CommCtrlSAS is pinned to the real `\\.\COM11` device via `CommControler.ini`; inserting com0com/virtual pair means changing the port and restarting the service | Reconfigure + restart CommCtrlSAS. **Disallowed now.** |
-| D | **WinDivert loopback poll-injector** — synthesize `1B80`/`1B81` into the live `31150 → Aurum` TCP connection (server→client) using the proven in-stream seq-splice; let Aurum reply `00` on `31100` as usual | **Most feasible without touching COM11 or services** | **Low** — purely a loopback packet experiment on `.171`, same class as the working `0x72` inject | Medium: must maintain a send-delta on the `31150→Aurum` stream and rewrite CommCtrlSAS's subsequent seq/acks (the splice discipline already in `WdRespond`/`ButtonInject`); a desync just RSTs the SAS link (recoverable). **Whether Aurum accepts injected polls and comes online is UNPROVEN — hypothesis.** | **None.** No COM11, no service stop, no config edit. |
+| D | **WinDivert loopback poll-injector** — synthesize `1B80`/`1B81` into the live `31150 → Aurum` TCP connection (server→client) using the proven in-stream seq-splice; let Aurum reply `00` on `31100` as usual | **PROVEN on `.90` (2026-07-09)** — txn 83/84, no physical polls | **Low** — purely loopback; bridge L0/L1 must be up | Medium: delta splice; drain after AFT to avoid TCP wedge | **None.** No COM11, no service stop. See [`no-physical-polls-layers.md`](../no-physical-polls-layers.md). |
 
 ### Recommendation
 
@@ -257,9 +257,8 @@ live probe confirms them.
 ### Hypotheses (must be validated, never shipped as truth)
 
 - **[H1]** Injecting `1B80`/`1B81` into the `31150 → Aurum` TCP stream (Option D)
-  will make Aurum treat the session as online. *Unproven — the previous
-  responder saw no polls, and Aurum may key "online" off CommCtrlSAS's real
-  relay rather than raw stream bytes.*
+  makes Aurum treat the session as online. **PROVEN on `.90` 2026-07-09** — sasmsgr
+  `qGMID1:80/81` @ 200 ms and txn 83/84 AFT ingest + credit without physical IGT.
 - **[H2]** ~200 ms cadence is "fast enough" to hold online; the real link-sync
   timeout is unknown. Start at the observed ~200 ms; do not go faster.
 - **[H3]** The send-delta splice on the server→client (`31150→Aurum`) direction

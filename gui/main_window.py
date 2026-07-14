@@ -134,7 +134,7 @@ from gui.network_case_pack_worker import (
 from gui.screen_capture_worker import ScreenCaptureEmitter, schedule_remote_screen_capture
 from gui.ram_clear_worker import RamClearEmitter, schedule_ram_clear
 from gui.screenshot_preview_dialog import ScreenshotPreviewDialog
-from gui.log_highlighter import LogSyntaxHighlighter
+from gui.notepad_pp import attach_open_with_npp_menu, extend_menu_with_npp_action, open_with_notepad_pp
 from gui.scan_worker import ScanWorker
 from gui.help_dialog import HelpDialog
 from gui.settings_dialog import SettingsDialog
@@ -788,10 +788,10 @@ class MainWindow(QMainWindow):
         )
         self._ai_enhance_btn.clicked.connect(self._on_ai_enhance_clicked)
         log_header.addWidget(self._ai_enhance_btn, alignment=Qt.AlignmentFlag.AlignRight)
-        self._open_notepad_btn = QPushButton("Open in Notepad")
+        self._open_notepad_btn = QPushButton("Open in Notepad++")
         self._open_notepad_btn.setEnabled(False)
         self._open_notepad_btn.setToolTip(
-            "Open the full log file in Windows Notepad (UNC paths supported when reachable)."
+            "Open the full log file in Notepad++ (UNC paths supported when reachable)."
         )
         self._open_notepad_btn.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton)
@@ -809,6 +809,11 @@ class MainWindow(QMainWindow):
         )
         self._inspector_log_highlighter = LogSyntaxHighlighter(
             self._inspector_log.document(), _pal
+        )
+        attach_open_with_npp_menu(
+            self._inspector_log,
+            path_provider=self._selected_incident_log_path,
+            parent=self,
         )
 
         split.addWidget(self._table)
@@ -2130,7 +2135,19 @@ class MainWindow(QMainWindow):
                 lambda checked=False, iid=inc.id: self._vm.remove_bookmark(iid)
             )
             menu.addAction(act_rm)
+        extend_menu_with_npp_action(
+            menu,
+            self,
+            lambda: inc.log_file_path,
+            label="Open log with Notepad++",
+        )
         menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _selected_incident_log_path(self) -> str | None:
+        inc = self._vm.selected_incident()
+        if isinstance(inc, Incident):
+            return (inc.log_file_path or "").strip() or None
+        return None
 
     def _on_show_surrounding_context(self, inc: Incident) -> None:
         unfiltered = self._vm.unfiltered_incidents()
@@ -2769,38 +2786,9 @@ class MainWindow(QMainWindow):
         raw = (inc.log_file_path or "").strip()
         if not raw:
             return
-        normalized = os.path.normpath(raw)
-        p = Path(normalized)
-        try:
-            if not p.is_file():
-                QMessageBox.warning(
-                    self,
-                    "Open in Notepad",
-                    f"The file does not exist or is not reachable:\n{normalized}",
-                )
-                return
-        except OSError as e:
-            QMessageBox.warning(
-                self,
-                "Open in Notepad",
-                f"Could not access the path:\n{normalized}\n\n{e}",
-            )
-            return
-        if sys.platform != "win32":
-            QMessageBox.information(
-                self,
-                "Open in Notepad",
-                "Launching Notepad is only implemented on Windows.",
-            )
-            return
-        try:
-            subprocess.Popen(["notepad.exe", normalized], shell=False)
-        except OSError as e:
-            QMessageBox.warning(
-                self,
-                "Open in Notepad",
-                f"Could not start Notepad:\n{e}",
-            )
+        ok, msg = open_with_notepad_pp(raw)
+        if not ok:
+            QMessageBox.warning(self, "Open in Notepad++", msg)
 
     def _on_create_case_pack_clicked(self) -> None:
         rows = self._vm.filtered_incidents_flat()

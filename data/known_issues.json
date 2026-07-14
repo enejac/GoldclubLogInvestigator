@@ -23,6 +23,68 @@
       "jiraBugKey": "TBD-GC-XXXX",
       "jiraTestKeys": ["TBD-GC-TC-XXXX", "TBD-GC-TC-YYYY"],
       "localTicket": "issues/GCI-AFT-001-transfer-type-naming.md"
+    },
+    {
+      "id": "GCI-ROULETTE-001",
+      "name": "Ruleta BiOS plugin missing",
+      "triggerPatterns": [
+        "GoldClub\\.BiOS\\.Plugin\\.Ruleta\\.dll",
+        "Plugin\\.Ruleta\\.dll"
+      ],
+      "severityFilter": "CRITICAL",
+      "probableCause": "Known issue GCI-ROULETTE-001: Ruleta BiOS plugin DLL absent from C:\\goldclub\\data\\bios\\plugins. Redeploy BiOS plugin pack or restore from known-good image.",
+      "jiraBugKey": "TBD-GC-ROULETTE-001",
+      "jiraTestKeys": [],
+      "localTicket": null
+    },
+    {
+      "id": "GCI-ROULETTE-002",
+      "name": "SAS controller config missing",
+      "triggerPatterns": [
+        "CONFIG FOR SASControler\\d+ NOT FOUND"
+      ],
+      "severityFilter": "CRITICAL",
+      "probableCause": "Known issue GCI-ROULETTE-002: Aurum SASControler messenger config not found. Verify AurumSetup.xml and config\\etc\\application\\aurum\\SASControler1\\.",
+      "jiraBugKey": "TBD-GC-ROULETTE-002",
+      "jiraTestKeys": [],
+      "localTicket": null
+    },
+    {
+      "id": "GCI-ROULETTE-003",
+      "name": "Ruleta MessageDispatcher fault",
+      "triggerPatterns": [
+        "MessageDispatcher\\.PostMessage"
+      ],
+      "severityFilter": "CRITICAL",
+      "probableCause": "Known issue GCI-ROULETTE-003: Ruleta GUI message dispatch fault — often InvalidOperationException (sequence empty) during spin/bonus. Collect ruleta\\ log + preceding WARN/INFO.",
+      "jiraBugKey": "TBD-GC-ROULETTE-003",
+      "jiraTestKeys": [],
+      "localTicket": null
+    },
+    {
+      "id": "GCI-ROULETTE-004",
+      "name": "Empty stream deserialization",
+      "triggerPatterns": [
+        "Attempting to deserialize an empty stream"
+      ],
+      "severityFilter": "CRITICAL",
+      "probableCause": "Known issue GCI-ROULETTE-004: Persisted state blob empty or corrupt — check var\\state, recent factory reset, and config save timing.",
+      "jiraBugKey": "TBD-GC-ROULETTE-004",
+      "jiraTestKeys": [],
+      "localTicket": null
+    },
+    {
+      "id": "GCI-ROULETTE-005",
+      "name": "Aurum setup XML missing",
+      "triggerPatterns": [
+        "AurumSetup\\.xml",
+        "FileNotFoundException.*AurumSetup"
+      ],
+      "severityFilter": "CRITICAL",
+      "probableCause": "Known issue GCI-ROULETTE-005: AurumSetup.xml missing — verify aurum config path and factory deploy.",
+      "jiraBugKey": "TBD-GC-ROULETTE-005",
+      "jiraTestKeys": [],
+      "localTicket": null
     }
   ]
 }

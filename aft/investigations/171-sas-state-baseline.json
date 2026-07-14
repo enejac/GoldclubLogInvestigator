@@ -1,0 +1,85 @@
+{
+  "CapturedAtUtc": "2026-07-10T12:00:00Z",
+  "Label": "before",
+  "CabinetIp": "10.0.0.171",
+  "EgmId": "GCC_ST_19737_01",
+  "GstId": "GST19737",
+  "Smb": { "Status": "OK", "Detail": "\\\\10.0.0.171\\c$ + Goldclub\\var\\log" },
+  "ServiceQuery": {
+    "Method": "sc.exe \\\\10.0.0.171 query (single pass; no PsExec)",
+    "Services": [
+      { "Name": "GoldClub.Aurum.Services", "State": "RUNNING", "Running": true },
+      { "Name": "GoldClub Serial Communication Gateway", "State": "RUNNING", "Running": true },
+      { "Name": "GoldClub Serial Communication Gateway SAS", "State": "RUNNING", "Running": true },
+      { "Name": "GoldClub Hardware Subsystem", "State": "RUNNING", "Running": true },
+      { "Name": "GoldClub.Logging.LogDaemon", "State": "RUNNING", "Running": true }
+    ]
+  },
+  "Runtime": {
+    "Transport": "Unavailable",
+    "Error": "WinRM not in TrustedHosts for .171; process/TCP not probed remotely",
+    "CommCtrlSAS": null,
+    "Tcp31100": [],
+    "Tcp31150": [],
+    "Tcp40000": []
+  },
+  "Signals": {
+    "SasmsgrLogDirExists": false,
+    "HasQGMIDPollsToday": false,
+    "CommCtrlSasBridge311": false,
+    "AllKeyServicesRunning": true,
+    "SlotLogCommunicationsOffline": true
+  },
+  "XmlConfigs": [
+    { "RelativePath": "slot\\themes\\mgconfig.xml", "Exists": true, "SizeBytes": 116918, "Sha256": "AD36B60EA838D07F8226B4BB3679445A5C664B3B7F38CA0DCBC072A4BE2C1DFF" },
+    { "RelativePath": "services\\aurum\\config\\SASControler1\\SASsetupData.xml", "Exists": true, "SizeBytes": 1506, "Sha256": "FE840740403CCA2A414635EBE2E345CD56464828FB6527AD279104C1940CD544" },
+    { "RelativePath": "services\\aurum\\config\\SASControler1\\ClientsSet.xml", "Exists": true, "SizeBytes": 1899, "Sha256": "7D2B762537D8C233" },
+    { "RelativePath": "services\\aurum\\config\\AurumSetup.xml", "Exists": true, "SizeBytes": 22027, "Sha256": "6F0E3EA2B8BFDB9DC16B10191D8CE64A933FC404BB7EA49719CB239C84BEECAF" },
+    { "RelativePath": "services\\CommCtrlSAS\\CommControler.ini", "Exists": true, "SizeBytes": 232, "Sha256": "28EF12FCCC936391105CBAFE65003596C6212F1117D69F89449C3B636653A3AF", "Note": "COM11 @ 921600 (identical to .90)" },
+    { "RelativePath": "services\\CommCtrl\\CommControler.ini", "Exists": true, "SizeBytes": 472, "Sha256": "54897D4E4D0600C2D068A33619FC71E912DAD239286A8AB983706ECB8B6206B7" },
+    { "RelativePath": "var\\run\\taskhost.1\\CommCtrlSAS.xml", "Exists": true, "SizeBytes": 271, "Sha256": "6206FEE9AC04B1939FB09419960450D0BCD7E92F0342D085108D444337A85041" }
+  ],
+  "AurumSas": {
+    "SASControler1": {
+      "Enabled": "true",
+      "ServiceURI": "http://GST19737:50011/SASControler1",
+      "ConfigurationId": "49",
+      "HasWatAccounts": false
+    },
+    "ChannelDevices": [
+      { "DeviceClass": "noteAcceptor", "DeviceId": "0", "Enabled": "false", "OwnerHostId": "0", "LastConfigurationChange": "0" },
+      { "DeviceClass": "handpay", "DeviceId": "0", "Enabled": "false", "OwnerHostId": "0", "LastConfigurationChange": "0" },
+      { "DeviceClass": "bonus", "DeviceId": "0", "Enabled": "false", "OwnerHostId": "0", "LastConfigurationChange": "0" },
+      { "DeviceClass": "bonus", "DeviceId": "1", "Enabled": "false", "OwnerHostId": "0", "LastConfigurationChange": "0" },
+      { "DeviceClass": "communications", "DeviceId": "1", "Enabled": "false", "OwnerHostId": "1", "LastConfigurationChange": "0", "RequiredForPlay": "true" },
+      { "DeviceClass": "voucher", "DeviceId": "0", "Enabled": "false", "OwnerHostId": "0", "LastConfigurationChange": "0" },
+      { "DeviceClass": "WAT", "DeviceId": "0", "Enabled": "false", "OwnerHostId": "0", "LastConfigurationChange": "0" }
+    ],
+    "CommunicationsDevices": [
+      { "EgmId": "GCC_ST_19737_01", "DeviceId": "1", "Enabled": "false", "RequiredForPlay": "true", "RestartStatus": "HOST_ENABLED", "StopWhenNoCommunication": "true" }
+    ]
+  },
+  "Logs": {
+    "PollSignals": {
+      "SasmsgrLogDir": null,
+      "TodayLog": null,
+      "Matches": [],
+      "LastPollLine": null
+    },
+    "LogTails": [
+      { "Path": "GoldClub.Aurum.Services SASControler1\\2026-07-10.log", "Exists": true, "LastLine": "2026-07-10T12:26:08.011+01:00 INFO [:] device GCC_ST_19737_01.0.optionConfig", "Note": "device registration burst; no sasmsgr sibling folder" },
+      { "Path": "CommCtrlSAS\\2026-07-10.log", "Exists": true, "LastLine": "2026-07-10T12:24:23.190+01:00 INFO [:3204] 10849988 Listening on port 40000", "Note": "port 40000 only; NO 31100/31150 bridge entries" },
+      { "Path": "SlotLog\\2026-07-10.log", "Exists": true, "LastLine": "2026-07-10T12:35:05.628+01:00 INFO [SlotMachine] ... Seleccione un juego", "Note": "earlier: machine locked (communications offline)" }
+    ]
+  },
+  "Notes": {
+    "ComPortVsSmb": [
+      "SMB C$ (\\\\10.0.0.171\\c$) = network file access to the CABINET disk. Admin share working.",
+      "COM4 on the HOST workstation = local USB/serial on YOUR PC, used by AFT inject / IGT SASTest.",
+      "com_port_blocked / PermissionError on COM4 = HOST cannot open that serial port (another app holds it, wrong port, or driver issue).",
+      "This is NOT related to cabinet SMB admin share access."
+    ],
+    "PsExec": "Not used for this capture. sc.exe + SMB only; PsExec to .171 often hangs on connect.",
+    "SasChannelDialog": "User about to enable validation/cashless/handpay/bonusing/note acceptor via SAS channel functionality UI. Expect AurumSetup.xml EgmsDevices OwnerHostId/LastConfigurationChange and possibly new sasmsgr log activity after Apply."
+  }
+}

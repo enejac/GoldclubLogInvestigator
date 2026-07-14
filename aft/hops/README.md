@@ -2,17 +2,18 @@
 
 Lab cabinet: **GoldClub Aurum EGM @ 10.0.0.90, asset 777**. Per-hop architecture mapping for AFT/WAT robustness QA.
 
-Verified chain (two successful $1,000 promo transfers on 2026-06-15: via the IGT tester UI, and via WinDivert in-stream injection **without tester UI action** — txn 23 @ 14:43:11 and txn 41 @ 15:00:30; SAS host must still be connected and polling):
+Verified chain (promo transfers on `.90`; **2026-07-09** full sim without physical polls — txn 83/84):
 
 ```
-SAS host COM11 ─serial SAS─┐
-                           ├▶ CommCtrlSAS.exe ─TCP 31100/31150 (0x1B)─▶ Aurum WAT2AFT ─▶ AFT XML ─▶ OneHand ─▶ SlotLog ─▶ verification PASS
-WinDivert inject (0x72 only) ┘    [Hop 2]                                  [Hop 3]         (commit)    [Hop 4]      [Hop 5]
-   into live 31150→ephemeral
-   [Hop 2, in-stream]
+                    ┌── Option D: WdPollInject (1B81/1B80 @ 200ms + pollaft 0x72) ──┐
+                    │    NO physical IGT / COM11 polls required (proven 2026-07-09)  │
+SAS host MUX upstream ─serial 80/81─┐                                              │
+ (organic .90 default)              ├▶ CommCtrlSAS ─TCP 31100/31150 (0x1B)─▶ Aurum WAT2AFT ─▶ AFT XML ─▶ OneHand ─▶ SlotLog
+                                    │         [Hop 2 bridge must be LISTENING+ESTABLISHED]
+WdInject only (legacy) ─────────────┘    inject 0x72 into live 31150→ephemeral when polls already active
 ```
 
-The WinDivert path injects directly into the live Hop 2 stream (see the decouple verdict below and [`../RUNBOOK.md`](../RUNBOOK.md)); the hop-mapping docs themselves are read-only analysis.
+Layer reference: [`no-physical-polls-layers.md`](../no-physical-polls-layers.md).
 
 ## Per-hop files
 
@@ -31,7 +32,7 @@ The working decouple point is **Hop 2 (the CommCtrlSAS → Aurum bridge), via Wi
 | Hop | Decouple difficulty | Why |
 |-----|--------------------|-----|
 | 1 — IGT ↔ CommCtrlSAS (serial) | **HARD** | Needs a real serial SAS host emulator on COM11: real-time polling, link sync, CRC-16/KERMIT, stateful transfer/interrogate. Not a socket write. |
-| 2 — Bridge ↔ Aurum (TCP) | **WORKING ✅ (in-stream WinDivert)** | A NEW TCP socket to `31150` still fails (accepts bytes but is **not merged** into the live stream — no `qGMID1:`, no transfer). The proven fix is to inject a TCP segment INTO the EXISTING `31150 → ephemeral` flow at `SEQ = origSeq + origPayloadLen` via WinDivert, so Aurum reads it as the next in-order SAS bytes and commits. Tooling: `../../Invoke-WinDivertAft.ps1` / `../../WdInject.cs` (wrapper `../../Send-TestAft1000.ps1 -Send`). |
+| 2 — Bridge ↔ Aurum (TCP) | **WORKING ✅ (in-stream WinDivert)** | **Poll sim:** `WdPollInject` `pollaft` — no physical polls (txn 83/84, 2026-07-09). **AFT-only:** `WdInject` when polls already active. NEW socket to `31150` fails. Tooling: `Invoke-WinDivertAft.ps1`, `WdPollInject.cs`, `WdInject.cs`. |
 | 3 — Aurum WAT2AFT | **FAILED for a new transfer** | The direct .NET-remoting `WAT.requestTransfer` to `http://GST20664:50011/SASControler1` reaches the engine but `RequestTransferPosted` throws `NullReferenceException` when minting a wholly new transaction id. Does not complete a fresh transfer. |
 | 4 — OneHand → SlotLog | **N/A** | Output sink. Forging a log line creates no real credit and the AFT↔SlotLog reconciliation flags it. |
 | 5 — Verification | **EASY (already done)** | Pure read-only oracle; "decoupling" just means automation, which exists. Safest layer to extend. |

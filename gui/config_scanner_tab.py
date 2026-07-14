@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from config_manager import SettingsManager
+from config_scanner.scanner import snapshot_content_root
+from gui.notepad_pp import attach_open_with_npp_menu, extend_menu_with_npp_action, open_with_notepad_pp
 from config_scanner.service import (
     CompareResult,
     ConfigScannerService,
@@ -30,7 +31,6 @@ from config_scanner.service import (
     SnapshotInfo,
     scan_scope_zero_diff_hint,
 )
-from config_scanner.scanner import snapshot_content_root
 from gui.config_scanner_worker import (
     ConfigScannerEmitter,
     SnapshotLoadResult,
@@ -156,6 +156,7 @@ class ConfigScannerTabWidget(QFrame):
 
         self._snapshots: list[SnapshotInfo] = []
         self._last_report_path: Path | None = None
+        self._last_compare_target_snapshot: str | None = None
         self._busy = False
         self._startup_detect_done = False
         self._initial_snapshot_load_done = False
@@ -279,6 +280,43 @@ class ConfigScannerTabWidget(QFrame):
         self._log.setPlaceholderText("Progress and errors…")
         self._log.setMaximumBlockCount(2000)
         root.addWidget(self._log, stretch=1)
+
+        attach_open_with_npp_menu(
+            self._log,
+            path_provider=lambda: self._last_report_path,
+            parent=self,
+            label="Open report with Notepad++",
+        )
+        attach_open_with_npp_menu(
+            self._changed_list,
+            path_provider=self._changed_list_path_at_cursor,
+            parent=self,
+            label="Open file with Notepad++",
+        )
+
+    def _changed_list_path_at_cursor(self) -> Path | None:
+        if self._last_report_path and self._last_report_path.is_file():
+            cursor = self._changed_list.textCursor()
+            line = cursor.block().text().strip()
+            if not line or line.startswith("(") or line.startswith("…"):
+                return self._last_report_path
+            if line.startswith("  "):
+                return self._last_report_path
+            parts = line.split("\t", 1)
+            rel = (parts[0] if len(parts) == 1 else parts[1]).strip()
+            if not rel:
+                return self._last_report_path
+            if self._last_compare_target_snapshot:
+                snap_dir = self._service.get_snapshots_dir() / self._last_compare_target_snapshot
+                content_root = snapshot_content_root(snap_dir)
+                if content_root is not None:
+                    candidate = content_root / rel.replace("/", "\\")
+                    try:
+                        if candidate.is_file():
+                            return candidate
+                    except OSError:
+                        pass
+        return self._last_report_path if self._last_report_path and self._last_report_path.is_file() else None
 
     def _ensure_initial_snapshot_load(self) -> None:
         if self._initial_snapshot_load_done:
@@ -407,6 +445,12 @@ class ConfigScannerTabWidget(QFrame):
             lambda checked=False, name=snapshot.name: self._confirm_delete_snapshot(name)
         )
         menu.addAction(delete_action)
+        extend_menu_with_npp_action(
+            menu,
+            self,
+            lambda: self._last_report_path,
+            label="Open last report with Notepad++",
+        )
         menu.exec(self._snapshot_table.viewport().mapToGlobal(pos))
 
     def _confirm_delete_snapshot(self, snapshot_name: str) -> None:
@@ -838,6 +882,7 @@ class ConfigScannerTabWidget(QFrame):
         if ok and isinstance(result, CompareResult):
             self._log.appendPlainText(f"OK: Compare finished ({result.report_path.name}).")
             self._last_report_path = result.report_path
+            self._last_compare_target_snapshot = result.target_snapshot
             self._open_report_btn.setEnabled(True)
             summary = result.summary
             warning_text = ""
@@ -860,7 +905,9 @@ class ConfigScannerTabWidget(QFrame):
         if not self._last_report_path or not self._last_report_path.is_file():
             QMessageBox.warning(self, "Config Scanner", "No report available yet.")
             return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._last_report_path.resolve())))
+        ok, msg = open_with_notepad_pp(self._last_report_path)
+        if not ok:
+            QMessageBox.warning(self, "Config Scanner", msg)
 
     def _open_folder(self, folder: Path) -> None:
         path = folder.resolve()

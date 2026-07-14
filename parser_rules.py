@@ -112,6 +112,42 @@ KNOWN_RULES: list[TriageRule] = [
         ),
     ),
     TriageRule(
+        name="Ruleta BiOS Plugin Missing",
+        trigger_text="GoldClub.BiOS.Plugin.Ruleta.dll",
+        severity_filter="CRITICAL",
+        probable_cause=(
+            "CRITICAL: Ruleta BiOS plugin DLL missing from C:\\goldclub\\data\\bios\\plugins — "
+            "verify image deploy and BiOS plugin package after upgrade."
+        ),
+    ),
+    TriageRule(
+        name="SAS Controller Config Missing",
+        trigger_text="CONFIG FOR SASControler",
+        severity_filter="CRITICAL",
+        probable_cause=(
+            "CRITICAL: Aurum SAS messenger config missing — check AurumSetup.xml and "
+            "config\\etc\\application\\aurum\\SASControler1\\ on the roulette cabinet."
+        ),
+    ),
+    TriageRule(
+        name="Ruleta MessageDispatcher Fault",
+        trigger_text="MessageDispatcher.PostMessage",
+        severity_filter="CRITICAL",
+        probable_cause=(
+            "CRITICAL: Ruleta UI message-thread fault (often InvalidOperationException / empty "
+            "sequence during spin or bonus). Capture ruleta\\ logs and state immediately before fault."
+        ),
+    ),
+    TriageRule(
+        name="Empty Stream Deserialization",
+        trigger_text="Attempting to deserialize an empty stream",
+        severity_filter="CRITICAL",
+        probable_cause=(
+            "CRITICAL: Corrupt or empty persisted state blob — inspect var\\state caches and "
+            "recent factory reset / config save before reboot."
+        ),
+    ),
+    TriageRule(
         name="Dallas Key Shutdown Cascade",
         trigger_text=(
             "OneHand.HardwareController.HWController.UnSubcribeToDallasKeyEvents()"

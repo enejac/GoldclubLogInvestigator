@@ -1,0 +1,53 @@
+{
+  "CapturedAtUtc": "2026-07-10T12:00:00Z",
+  "Label": "reference",
+  "CabinetIp": "10.0.0.90",
+  "EgmId": "GCC_ST_20664_01",
+  "GstId": "GST20664",
+  "Smb": { "Status": "OK", "Detail": "\\\\10.0.0.90\\c$ + Goldclub\\var\\log" },
+  "ServiceQuery": {
+    "Method": "sc.exe \\\\10.0.0.90 query (single pass; no PsExec)",
+    "Services": [
+      { "Name": "GoldClub.Aurum.Services", "State": "RUNNING", "Running": true },
+      { "Name": "GoldClub Serial Communication Gateway", "State": "RUNNING", "Running": true },
+      { "Name": "GoldClub Serial Communication Gateway SAS", "State": "RUNNING", "Running": true },
+      { "Name": "GoldClub Hardware Subsystem", "State": "RUNNING", "Running": true },
+      { "Name": "GoldClub.Logging.LogDaemon", "State": "RUNNING", "Running": true }
+    ]
+  },
+  "Runtime": {
+    "Transport": "WinRM",
+    "CommCtrlSAS": true,
+    "CommCtrl": true,
+    "Tcp31100": ["Established:51488"],
+    "Tcp31150": ["Established:51489", "Listen:0"],
+    "Tcp40000": ["Listen:0"]
+  },
+  "Signals": {
+    "SasmsgrLogDirExists": true,
+    "HasQGMIDPollsToday": true,
+    "CommCtrlSasBridge311": true,
+    "AllKeyServicesRunning": true
+  },
+  "XmlConfigs": [
+    { "RelativePath": "services\\aurum\\config\\SASControler1\\SASsetupData.xml", "Sha256": "FE840740403CCA2A414635EBE2E345CD56464828FB6527AD279104C1940CD544" },
+    { "RelativePath": "services\\CommCtrlSAS\\CommControler.ini", "Sha256": "28EF12FCCC936391105CBAFE65003596C6212F1117D69F89449C3B636653A3AF" },
+    { "RelativePath": "services\\aurum\\config\\AurumSetup.xml", "Sha256": "EFDD68C2B41C075BAD6B890EC28163BF43D0A702F672E4A88871F51CD2260D11", "SizeBytes": 23398 }
+  ],
+  "AurumSas": {
+    "SASControler1": { "Enabled": "true", "ConfigurationId": "51", "HasWatAccounts": true },
+    "ChannelDevices": [
+      { "DeviceClass": "noteAcceptor", "OwnerHostId": "1", "LastConfigurationChange": "2" },
+      { "DeviceClass": "handpay", "OwnerHostId": "1", "LastConfigurationChange": "2" },
+      { "DeviceClass": "bonus", "OwnerHostId": "1", "LastConfigurationChange": "2" },
+      { "DeviceClass": "communications", "OwnerHostId": "1", "LastConfigurationChange": "0" }
+    ]
+  },
+  "Logs": {
+    "PollSignals": {
+      "SasmsgrLogDir": "\\\\10.0.0.90\\c$\\Goldclub\\var\\log\\GoldClub.Aurum.Services sasmsgr of SASControler1",
+      "LastPollLine": "2026-07-10T12:28:14.280+01:00 INFO [:] qGMID1:81"
+    },
+    "CommCtrlSASLastLine": "Connection 3115000006 established on port 31150"
+  }
+}

@@ -53,11 +53,39 @@ def suggest_case_pack_zip_name(
 
 
 def _format_investigation_log(incidents: list[Incident]) -> str:
+    from collections import Counter
+
+    from reporter import _normalize_signature
+
     lines: list[str] = [
         "Log Investigator — filtered incidents (case pack)",
         f"Count: {len(incidents)}",
         "",
     ]
+    if incidents:
+        sev = Counter((i.severity or "UNKNOWN").upper() for i in incidents)
+        lines.append("Severity breakdown:")
+        for level in ("CRITICAL", "MEDIUM", "LOW", "INFO"):
+            if sev.get(level):
+                lines.append(f"  {level}: {sev[level]}")
+        type_counts = Counter(i.error_type for i in incidents if i.error_type)
+        if type_counts:
+            lines.append("")
+            lines.append("Top error types:")
+            for err_type, count in type_counts.most_common(8):
+                lines.append(f"  {count}x {err_type}")
+        crit_sigs = Counter(
+            _normalize_signature(i)
+            for i in incidents
+            if (i.severity or "").upper() == "CRITICAL"
+        )
+        if crit_sigs:
+            lines.append("")
+            lines.append("Top critical signatures:")
+            for sig, count in crit_sigs.most_common(5):
+                lines.append(f"  {count}x {sig}")
+        lines.append("")
+
     for i, inc in enumerate(incidents, start=1):
         lines.append(f"--- Incident {i} ---")
         lines.append(f"timestamp:     {inc.timestamp_display()}")
@@ -88,6 +116,11 @@ def _generate_html_report(
     files_included: list[str],
     audit_text: str,
     ai_summary: str,
+    *,
+    severity_counts: dict[str, int] | None = None,
+    top_error_types: list[tuple[str, int]] | None = None,
+    top_subsystems: list[tuple[str, int]] | None = None,
+    incident_count: int = 0,
 ) -> str:
     """
     Build a dark-mode HTML incident summary for inclusion in the case zip.
@@ -108,6 +141,51 @@ def _generate_html_report(
     files_line = html.escape(", ".join(files_included) or "—", quote=False)
     safe_audit = html.escape(body, quote=False)
     safe_ai = html.escape((ai_summary or "").strip() or "—", quote=False)
+
+    stats_rows = ""
+    if severity_counts:
+        for level in ("CRITICAL", "MEDIUM", "LOW", "INFO"):
+            if severity_counts.get(level):
+                stats_rows += (
+                    f"<tr><th>{html.escape(level)}</th>"
+                    f"<td>{severity_counts[level]}</td></tr>"
+                )
+    type_rows = ""
+    for err_type, count in (top_error_types or [])[:8]:
+        type_rows += (
+            f"<tr><td>{html.escape(err_type)}</td><td>{count}</td></tr>"
+        )
+    subsystem_rows = ""
+    for sub, count in (top_subsystems or [])[:8]:
+        subsystem_rows += (
+            f"<tr><td>{html.escape(sub)}</td><td>{count}</td></tr>"
+        )
+
+    stats_block = ""
+    if stats_rows or type_rows or subsystem_rows:
+        stats_block = (
+            '<div class="card">\n'
+            "  <h3>Incident Statistics</h3>\n"
+            f'  <div class="muted">Total incidents in this pack: {incident_count}</div>\n'
+            "  <table>\n"
+            f"    {stats_rows}\n"
+            "  </table>\n"
+        )
+        if type_rows:
+            stats_block += (
+                "  <h4>Top error types</h4>\n"
+                "  <table><tr><th>Error type</th><th>Count</th></tr>\n"
+                f"    {type_rows}\n"
+                "  </table>\n"
+            )
+        if subsystem_rows:
+            stats_block += (
+                "  <h4>Top subsystems</h4>\n"
+                "  <table><tr><th>Subsystem</th><th>Count</th></tr>\n"
+                f"    {subsystem_rows}\n"
+                "  </table>\n"
+            )
+        stats_block += "</div>\n"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -180,7 +258,7 @@ pre.audit {{
     <tr><th>Attached Files</th><td>{files_line}</td></tr>
   </table>
 </div>
-
+{stats_block}
 <div class="card">
   <h3>Technical Executive Summary</h3>
   <div class="muted">Privacy-safe: generated from aggregated stats + audit status (no raw logs).</div>
@@ -398,6 +476,10 @@ def create_case_pack(
             files_included,
             audit_html_body,
             ai_text,
+            severity_counts=dict(sorted(sev_counts.items(), key=lambda x: x[0])),
+            top_error_types=top_error_types,
+            top_subsystems=top_games,
+            incident_count=len(incidents),
         )
         zf.writestr("IncidentReport.html", html_report.encode("utf-8"))
 

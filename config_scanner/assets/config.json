@@ -1,0 +1,17 @@
+{
+  "gameDrive": null,
+  "buildVersionRelativePath": "ruleta\\BuildVersion.txt",
+  "scanRoots": [
+    "config"
+  ],
+  "includePatterns": [
+    "*.xml",
+    "*.ini",
+    "*.conf",
+    "*.json",
+    "*.dat"
+  ],
+  "parallelWorkers": 8,
+  "snapshotsDir": "snapshots",
+  "reportsDir": "reports"
+}

@@ -11,6 +11,10 @@ last_session.json
 # Local AFT injector per-IP transport preference (WinRM vs PsExec)
 .aft-windivert-transport.json
 
+# Config scanner runtime output (manifests live on USB too)
+config-scanner/snapshots/
+config-scanner/reports/
+
 # Python / build artifacts
 __pycache__/
 *.py[cod]

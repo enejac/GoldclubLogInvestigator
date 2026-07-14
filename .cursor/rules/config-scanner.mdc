@@ -1,0 +1,33 @@
+---
+description: QA Config SHA1 scanner — GUI-only, config_scanner package, USB data folder
+globs:
+  - config_scanner/**
+  - config-scanner/**
+  - gui/config_scanner*.py
+---
+
+# Config Scanner (GUI-only)
+
+SHA1 snapshots of roulette **config** files for QA diff across sessions. **No PowerShell / `.bat` tools** — use Log Investigator **Config Scanner** tab.
+
+## Code
+
+- **Python package:** `config_scanner/` (scanner, xml_diff, report, service)
+- **GUI:** `gui/config_scanner_tab.py`, `gui/config_scanner_worker.py`
+- **Bundled defaults:** `config_scanner/assets/`
+- **Writable data:** `config-scanner/` next to `LogInvestigator.exe` (or repo root in dev)
+
+## USB
+
+```powershell
+.\build_exe.ps1
+.\deploy_usb.ps1
+```
+
+Double-click `H:\tools\LogInvestigator.exe` → **Config Scanner** tab.
+
+## Scan scope
+
+`D:\config\**\*.{xml,ini,conf,json,dat}` — build tag from `D:\ruleta\BuildVersion.txt`.
+
+Read **`config-scanner/AGENT.md`** for limitations (live-drive content diff, obfuscated XML).

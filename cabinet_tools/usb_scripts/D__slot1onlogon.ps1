@@ -74,6 +74,16 @@ function Get-GoldClubUsbRoot {
 }
 $UsbRoot = Get-GoldClubUsbRoot
 
+$fixZipScript = Join-Path $UsbRoot 'tools\Fix-UsbZipShellPrompt.ps1'
+if (Test-Path -LiteralPath $fixZipScript) {
+    try {
+        & $fixZipScript -UsbRoot $UsbRoot -Apply -Quiet *>&1 | Tee-Object -FilePath "$logDir\onlogon.log" -Append
+    }
+    catch {
+        "[$(Get-Date -Format o)] Fix-UsbZipShellPrompt failed: $($_.Exception.Message)" | Tee-Object -FilePath "$logDir\onlogon.log" -Append | Out-Null
+    }
+}
+
 C:\goldclub\bin\RunManteinanceTasks.1.ps1 -path ($PSScriptRoot+"/"+[System.IO.Path]::GetFileNameWithoutExtension($PSCommandPath)) *>&1 | Tee-Object -FilePath "$logDir\onlogon.log"
 
 

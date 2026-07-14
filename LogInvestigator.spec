@@ -10,8 +10,8 @@ Produces a single, windowed (no console) executable:
 
 Build profiles (choose with the LI_BUILD env var, default "lite"):
 
-    lite  -> smallest binary. AI SDKs + OpenCV (QR scan) excluded; both
-             features degrade gracefully at runtime.
+    lite  -> smallest binary. AI SDKs + OpenCV (QR scan) excluded; pywin32
+             included for exe ProductVersion reads in Config Scanner.
     ai    -> lite + Google Gemini AI summary SDKs bundled.
     full  -> everything: AI SDKs + OpenCV/numpy (QR scanning) + pywin32,
              with google/grpc/protobuf collected via collect_all so the
@@ -27,6 +27,7 @@ Or use the helper:  ./build_exe.ps1 -Full
 """
 
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_all, copy_metadata
 
@@ -50,13 +51,29 @@ datas = [
     ("issues/README.md", "issues"),
     ("cabinet_tools/InputAgent/InputAgent.cs", "cabinet_tools/InputAgent"),
     ("assets/log_investigator_icon.png", "assets"),
+    ("config_scanner/assets/config.json", "config_scanner/assets"),
+    ("config_scanner/assets/profiles.json", "config_scanner/assets"),
+    ("config_scanner/assets/templates/report.html", "config_scanner/assets/templates"),
 ]
 binaries = []
 hiddenimports = [
     "serial",
     "serial.tools",
     "serial.tools.list_ports",
+    # Config scanner + main app read ProductVersion from game exes on Windows.
+    "win32api",
+    "pywintypes",
 ]
+
+if sys.platform == "win32":
+    for _win_mod in ("win32api", "pywintypes", "win32ctypes"):
+        try:
+            _win_d, _win_b, _win_h = collect_all(_win_mod)
+            datas += _win_d
+            binaries += _win_b
+            hiddenimports += _win_h
+        except Exception as exc:  # noqa: BLE001
+            print(f"[LogInvestigator.spec] WARN: could not collect {_win_mod}: {exc}")
 
 # --- Base excludes: things never used by the app ---------------------------
 excludes = [

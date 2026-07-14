@@ -26,6 +26,8 @@ _KEY_OPENROUTER_API_KEY = "ai/openrouter_api_key"
 _KEY_VENICE_API_KEY = "ai/venice_api_key"
 _KEY_VENICE_MODEL = "ai/venice_model"
 _KEY_AI_PROVIDER = "ai/provider"
+_KEY_CONFIG_SCANNER_GAME_DRIVE = "config_scanner/game_drive"
+_KEY_CONFIG_SCANNER_PROFILE = "config_scanner/profile_id"
 
 # Venice AI model ids (OpenAI-compatible chat/completions).
 VENICE_MODEL_DEFAULT = "qwen-3-6-plus"
@@ -143,6 +145,33 @@ class SettingsManager:
         if t not in THEME_CHOICES:
             t = _DEFAULT_THEME
         s.setValue(_KEY_THEME, t)
+        s.sync()
+
+    @staticmethod
+    def get_config_scanner_game_drive() -> str:
+        v = SettingsManager._s().value(_KEY_CONFIG_SCANNER_GAME_DRIVE, "D:")
+        text = str(v).strip() if v is not None else "D:"
+        return text or "D:"
+
+    @staticmethod
+    def set_config_scanner_game_drive(game_drive: str) -> None:
+        s = SettingsManager._s()
+        text = str(game_drive).strip() or "D:"
+        s.setValue(_KEY_CONFIG_SCANNER_GAME_DRIVE, text)
+        s.sync()
+
+    @staticmethod
+    def get_config_scanner_profile_id() -> str:
+        from config_scanner.profiles import default_profile_id
+
+        v = SettingsManager._s().value(_KEY_CONFIG_SCANNER_PROFILE, default_profile_id())
+        text = str(v).strip() if v is not None else default_profile_id()
+        return text or default_profile_id()
+
+    @staticmethod
+    def set_config_scanner_profile_id(profile_id: str) -> None:
+        s = SettingsManager._s()
+        s.setValue(_KEY_CONFIG_SCANNER_PROFILE, str(profile_id).strip())
         s.sync()
 
     @staticmethod

@@ -115,6 +115,7 @@ from gui.fleet_worker import (
 )
 from gui.history_tab import HistoryTabWidget
 from gui.automation_tab import AutomationTabWidget
+from gui.config_scanner_tab import ConfigScannerTabWidget
 from gui.path_resolve_worker import PathResolveEmitter, schedule_path_resolve
 from gui.bookmark_dialog import BookmarkDialog
 from gui.context_dialog import IncidentContextDialog
@@ -131,6 +132,7 @@ from gui.network_case_pack_worker import (
     _NetworkCasePackWorker,
 )
 from gui.screen_capture_worker import ScreenCaptureEmitter, schedule_remote_screen_capture
+from gui.ram_clear_worker import RamClearEmitter, schedule_ram_clear
 from gui.screenshot_preview_dialog import ScreenshotPreviewDialog
 from gui.log_highlighter import LogSyntaxHighlighter
 from gui.scan_worker import ScanWorker
@@ -295,6 +297,9 @@ class MainWindow(QMainWindow):
         self._screen_capture_emitter = ScreenCaptureEmitter(self)
         self._screen_capture_emitter.finished.connect(self._on_screen_capture_finished)
         self._remote_capture_busy = False
+        self._ram_clear_emitter = RamClearEmitter(self)
+        self._ram_clear_emitter.finished.connect(self._on_ram_clear_finished)
+        self._ram_clear_busy = False
         self._last_remote_screenshot_path: str | None = None
         self._pending_sas_file = ""
         self._last_sas_verification_plaintext = ""
@@ -431,6 +436,14 @@ class MainWindow(QMainWindow):
         )
         self._incidents_capture_btn.clicked.connect(self._on_incidents_capture_screen_clicked)
         conn_row.addWidget(self._incidents_capture_btn)
+        self._ram_clear_btn = QPushButton("RAM Clear")
+        self._ram_clear_btn.setToolTip(
+            "Stop the running game and GoldClub processes, then run the maintenance "
+            "RAM-clear chain immediately (slot or roulette). Requires local game "
+            "install or Remote IP with PsExec access."
+        )
+        self._ram_clear_btn.clicked.connect(self._on_ram_clear_clicked)
+        conn_row.addWidget(self._ram_clear_btn)
         conn_row.addStretch(1)
         conn_outer.addLayout(conn_row)
 
@@ -821,6 +834,7 @@ class MainWindow(QMainWindow):
         self._history_tab = HistoryTabWidget()
         self._fleet_tab = FleetTabWidget()
         self._automation_tab = AutomationTabWidget()
+        self._config_scanner_tab = ConfigScannerTabWidget()
         self._tabs.addTab(tab_incidents, "Incidents")
         self._tabs.addTab(tab_timeline, "State Timeline")
         tab_analytics = QWidget()
@@ -830,6 +844,7 @@ class MainWindow(QMainWindow):
         analytics_v.addWidget(self._game_analytics_widget, stretch=1)
         self._tabs.addTab(tab_analytics, "Game Analytics")
         self._tabs.addTab(self._automation_tab, "Automated Tests")
+        self._tabs.addTab(self._config_scanner_tab, "Config Scanner")
         self._tabs.addTab(self._history_tab, "History")
         self._tabs.addTab(self._fleet_tab, "Fleet Overview")
         root.addWidget(self._tabs, stretch=1)
@@ -874,6 +889,7 @@ class MainWindow(QMainWindow):
         self._radio_remote.toggled.connect(self._on_mode_toggled)
         self._ip_edit.textChanged.connect(self._schedule_path_probe)
         self._ip_edit.textChanged.connect(self._sync_remote_ram_target_ip)
+        self._ip_edit.textChanged.connect(lambda _t: self._update_ram_clear_button_enabled())
         self._path_edit.textChanged.connect(self._on_path_text_changed)
 
         sel = self._table.selectionModel()
@@ -1000,6 +1016,7 @@ class MainWindow(QMainWindow):
             "_open_notepad_btn": "Select an incident row first — then you can open its log file.",
             "_ai_enhance_btn": "Select an incident row first to generate a technical summary.",
             "_incidents_capture_btn": "Switch to ‘Remote IP’ mode and enter the cabinet IP to capture the screen.",
+            "_ram_clear_btn": "Enable Local mode with a detected slot/roulette install, or Remote IP with a host address.",
             "_live_toggle": "Live Watch isn’t available while a scan is in progress.",
             "_case_pack_btn": "A case pack is already being created — please wait for it to finish.",
             "_full_audit_btn": "A session audit is already running — please wait for it to finish.",
@@ -1360,44 +1377,51 @@ class MainWindow(QMainWindow):
             )
 
     def _default_local_scan_root(self) -> str:
+        from network.goldclub_paths import discover_startup_scan_target
+
+        remote_ip = str(
+            self._settings.value("connection/remote_ip", DEFAULT_REMOTE_IP)
+        )
+        discovery = discover_startup_scan_target(remote_ip=remote_ip)
+        if discovery.mode == "local":
+            return discovery.scan_root
         saved = str(
             self._settings.value("connection/local_log_path", DEFAULT_LOCAL_LOG_ROOT)
         )
-        if self._radio_remote.isChecked():
-            return saved
-        from network.goldclub_paths import discover_portable_scan_roots
-
-        portable = discover_portable_scan_roots()
-        if not portable:
-            return saved
-        saved_path = Path(saved)
-        usb_exports = [p for p in portable if Path(p).name.lower().startswith("log_")]
-        if usb_exports and (
-            not saved_path.is_dir()
-            or saved.strip().lower() == DEFAULT_LOCAL_LOG_ROOT.lower()
-        ):
-            return usb_exports[0]
-        if not saved_path.is_dir():
-            return portable[0]
-        return saved
+        return saved if Path(saved).is_dir() else DEFAULT_LOCAL_LOG_ROOT
 
     def _load_connection_settings(self) -> None:
-        mode = self._settings.value("connection/mode", "local")
-        remote = str(mode).lower() == "remote"
+        from network.goldclub_paths import discover_startup_scan_target
+
+        remote_ip = str(
+            self._settings.value("connection/remote_ip", DEFAULT_REMOTE_IP)
+        )
+        discovery = discover_startup_scan_target(remote_ip=remote_ip)
         self._radio_local.blockSignals(True)
         self._radio_remote.blockSignals(True)
-        self._radio_remote.setChecked(remote)
-        self._radio_local.setChecked(not remote)
+        if discovery.mode == "remote":
+            self._radio_remote.setChecked(True)
+            self._radio_local.setChecked(False)
+            self._ip_edit.setText(discovery.remote_ip or DEFAULT_REMOTE_IP)
+        else:
+            self._radio_local.setChecked(True)
+            self._radio_remote.setChecked(False)
         self._radio_local.blockSignals(False)
         self._radio_remote.blockSignals(False)
-        self._ip_edit.setText(
-            str(self._settings.value("connection/remote_ip", DEFAULT_REMOTE_IP))
-        )
-        self._path_edit.setText(self._default_local_scan_root())
+        self._path_edit.setText(discovery.scan_root)
         self._apply_mode_to_widgets()
         self._autoscroll_chk.setChecked(
             bool(self._settings.value("live/autoscroll", False))
         )
+        if discovery.game_kind in ("slot", "roulette"):
+            self._status.setText(
+                f"Auto-detected {discovery.game_kind} logs at {discovery.scan_root}"
+            )
+        elif discovery.mode == "remote":
+            self._status.setText(
+                f"No local game found — using remote logs at {discovery.scan_root}"
+            )
+        self._update_ram_clear_button_enabled()
 
     def _save_connection_settings(self) -> None:
         self._settings.setValue(
@@ -1426,6 +1450,7 @@ class MainWindow(QMainWindow):
         else:
             self._path_edit.setPlaceholderText(r"e.g. C:\Goldclub\var\log or D:\_LogFiles\log_DD_MM_YYYY")
         self._update_incidents_capture_button_enabled()
+        self._update_ram_clear_button_enabled()
         self._sync_remote_ram_target_ip()
 
     def _sync_remote_ram_target_ip(self) -> None:
@@ -1440,16 +1465,28 @@ class MainWindow(QMainWindow):
         remote = self._radio_remote.isChecked()
         self._incidents_capture_btn.setEnabled(remote and not self._remote_capture_busy)
 
+    def _update_ram_clear_button_enabled(self) -> None:
+        if not hasattr(self, "_ram_clear_btn"):
+            return
+        if self._ram_clear_busy:
+            self._ram_clear_btn.setEnabled(False)
+            return
+        if os.name != "nt":
+            self._ram_clear_btn.setEnabled(False)
+            return
+        if self._radio_remote.isChecked():
+            self._ram_clear_btn.setEnabled(bool((self._ip_edit.text() or "").strip()))
+            return
+        from network.ram_clear import resolve_ram_clear_plan
+
+        self._ram_clear_btn.setEnabled(resolve_ram_clear_plan() is not None)
+
     def _on_mode_toggled(self) -> None:
         self._apply_mode_to_widgets()
         if self._radio_local.isChecked():
             cur = self._path_edit.text().strip()
             if cur.startswith("\\\\") or not cur:
-                lp = str(
-                    self._settings.value(
-                        "connection/local_log_path", DEFAULT_LOCAL_LOG_ROOT
-                    )
-                )
+                lp = self._default_local_scan_root()
                 self._path_edit.blockSignals(True)
                 self._path_edit.setText(lp)
                 self._path_edit.blockSignals(False)
@@ -3181,6 +3218,95 @@ class MainWindow(QMainWindow):
             ScreenshotPreviewDialog(msg, self).exec()
         else:
             QMessageBox.warning(self, "Capture Screen", msg)
+
+    def _on_ram_clear_clicked(self) -> None:
+        if self._ram_clear_busy:
+            return
+        if os.name != "nt":
+            QMessageBox.information(
+                self,
+                "RAM Clear",
+                "RAM Clear is only supported on Windows.",
+            )
+            return
+
+        from network.ram_clear import (
+            ram_clear_summary_for_confirm,
+            resolve_ram_clear_plan,
+        )
+
+        remote = self._radio_remote.isChecked()
+        ip = (self._ip_edit.text() or "").strip()
+        plan = None if remote else resolve_ram_clear_plan()
+
+        if remote:
+            if not ip:
+                QMessageBox.information(
+                    self,
+                    "RAM Clear",
+                    "Enter a remote host IP in Connection settings first.",
+                )
+                return
+            confirm_text = (
+                f"Remote host: {ip}\n\n"
+                "The cabinet will be scanned for slot or roulette RAM-clear layout.\n\n"
+                "This will:\n"
+                "• Close the running game (Ruleta / OneHand / game-start)\n"
+                "• Stop all GoldClub services and related processes\n"
+                "• Run the RAM-clear maintenance chain (backup + cleanup)\n"
+                "• Restart GoldClub services and auto-start the game (Ruleta / OneHand)\n\n"
+                "State folders may be wiped after backup. This cannot be undone easily."
+            )
+        else:
+            if plan is None:
+                QMessageBox.information(
+                    self,
+                    "RAM Clear",
+                    "No slot or roulette RAM-clear layout found on this machine.",
+                )
+                return
+            confirm_text = ram_clear_summary_for_confirm(plan)
+
+        reply = QMessageBox.warning(
+            self,
+            "Confirm RAM Clear",
+            confirm_text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if self._live_toggle.isChecked():
+            self._live_toggle.setChecked(False)
+
+        self._ram_clear_busy = True
+        self._ram_clear_btn.setEnabled(False)
+        self._ram_clear_btn.setText("RAM Clear…")
+        sb = self.statusBar()
+        target = ip if remote else (plan.game_kind if plan else "local")
+        sb.showMessage(f"RAM Clear running ({target})…", 0)
+        self._status.setText(f"RAM Clear running ({target})…")
+        QApplication.processEvents()
+        schedule_ram_clear(
+            self._vm.thread_pool(),
+            local=not remote,
+            ip=ip if remote else None,
+            plan=plan,
+            emitter=self._ram_clear_emitter,
+        )
+
+    def _on_ram_clear_finished(self, ok: bool, msg: str) -> None:
+        self._ram_clear_busy = False
+        self._ram_clear_btn.setText("RAM Clear")
+        self._update_ram_clear_button_enabled()
+        sb = self.statusBar()
+        sb.clearMessage()
+        self._status.setText("Ready")
+        if ok:
+            QMessageBox.information(self, "RAM Clear", msg)
+        else:
+            QMessageBox.critical(self, "RAM Clear", msg)
 
     def _on_verify_sas_clicked(self) -> None:
         path = (self._path_edit.text() or "").strip()

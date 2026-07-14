@@ -1,0 +1,39 @@
+{
+  "profiles": [
+    {
+      "id": "roulette_usb",
+      "label": "Roulette (USB D:)",
+      "defaultTarget": "D:",
+      "buildVersionRelativePath": "ruleta/BuildVersion.txt",
+      "scanRoots": [
+        { "path": "config", "recursive": true }
+      ],
+      "includePatterns": ["*.xml", "*.ini", "*.conf", "*.json", "*.dat"]
+    },
+    {
+      "id": "slot_lab_90",
+      "label": "Slot (lab 10.0.0.90)",
+      "defaultTarget": "C:\\Goldclub\\slot",
+      "discoverTargets": [
+        "G:",
+        "G:\\Goldclub\\slot",
+        "C:\\Goldclub\\slot",
+        "D:",
+        "D:\\Goldclub\\slot",
+        "\\\\10.0.0.90\\c$\\Goldclub\\slot"
+      ],
+      "buildVersionRelativePath": null,
+      "buildFingerprint": {
+        "type": "binary_sha1_prefix",
+        "files": ["OneHand.exe", "game-start.exe", "GoldClub.Settings.dll"]
+      },
+      "scanRoots": [
+        { "path": ".", "recursive": false },
+        { "path": "hwdrivers", "recursive": true },
+        { "path": "languages", "recursive": true },
+        { "path": "themes", "recursive": false }
+      ],
+      "includePatterns": ["*.xml", "*.ini", "*.conf", "*.json", "*.dat", "*.config"]
+    }
+  ]
+}

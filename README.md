@@ -102,3 +102,17 @@ Adjunct PowerShell tooling for owned lab cabinets, separate from the Python anal
 **All documentation, evidence, and audit output:** [`aft/README.md`](aft/README.md) — runbook, hop map, `.171` investigations, captures.
 
 **Quick start:** `.\Send-TestAft1000.ps1 -Send -IP 10.0.0.90` (requires `-Send`; see `aft/RUNBOOK.md`).
+
+## QA config scanner (USB)
+
+SHA1 snapshots of roulette **config** during QA — built into Log Investigator (**Config Scanner** tab). No separate `.bat` tool.
+
+| Location | Role |
+|----------|------|
+| [`config_scanner/`](config_scanner/) | Python scanner/diff/report code |
+| `config-scanner/` (beside exe) | Runtime snapshots + HTML reports (auto-created) |
+| `H:\tools\LogInvestigator.exe` | USB deploy target |
+
+**Quick start:** connect game image USB (`D:\`), run `LogInvestigator.exe` → **Config Scanner** tab, or deploy with `.\deploy_usb.ps1` (default: `H:\ConfigScanner\`).
+
+**Agent docs:** [`config-scanner/AGENT.md`](config-scanner/AGENT.md)

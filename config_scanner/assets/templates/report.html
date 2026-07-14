@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>__REPORT_TITLE__</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --border: #d1d5db;
+      --added: #fef3c7;
+      --removed: #fee2e2;
+      --modified: #ffe4e6;
+      --unchanged: #ecfdf5;
+      --accent: #2563eb;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --border: #374151;
+        --added: #451a03;
+        --removed: #450a0a;
+        --modified: #4c0519;
+        --unchanged: #052e16;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Segoe UI, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    header, main, section, .panel {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 16px 20px;
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+
+    h1, h2, h3 { margin: 0 0 12px; }
+    .muted { color: var(--muted); }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .summary-card, .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+
+    .summary-card strong {
+      display: block;
+      font-size: 1.6rem;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin: 16px 0;
+    }
+
+    input, select, button {
+      font: inherit;
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+    }
+
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: rgba(37, 99, 235, 0.08);
+      position: sticky;
+      top: 0;
+    }
+
+    tr.status-added { background: var(--added); }
+    tr.status-removed { background: var(--removed); }
+    tr.status-modified { background: var(--modified); }
+    tr.status-unchanged { background: var(--unchanged); }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      border: 1px solid var(--border);
+    }
+
+    .changed-nav {
+      columns: 2;
+      padding-left: 20px;
+    }
+
+    .file-diff {
+      margin-top: 24px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+
+    .hash-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+      font-size: 0.95rem;
+    }
+
+    .content-diff {
+      margin-top: 8px;
+    }
+
+    .change-added { background: var(--added); }
+    .change-removed { background: var(--removed); }
+    .change-modified { background: var(--modified); }
+
+    code {
+      font-family: Consolas, monospace;
+      word-break: break-all;
+    }
+
+    .null {
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    .compare-warnings {
+      margin-top: 16px;
+      border-color: #f59e0b;
+      background: #fffbeb;
+      color: #92400e;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .compare-warnings {
+        background: #451a03;
+        color: #fde68a;
+        border-color: #b45309;
+      }
+    }
+
+    footer {
+      text-align: center;
+      color: var(--muted);
+      padding: 24px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>QA Config Scan Diff</h1>
+    <p class="muted">Generated at __GENERATED_AT__</p>
+    <div class="meta-grid">
+      <div class="panel">
+        <h2>Baseline</h2>
+        <div><strong>Snapshot:</strong> __BASELINE_SNAPSHOT__</div>
+        <div><strong>Build:</strong> __BASELINE_BUILD__</div>
+        <div><strong>Product version:</strong> __BASELINE_PRODUCT_VERSION__</div>
+        <div><strong>Source version:</strong> __BASELINE_SOURCE_VERSION__</div>
+        <div><strong>Exe version:</strong> __BASELINE_EXE_NAME__ __BASELINE_EXE_VERSION__</div>
+        <div><strong>Branch:</strong> __BASELINE_BRANCH__</div>
+        <div><strong>Scan time:</strong> __BASELINE_SCAN_TIME__</div>
+        <div><strong>Game drive:</strong> __BASELINE_GAME_DRIVE__</div>
+        <div class="muted"><strong>Summary:</strong> __BASELINE_VERSION_LINE__</div>
+      </div>
+      <div class="panel">
+        <h2>Target</h2>
+        <div><strong>Snapshot:</strong> __TARGET_SNAPSHOT__</div>
+        <div><strong>Build:</strong> __TARGET_BUILD__</div>
+        <div><strong>Product version:</strong> __TARGET_PRODUCT_VERSION__</div>
+        <div><strong>Source version:</strong> __TARGET_SOURCE_VERSION__</div>
+        <div><strong>Exe version:</strong> __TARGET_EXE_NAME__ __TARGET_EXE_VERSION__</div>
+        <div><strong>Branch:</strong> __TARGET_BRANCH__</div>
+        <div><strong>Scan time:</strong> __TARGET_SCAN_TIME__</div>
+        <div><strong>Game drive:</strong> __TARGET_GAME_DRIVE__</div>
+        <div class="muted"><strong>Summary:</strong> __TARGET_VERSION_LINE__</div>
+      </div>
+    </div>
+    <div class="summary-grid">
+      <div class="summary-card">Added<strong>__COUNT_ADDED__</strong></div>
+      <div class="summary-card">Removed<strong>__COUNT_REMOVED__</strong></div>
+      <div class="summary-card">Modified<strong>__COUNT_MODIFIED__</strong></div>
+      <div class="summary-card">Unchanged<strong>__COUNT_UNCHANGED__</strong></div>
+    </div>
+    __COMPARE_WARNINGS__
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Changed Files</h2>
+      <ul class="changed-nav">
+        __CHANGED_NAV__
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>All Files</h2>
+      <div class="controls">
+        <input id="searchInput" type="search" placeholder="Filter by filename...">
+        <select id="statusFilter">
+          <option value="all">All statuses</option>
+          <option value="modified">Modified</option>
+          <option value="added">Added</option>
+          <option value="removed">Removed</option>
+          <option value="unchanged">Unchanged</option>
+        </select>
+        <button id="showChangedOnly" type="button">Show changed only</button>
+      </div>
+      <table id="fileTable">
+        <thead>
+          <tr>
+            <th>File</th>
+            <th>Status</th>
+            <th>Baseline SHA1</th>
+            <th>Target SHA1</th>
+          </tr>
+        </thead>
+        <tbody>
+          __FILE_TABLE_ROWS__
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Detailed Differences</h2>
+      __FILE_DIFF_SECTIONS__
+    </section>
+  </main>
+
+  <footer>
+    ConfigScanner USB tool
+  </footer>
+
+  <script>
+    const searchInput = document.getElementById('searchInput');
+    const statusFilter = document.getElementById('statusFilter');
+    const showChangedOnly = document.getElementById('showChangedOnly');
+    const rows = Array.from(document.querySelectorAll('#fileTable tbody tr'));
+    let changedOnly = false;
+
+    function applyFilters() {
+      const query = searchInput.value.trim().toLowerCase();
+      const status = statusFilter.value;
+
+      rows.forEach(row => {
+        const path = row.dataset.path.toLowerCase();
+        const rowStatus = row.dataset.status;
+        const matchesQuery = !query || path.includes(query);
+        const matchesStatus = status === 'all' || rowStatus === status;
+        const matchesChanged = !changedOnly || rowStatus !== 'unchanged';
+        row.style.display = matchesQuery && matchesStatus && matchesChanged ? '' : 'none';
+      });
+    }
+
+    searchInput.addEventListener('input', applyFilters);
+    statusFilter.addEventListener('change', applyFilters);
+    showChangedOnly.addEventListener('click', () => {
+      changedOnly = !changedOnly;
+      showChangedOnly.textContent = changedOnly ? 'Show all files' : 'Show changed only';
+      applyFilters();
+    });
+  </script>
+</body>
+</html>

@@ -2,17 +2,41 @@
   "profiles": [
     {
       "id": "roulette_usb",
-      "label": "Roulette (USB D:)",
-      "defaultTarget": "D:",
+      "label": "Roulette",
+      "defaultTarget": "\\\\10.0.0.90\\c$\\Goldclub",
       "buildVersionRelativePath": "ruleta/BuildVersion.txt",
       "scanRoots": [
-        { "path": "config", "recursive": true }
+        {
+          "path": "config",
+          "recursive": true
+        },
+        {
+          "path": "bios/etc",
+          "recursive": true
+        },
+        {
+          "path": "data",
+          "recursive": true
+        }
       ],
-      "includePatterns": ["*.xml", "*.ini", "*.conf", "*.json", "*.dat"]
+      "includePatterns": [
+        "*.xml",
+        "*.ini",
+        "*.conf",
+        "*.json",
+        "*.dat"
+      ],
+      "discoverTargets": [
+        "D:",
+        "G:",
+        "C:\\Goldclub",
+        "\\\\10.0.0.90\\c$\\Goldclub",
+        "\\\\10.0.0.90\\d$\\Goldclub"
+      ]
     },
     {
       "id": "slot_lab_90",
-      "label": "Slot (lab 10.0.0.90)",
+      "label": "Slot",
       "defaultTarget": "C:\\Goldclub\\slot",
       "discoverTargets": [
         "G:",
@@ -20,20 +44,44 @@
         "C:\\Goldclub\\slot",
         "D:",
         "D:\\Goldclub\\slot",
-        "\\\\10.0.0.90\\c$\\Goldclub\\slot"
+        "\\\\10.0.0.90\\c$\\Goldclub\\slot",
+        "\\\\10.0.0.90\\d$\\Goldclub\\slot"
       ],
       "buildVersionRelativePath": null,
       "buildFingerprint": {
         "type": "binary_sha1_prefix",
-        "files": ["OneHand.exe", "game-start.exe", "GoldClub.Settings.dll"]
+        "files": [
+          "OneHand.exe",
+          "game-start.exe",
+          "GoldClub.Settings.dll"
+        ]
       },
       "scanRoots": [
-        { "path": ".", "recursive": false },
-        { "path": "hwdrivers", "recursive": true },
-        { "path": "languages", "recursive": true },
-        { "path": "themes", "recursive": false }
+        {
+          "path": ".",
+          "recursive": false
+        },
+        {
+          "path": "hwdrivers",
+          "recursive": true
+        },
+        {
+          "path": "languages",
+          "recursive": true
+        },
+        {
+          "path": "themes",
+          "recursive": false
+        }
       ],
-      "includePatterns": ["*.xml", "*.ini", "*.conf", "*.json", "*.dat", "*.config"]
+      "includePatterns": [
+        "*.xml",
+        "*.ini",
+        "*.conf",
+        "*.json",
+        "*.dat",
+        "*.config"
+      ]
     }
   ]
 }

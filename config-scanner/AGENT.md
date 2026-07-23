@@ -29,8 +29,7 @@ Existing snapshots on `H:\tools\config-scanner\` remain valid if present before 
 ## GUI workflow
 
 1. **Scan now** — SHA1 all config files, save `{date}_build{N}_{time}/` under `snapshots/`.
-2. **Compare latest two** / **Compare** / **Compare to baseline** — HTML report in `reports/`.
-3. **Open snapshots folder** / **Open reports folder** — Explorer shortcuts for USB QA.
+2. **Compare** / **Quick compare** — HTML report in `reports/` (More menu: set baseline, delete, open report/folders).
 
 Settings: scan target + profile persisted in QSettings (`config_scanner/game_drive`, `config_scanner/profile_id`).
 
@@ -38,15 +37,15 @@ Settings: scan target + profile persisted in QSettings (`config_scanner/game_dri
 
 | Profile | Scan target | Build tag | Scope |
 |---------|-------------|-----------|--------|
-| `roulette_usb` | `D:` | `ruleta/BuildVersion.txt` | `config\**` (~271 files) |
-| `slot_lab_90` | `\\10.0.0.90\c$\Goldclub\slot` | SHA1 prefix of OneHand/game-start/Settings DLLs | slot root + hwdrivers + languages + themes/*.xml only (~41 files) |
+| `roulette_usb` | `\\10.0.0.90\c$\Goldclub` (or local D:/G:) | `ruleta/BuildVersion.txt` | `config\**` |
+| `slot_lab_90` | `C:\Goldclub\slot` (or lab UNC) | SHA1 prefix of OneHand/game-start/Settings DLLs | slot root + hwdrivers + languages + themes/*.xml only |
 
 Slot profile avoids scanning thousands of per-game theme assets under `themes\<Game>\`.
 
 ## Known limitations
 
-- Content diff drill-down reads **live files on the game drive** (`D:\config\...`), not snapshot copies — same SHA1 summary either way, but HTML detail needs the USB mounted.
-- Obfuscated `setup.xml` / `switches.xml` — path-level diff only, not menu labels (GoldClub.Settings hash map is future work).
+- Content diff drill-down reads **live files on the scan target** (local or UNC such as `\\10.0.0.90\c$\Goldclub\config\...`), not snapshot copies — same SHA1 summary either way, but HTML detail needs that target reachable.
+- Encrypted ruleta `setup.xml` (gcxml) is decrypted on **Scan now** via `Convert-GcxmlSetup.ps1` + `GoldClub.Settings.dll` (UNC libs are cached locally). Snapshot hash/archive/compare use plain `<node name="…">` settings XML. Write-back re-encrypts to live gcxml. Older encrypted-only snapshots still compare as opaque token churn until re-scanned.
 
 ## Tests
 

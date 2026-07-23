@@ -1,4 +1,4 @@
-﻿"""High-level config scanner API used by the GUI."""
+"""High-level config scanner API used by the GUI."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from network.lab_access import safe_join_under
 
 from config_scanner.build_version import (
     DiscoverResult,
@@ -42,10 +44,18 @@ from config_scanner.scanner import (
     manifest_to_dict,
     merge_build_info_versions,
     restore_manifest_files,
+    restore_single_archived_file,
     save_json,
     snapshot_content_root,
 )
-from config_scanner.xml_diff import FileDiff, change_summary, compare_manifests
+from config_scanner.xml_diff import (
+    ContentChange,
+    FileDiff,
+    apply_xml_value_at_path,
+    change_summary,
+    compare_manifests,
+    resolve_apply_value,
+)
 
 
 def _move_snapshot_dir(source: Path, dest: Path) -> None:
@@ -112,6 +122,7 @@ class ScanResult:
     elapsed_seconds: float
     version_summary: str = ""
     profile_label: str = ""
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -132,6 +143,23 @@ class ApplySnapshotResult:
     written_count: int
     missing_count: int
     errors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ApplyChangeResult:
+    relative_path: str
+    flat_path: str
+    value: str | None
+    target: str
+    profile_label: str
+
+
+@dataclass(frozen=True)
+class ApplyFileResult:
+    relative_path: str
+    snapshot_name: str
+    target: str
+    profile_label: str
 
 
 def allocate_snapshot_dir(snap_root: Path, base_name: str) -> tuple[str, Path]:
@@ -192,6 +220,17 @@ class ConfigScannerService:
         result = discover_game_repo(load_profiles(), hint)
         self.set_profile(result.profile_id)
         return result
+
+    def is_scan_target_valid(self, scan_target: str) -> bool:
+        """True when the path resolves to a known slot or roulette repo."""
+        text = (scan_target or "").strip()
+        if not text:
+            return False
+        try:
+            resolve_scan_for_target(text, load_profiles())
+            return True
+        except (FileNotFoundError, ValueError):
+            return False
 
     def get_baseline_name(self) -> str | None:
         path = baseline_path(self.root)
@@ -346,7 +385,9 @@ class ConfigScannerService:
             resolved_target,
             scan_timestamp=scan_timestamp,
         )
-        manifest = build_manifest(resolved_target, self.config, profile=self.profile)
+        manifest, content_overrides = build_manifest(
+            resolved_target, self.config, profile=self.profile
+        )
         base_name = snapshot_folder_name(
             build_info.build_number,
             scan_timestamp,
@@ -357,7 +398,12 @@ class ConfigScannerService:
             base_name,
         )
         snapshot_dir.mkdir(parents=True, exist_ok=False)
-        archive_manifest_files(resolved_target, manifest, snapshot_dir)
+        archive_manifest_files(
+            resolved_target,
+            manifest,
+            snapshot_dir,
+            content_overrides=content_overrides,
+        )
         save_json(snapshot_dir / "build-info.json", build_info_to_dict(build_info))
         save_json(snapshot_dir / "manifest.json", manifest_to_dict(manifest))
         return ScanResult(
@@ -367,6 +413,7 @@ class ConfigScannerService:
             elapsed_seconds=manifest.elapsed_seconds,
             version_summary=format_build_info_log_line(build_info),
             profile_label=self.profile.label,
+            warnings=manifest.warnings,
         )
 
     def compare_warnings(self, baseline_snapshot: str, target_snapshot: str) -> list[str]:
@@ -392,6 +439,42 @@ class ConfigScannerService:
 
         baseline_manifest = load_manifest(baseline_dir)
         target_manifest = load_manifest(target_dir)
+        for note in baseline_manifest.warnings:
+            warnings.append(f"Baseline: {note}")
+        for note in target_manifest.warnings:
+            warnings.append(f"Target: {note}")
+        from config_scanner.xml_diff import is_encrypted_origin_config_path
+
+        for label, man, snap_dir in (
+            ("Baseline", baseline_manifest, baseline_dir),
+            ("Target", target_manifest, target_dir),
+        ):
+            bad = [
+                e.relative_path
+                for e in man.files
+                if e.decrypt_ok is False
+            ]
+            if bad:
+                warnings.append(
+                    f"{label} hashed ciphertext for live ruleta setup "
+                    f"({', '.join(bad[:3])}{'…' if len(bad) > 3 else ''}) — "
+                    "setting changes may be invisible."
+                )
+            content_root = snapshot_content_root(snap_dir)
+            if content_root is not None:
+                missing_plain = [
+                    e.relative_path
+                    for e in man.files
+                    if is_encrypted_origin_config_path(e.relative_path)
+                    and e.decrypt_ok is not False
+                    and not (content_root / Path(e.relative_path.replace("\\", "/"))).is_file()
+                ]
+                if missing_plain:
+                    warnings.append(
+                        f"{label} missing archived plain for "
+                        f"{', '.join(missing_plain[:3])}{'…' if len(missing_plain) > 3 else ''} — "
+                        "compare may fall back to live disk."
+                    )
         baseline_paths = {entry.relative_path for entry in baseline_manifest.files}
         target_paths = {entry.relative_path for entry in target_manifest.files}
         union = baseline_paths | target_paths
@@ -512,6 +595,102 @@ class ConfigScannerService:
             written_count=restore.written_count,
             missing_count=restore.missing_count,
             errors=restore.errors,
+        )
+
+    def apply_archived_file_to_target(
+        self,
+        scan_target: str,
+        snapshot_name: str,
+        relative_path: str,
+    ) -> ApplyFileResult:
+        """Write one archived snapshot file onto the live scan target (create if missing)."""
+        resolved_target = self.prepare_for_target(scan_target)
+        snapshot_dir = snapshots_path(self.root) / snapshot_name
+        if not snapshot_dir.is_dir():
+            raise FileNotFoundError(f"Snapshot not found: {snapshot_name}")
+
+        build_info = load_build_info(snapshot_dir)
+        snapshot_profile = (build_info.profile_id or "").strip()
+        dest_profile = match_profile_for_target(resolved_target, load_profiles())
+        if snapshot_profile and dest_profile and snapshot_profile != dest_profile.id:
+            left = build_info.profile_label or snapshot_profile
+            right = dest_profile.label or dest_profile.id
+            raise ValueError(
+                f"Cannot write file: profile mismatch ({left!r} snapshot vs {right!r} target)."
+            )
+
+        restore_single_archived_file(snapshot_dir, relative_path, resolved_target)
+        return ApplyFileResult(
+            relative_path=relative_path,
+            snapshot_name=snapshot_name,
+            target=resolved_target,
+            profile_label=dest_profile.label if dest_profile else (
+                build_info.profile_label or ""
+            ),
+        )
+
+    def apply_content_change_to_target(
+        self,
+        scan_target: str,
+        relative_path: str,
+        change: ContentChange,
+        side: str,
+    ) -> ApplyChangeResult:
+        """Write a single XML field from a compare diff to the live scan target."""
+        resolved_target = self.prepare_for_target(scan_target)
+        live_root = scan_target_path(resolved_target)
+        live_path = safe_join_under(live_root, relative_path)
+
+        if not live_path.is_file():
+            raise FileNotFoundError(f"Live config file not found:\n{live_path}")
+
+        if not relative_path.lower().endswith(".xml"):
+            raise ValueError(
+                f"Per-field apply supports XML files only, not {relative_path}"
+            )
+
+        if Path(relative_path).name.casefold() == "texts.xml":
+            raise ValueError(
+                "Per-field apply is not supported for texts.xml keyed strings yet"
+            )
+
+        if change.path.startswith("line:"):
+            raise ValueError(
+                "Per-field apply is not supported for line-based text diffs"
+            )
+
+        value = resolve_apply_value(change, side)
+        if value is None:
+            raise ValueError(
+                f"No value to apply for {side} side of {change.path}"
+            )
+
+        # Live application/ruleta/setup.xml is gcxml ciphertext — decrypt, patch, re-encrypt.
+        from config_scanner.xml_diff import is_encrypted_origin_config_path
+
+        if is_encrypted_origin_config_path(relative_path):
+            try:
+                from ai_helper.gcxml_decrypt import apply_value_to_live_ruleta_setup
+            except ImportError as exc:
+                raise OSError(
+                    "gcxml helpers unavailable; cannot Write encrypted ruleta setup.xml"
+                ) from exc
+            apply_value_to_live_ruleta_setup(
+                live_path,
+                change.path,
+                value,
+                apply_xml_fn=apply_xml_value_at_path,
+            )
+        else:
+            apply_xml_value_at_path(live_path, change.path, value)
+
+        dest_profile = match_profile_for_target(resolved_target, load_profiles())
+        return ApplyChangeResult(
+            relative_path=relative_path,
+            flat_path=change.path,
+            value=value,
+            target=resolved_target,
+            profile_label=dest_profile.label if dest_profile else "",
         )
 
     def run_compare(self, baseline_snapshot: str, target_snapshot: str) -> CompareResult:

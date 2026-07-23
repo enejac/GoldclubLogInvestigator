@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from config_scanner.build_version import (
 )
 from config_scanner.paths import ToolConfig
 from config_scanner.profiles import GameProfile, ScanRootSpec, get_profile
+from network.lab_access import safe_join_under
 
 SNAPSHOT_FILES_SUBDIR = "files"
 
@@ -31,17 +33,74 @@ def snapshot_content_root(snapshot_dir: Path) -> Path | None:
     return archived if archived.is_dir() else None
 
 
-def archive_manifest_files(game_drive: str, manifest: Manifest, snapshot_dir: Path) -> None:
-    """Copy scanned files into the snapshot for offline diffs."""
+def _plain_override_bytes(path: Path) -> bytes | None:
+    """Decrypt encrypted live ruleta setup.xml to plain settings XML for hash/archive."""
+    try:
+        from ai_helper.gcxml_decrypt import plain_bytes_for_config_scan
+    except ImportError:
+        return None
+    return plain_bytes_for_config_scan(path)
+
+
+def _needs_live_settings_decrypt(path: Path) -> bool:
+    try:
+        from ai_helper.gcxml_decrypt import needs_live_settings_decrypt
+    except ImportError:
+        return False
+    return needs_live_settings_decrypt(path)
+
+
+def _restore_archived_bytes(dest: Path, raw: bytes) -> bool:
+    """Write archived bytes to live path; re-encrypt plain live ruleta setup.xml."""
+    try:
+        from ai_helper.gcxml_decrypt import (
+            encrypt_gcxml_plain_file,
+            is_live_ruleta_settings_xml,
+            looks_like_gcxml_plain,
+        )
+    except ImportError:
+        dest.write_bytes(raw)
+        return True
+
+    if looks_like_gcxml_plain(raw) and is_live_ruleta_settings_xml(dest):
+        with tempfile.TemporaryDirectory(prefix="gcxml-restore-") as tmp:
+            plain_path = Path(tmp) / "setup.plain.xml"
+            plain_path.write_bytes(raw)
+            return encrypt_gcxml_plain_file(plain_path, dest)
+    dest.write_bytes(raw)
+    return True
+
+
+def archive_manifest_files(
+    game_drive: str,
+    manifest: Manifest,
+    snapshot_dir: Path,
+    *,
+    content_overrides: dict[str, bytes] | None = None,
+) -> None:
+    """Copy scanned files into the snapshot for offline diffs.
+
+    Encrypted live ruleta ``setup.xml`` is archived as Convert-GcxmlSetup plain XML
+    so compare can show readable setting diffs (not gcxml token churn).
+    ``content_overrides`` must be the exact bytes hashed into the manifest SHA1.
+    Never archive ciphertext for live settings when decrypt failed.
+    """
     source_root = scan_target_path(game_drive)
     dest_root = snapshot_dir / SNAPSHOT_FILES_SUBDIR
+    overrides = content_overrides or {}
     for entry in manifest.files:
         rel_parts = Path(entry.relative_path.replace("\\", "/"))
         source = source_root / rel_parts
         dest = dest_root / rel_parts
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if entry.relative_path in overrides:
+            dest.write_bytes(overrides[entry.relative_path])
+            continue
+        if entry.decrypt_ok is False:
+            # Hashed ciphertext — do not poison the archive with opaque gcxml.
+            continue
         if not source.is_file():
             continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, dest)
 
 
@@ -71,15 +130,23 @@ def restore_manifest_files(
     errors: list[str] = []
 
     for entry in manifest.files:
-        rel_parts = Path(entry.relative_path.replace("\\", "/"))
-        source = content_root / rel_parts
-        dest = dest_root / rel_parts
+        try:
+            dest = safe_join_under(dest_root, entry.relative_path)
+            source = safe_join_under(content_root, entry.relative_path)
+        except ValueError as exc:
+            errors.append(f"{entry.relative_path}: {exc}")
+            continue
         if not source.is_file():
             missing.append(entry.relative_path)
             continue
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, dest)
+            raw = source.read_bytes()
+            if not _restore_archived_bytes(dest, raw):
+                errors.append(
+                    f"{entry.relative_path}: failed to re-encrypt plain setup.xml for live write-back"
+                )
+                continue
             written += 1
         except OSError as exc:
             errors.append(f"{entry.relative_path}: {exc}")
@@ -91,12 +158,44 @@ def restore_manifest_files(
     )
 
 
+def restore_single_archived_file(
+    snapshot_dir: Path,
+    relative_path: str,
+    game_drive: str,
+) -> None:
+    """Copy one archived snapshot file to the live scan target (create parents).
+
+    Plain archived ruleta setup.xml is re-encrypted on write-back.
+    """
+    content_root = snapshot_content_root(snapshot_dir)
+    if content_root is None:
+        raise FileNotFoundError(
+            f"Snapshot has no archived files under {SNAPSHOT_FILES_SUBDIR}/. "
+            "Re-scan to capture file content before writing back."
+        )
+    dest_root = scan_target_path(game_drive)
+    dest = safe_join_under(dest_root, relative_path)
+    source = safe_join_under(content_root, relative_path)
+    if not source.is_file():
+        raise FileNotFoundError(
+            f"Archived file not found in snapshot:\n{relative_path}"
+        )
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    raw = source.read_bytes()
+    if not _restore_archived_bytes(dest, raw):
+        raise OSError(
+            f"{relative_path}: failed to write/re-encrypt file to live target"
+        )
+
+
 @dataclass(frozen=True)
 class FileEntry:
     relative_path: str
     sha1: str
     size_bytes: int
     last_write_utc: str
+    content_kind: str | None = None  # "plain" | "cipher" | None
+    decrypt_ok: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +204,7 @@ class Manifest:
     file_count: int
     elapsed_seconds: float
     files: list[FileEntry]
+    warnings: tuple[str, ...] = ()
 
 
 def _relative_path(game_drive: Path, file_path: Path) -> str:
@@ -115,18 +215,47 @@ def _relative_path(game_drive: Path, file_path: Path) -> str:
     return rel.as_posix()
 
 
-def _hash_file(path: Path) -> FileEntry:
+def _hash_file(path: Path) -> tuple[FileEntry, bytes | None]:
+    """Return ``(entry, archive_bytes)``.
+
+    ``archive_bytes`` is the exact payload hashed into ``entry.sha1`` when it
+    should be stored under ``files/`` (plain live setup). ``None`` means copy
+    the on-disk file, or skip archive when ``decrypt_ok is False``.
+    """
+    needs_decrypt = _needs_live_settings_decrypt(path)
+    plain = _plain_override_bytes(path) if needs_decrypt else None
     digest = hashlib.sha1()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+    content_kind: str | None = None
+    decrypt_ok: bool | None = None
+    archive_bytes: bytes | None = None
+    if needs_decrypt:
+        decrypt_ok = plain is not None
+        content_kind = "plain" if decrypt_ok else "cipher"
+        if plain is not None:
+            digest.update(plain)
+            size_bytes = len(plain)
+            archive_bytes = plain
+        else:
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            size_bytes = path.stat().st_size
+            archive_bytes = None
+    else:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        size_bytes = path.stat().st_size
     stat = path.stat()
-    return FileEntry(
+    entry = FileEntry(
         relative_path="",
         sha1=digest.hexdigest().upper(),
-        size_bytes=stat.st_size,
+        size_bytes=size_bytes,
         last_write_utc=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        content_kind=content_kind,
+        decrypt_ok=decrypt_ok,
     )
+    return entry, archive_bytes
 
 
 def collect_scan_files(
@@ -134,6 +263,8 @@ def collect_scan_files(
     scan_roots: list[str] | list[ScanRootSpec],
     include_patterns: list[str],
 ) -> list[Path]:
+    from config_scanner.path_mirror import select_highest_etc_mirror_paths
+
     seen: set[Path] = set()
     files: list[Path] = []
     specs: list[ScanRootSpec] = []
@@ -157,13 +288,24 @@ def collect_scan_files(
                 if path.is_file() and path not in seen:
                     seen.add(path)
                     files.append(path)
-    return sorted(files)
+
+    # config/etc and bios/etc are the same settings tree — keep highest path only.
+    rel_to_path = {_relative_path(game_drive, path): path for path in files}
+    kept_rels = select_highest_etc_mirror_paths(rel_to_path.keys())
+    return sorted(
+        (rel_to_path[rel] for rel in kept_rels),
+        key=lambda path: _relative_path(game_drive, path).lower(),
+    )
 
 
 def effective_scan_roots(game_drive: Path, profile: GameProfile | None) -> list[ScanRootSpec]:
     """Profile scan roots, plus RAM-clear maintenance config when scripts are present."""
     if not profile:
-        return [ScanRootSpec(path="config", recursive=True)]
+        return [
+            ScanRootSpec(path="config", recursive=True),
+            ScanRootSpec(path="bios/etc", recursive=True),
+            ScanRootSpec(path="data", recursive=True),
+        ]
     roots = list(profile.scan_roots)
     if profile.build_version_relative_path and has_ramclear_script(game_drive):
         extras = (
@@ -183,7 +325,7 @@ def build_manifest(
     game_drive: str,
     config: ToolConfig,
     profile: GameProfile | None = None,
-) -> Manifest:
+) -> tuple[Manifest, dict[str, bytes]]:
     drive_path = Path(normalize_scan_target(game_drive))
     if not is_unc_path(game_drive) and not str(drive_path).endswith("\\"):
         drive_path = Path(str(drive_path) + "\\")
@@ -196,29 +338,51 @@ def build_manifest(
     started = time.perf_counter()
     files = collect_scan_files(drive_path, scan_roots, include_patterns)
 
-    def hash_one(path: Path) -> FileEntry:
-        entry = _hash_file(path)
-        return FileEntry(
-            relative_path=_relative_path(drive_path, path),
-            sha1=entry.sha1,
-            size_bytes=entry.size_bytes,
-            last_write_utc=entry.last_write_utc,
+    def hash_one(path: Path) -> tuple[FileEntry, bytes | None]:
+        entry, archive_bytes = _hash_file(path)
+        return (
+            FileEntry(
+                relative_path=_relative_path(drive_path, path),
+                sha1=entry.sha1,
+                size_bytes=entry.size_bytes,
+                last_write_utc=entry.last_write_utc,
+                content_kind=entry.content_kind,
+                decrypt_ok=entry.decrypt_ok,
+            ),
+            archive_bytes,
         )
 
     workers = max(1, parallel_workers)
     if len(files) <= 1 or workers == 1:
-        entries = [hash_one(path) for path in files]
+        hashed = [hash_one(path) for path in files]
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            entries = list(pool.map(hash_one, files))
+            hashed = list(pool.map(hash_one, files))
+
+    entries: list[FileEntry] = []
+    content_overrides: dict[str, bytes] = {}
+    for entry, archive_bytes in hashed:
+        entries.append(entry)
+        if archive_bytes is not None:
+            content_overrides[entry.relative_path] = archive_bytes
+
+    warnings: list[str] = []
+    for entry in entries:
+        if entry.decrypt_ok is False:
+            warnings.append(
+                f"Decrypt failed for {entry.relative_path} — hashed ciphertext "
+                "(not archived); setting diffs may be wrong until decrypt works."
+            )
 
     elapsed = round(time.perf_counter() - started, 2)
-    return Manifest(
+    manifest = Manifest(
         scanned_at=datetime.now().astimezone().isoformat(),
         file_count=len(entries),
         elapsed_seconds=elapsed,
         files=sorted(entries, key=lambda item: item.relative_path),
+        warnings=tuple(warnings),
     )
+    return manifest, content_overrides
 
 
 def save_json(path: Path, payload: object) -> None:
@@ -334,21 +498,29 @@ def build_info_to_dict(info: BuildInfo) -> dict[str, str | None]:
 
 
 def _file_entry_to_dict(entry: FileEntry) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "relativePath": entry.relative_path,
         "sha1": entry.sha1,
         "sizeBytes": entry.size_bytes,
         "lastWriteUtc": entry.last_write_utc,
     }
+    if entry.content_kind is not None:
+        payload["contentKind"] = entry.content_kind
+    if entry.decrypt_ok is not None:
+        payload["decryptOk"] = entry.decrypt_ok
+    return payload
 
 
 def manifest_to_dict(manifest: Manifest) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "scannedAt": manifest.scanned_at,
         "fileCount": manifest.file_count,
         "elapsedSeconds": manifest.elapsed_seconds,
         "files": [_file_entry_to_dict(entry) for entry in manifest.files],
     }
+    if manifest.warnings:
+        payload["warnings"] = list(manifest.warnings)
+    return payload
 
 
 def load_manifest(snapshot_dir: Path) -> Manifest:
@@ -359,14 +531,18 @@ def load_manifest(snapshot_dir: Path) -> Manifest:
             sha1=item["sha1"],
             size_bytes=int(item["sizeBytes"] if "sizeBytes" in item else item["size_bytes"]),
             last_write_utc=item["lastWriteUtc"] if "lastWriteUtc" in item else item["last_write_utc"],
+            content_kind=item.get("contentKind") or item.get("content_kind"),
+            decrypt_ok=item.get("decryptOk") if "decryptOk" in item else item.get("decrypt_ok"),
         )
         for item in data.get("files", [])
     ]
+    warnings_raw = data.get("warnings") or ()
     return Manifest(
         scanned_at=data.get("scannedAt") or data.get("scanned_at", ""),
         file_count=int(data.get("fileCount") or data.get("file_count") or len(files)),
         elapsed_seconds=float(data.get("elapsedSeconds") or data.get("elapsed_seconds") or 0),
         files=files,
+        warnings=tuple(str(w) for w in warnings_raw),
     )
 
 

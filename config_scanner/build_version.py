@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from config_scanner.profiles import GameProfile
+from config_scanner.profiles import GameProfile, display_profile_label
 
 
 @dataclass(frozen=True)
@@ -95,6 +95,14 @@ def prefer_local_scan_target(target: str) -> str:
 # Removable / game-image drives probed before the full alphabet sweep (G: is common on cabinets).
 _PRIORITY_GAME_DRIVES = ("G:", "D:", "E:", "F:", "H:", "C:")
 
+# Lab cabinets probed over UNC when no local game image is mounted.
+_LAB_REMOTE_GAME_ROOTS = (
+    r"\\10.0.0.90\c$\Goldclub",
+    r"\\10.0.0.90\c$\Goldclub\slot",
+    r"\\10.0.0.90\d$\Goldclub",
+    r"\\10.0.0.90\d$\Goldclub\slot",
+)
+
 # Maintenance RAM-clear scripts — secondary roulette USB marker when BuildVersion.txt is absent.
 _RAMCLEAR_SCRIPT_REL_PATHS = (
     "maintenance/tasks/ramclear.ps1",
@@ -104,6 +112,30 @@ _RAMCLEAR_SCRIPT_REL_PATHS = (
 )
 _RAMCLEAR_REPO_PREFIXES = ("", "Goldclub/")
 
+
+
+def has_slot_game_exe(root: Path) -> bool:
+    """True when a real slot client binary exists (folder alone is not enough)."""
+    base = Path(root)
+    for rel in ("OneHand.exe", "bin/OneHand.exe", "game-start.exe"):
+        try:
+            if (base / rel).is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def has_roulette_game_exe(root: Path) -> bool:
+    """True when Ruleta.exe exists under the image (folder / scripts alone are not enough)."""
+    base = Path(root)
+    for rel in ("ruleta/Ruleta.exe", "ruleta/ruleta.exe", "Ruleta.exe", "ruleta.exe"):
+        try:
+            if (base / rel).is_file():
+                return True
+        except OSError:
+            continue
+    return False
 
 def has_ramclear_script(root: Path) -> bool:
     """True when a known RAM-clear maintenance script exists under a game image root."""
@@ -124,7 +156,12 @@ def roulette_build_version_file(root: Path, relative_path: str) -> Path | None:
 
 
 def is_roulette_scan_target(root: Path, *, build_version_relative_path: str) -> bool:
-    """Roulette USB: ruleta/BuildVersion.txt or RAM-clear maintenance script on the drive."""
+    """Roulette USB: requires Ruleta.exe plus BuildVersion.txt and/or a RAM-clear script.
+
+    An empty Goldclub tree or maintenance scripts alone must not count as installed SW.
+    """
+    if not has_roulette_game_exe(root):
+        return False
     if roulette_build_version_file(root, build_version_relative_path):
         return True
     return has_ramclear_script(root)
@@ -452,7 +489,7 @@ def parse_build_version_file(
         scan_timestamp=ts.isoformat(),
         game_drive=normalize_scan_target(game_drive),
         profile_id=profile.id if profile else None,
-        profile_label=profile.label if profile else None,
+        profile_label=(display_profile_label(profile.label, game_drive) if profile else None),
         exe_product_version=exe_info.product_version or exe_info.display_version,
         exe_file_version=exe_info.file_version,
         exe_product_name=exe_info.product_name,
@@ -482,6 +519,12 @@ def _build_info_from_binary_fingerprint(
         raise FileNotFoundError(
             f"No fingerprint files found under {scan_root} (expected: {', '.join(map(str, names))})"
         )
+    if not has_slot_game_exe(scan_root):
+        raise FileNotFoundError(
+            f"No slot game EXE under {scan_root} "
+            "(expected OneHand.exe, bin\\OneHand.exe, or game-start.exe). "
+            "An empty C:\\Goldclub\\slot folder is not a valid scan target."
+        )
     build_number = digest.hexdigest()[:8].upper()
     version_info = detect_slot_version(scan_root)
     source_version = version_info.product_version or version_info.display_version
@@ -498,7 +541,7 @@ def _build_info_from_binary_fingerprint(
         scan_timestamp=scan_timestamp.isoformat(),
         game_drive=normalize_scan_target(game_drive),
         profile_id=profile.id,
-        profile_label=profile.label,
+        profile_label=display_profile_label(profile.label, game_drive),
         exe_product_version=version_info.product_version or version_info.display_version,
         exe_file_version=version_info.file_version,
         exe_product_name=version_info.product_name,
@@ -523,13 +566,18 @@ def resolve_build_info(
         rel = profile.build_version_relative_path.replace("\\", "/")
         build_path = root / rel
         if build_path.is_file():
+            if not has_roulette_game_exe(root):
+                raise FileNotFoundError(
+                    f"Found {rel} but no Ruleta.exe under {root}. "
+                    "Empty Goldclub / incomplete image is not a valid roulette scan target."
+                )
             return parse_build_version_file(
                 build_path,
                 game_drive=scan_target,
                 scan_timestamp=ts,
                 profile=profile,
             )
-        if has_ramclear_script(root):
+        if has_roulette_game_exe(root) and has_ramclear_script(root):
             return BuildInfo(
                 source_version=None,
                 branch="RAM-clear maintenance image",
@@ -541,7 +589,7 @@ def resolve_build_info(
                 scan_timestamp=ts.isoformat(),
                 game_drive=normalize_scan_target(scan_target),
                 profile_id=profile.id,
-                profile_label=profile.label,
+                profile_label=display_profile_label(profile.label, scan_target),
             )
         raise FileNotFoundError(
             f"Roulette build tag not found at {build_path}\n"
@@ -624,6 +672,12 @@ def scan_target_is_valid(profile: GameProfile, target: str) -> bool:
         root = scan_target_path(target)
         if not root.exists():
             return False
+        if profile.build_version_relative_path:
+            if not has_roulette_game_exe(root):
+                return False
+        elif profile.build_fingerprint:
+            if not has_slot_game_exe(root):
+                return False
         resolve_build_info(profile, target)
         return True
     except (FileNotFoundError, OSError, ValueError):
@@ -664,51 +718,55 @@ def unified_scan_candidates(
     preferred: str | None = None,
 ) -> list[str]:
     """All paths to probe when auto-detecting slot vs roulette (local before UNC)."""
-    local_candidates: list[str] = []
-    remote_candidates: list[str] = []
+    candidates: list[str] = []
     seen: set[str] = set()
 
-    def add(raw: str | None, *, remote: bool = False) -> None:
+    def add(raw: str | None) -> None:
         if not raw or not str(raw).strip():
             return
         norm = normalize_scan_target(str(raw).strip())
-        if is_unc_path(norm):
-            remote = True
         local_equiv = unc_admin_share_to_local_path(norm)
         if local_equiv:
             norm = local_equiv
-            remote = False
         key = norm.casefold()
         if key in seen:
             return
         seen.add(key)
-        bucket = remote_candidates if remote else local_candidates
-        bucket.append(norm)
+        candidates.append(norm)
 
     if preferred and not is_unc_path(preferred):
         add(preferred)
 
+    # Local installs / USB images first.
     add(r"C:\Goldclub\slot")
+    add(r"C:\Goldclub")
     for drive in _PRIORITY_GAME_DRIVES:
         add(drive)
+        add(f"{drive}\\Goldclub")
         add(f"{drive}\\Goldclub\\slot")
 
     if preferred and is_unc_path(preferred):
         add(preferred)
 
+    # Profile + lab cabinet remotes next (before full alphabet sweep).
+    for profile in profiles:
+        for raw in profile.discover_targets:
+            add(raw)
+        add(profile.default_target)
+    for remote in _LAB_REMOTE_GAME_ROOTS:
+        add(remote)
+
+    # Remaining drive letters last (slow / often empty).
     for letter in range(ord("C"), ord("Z") + 1):
         drive = f"{chr(letter)}:"
         if drive in _PRIORITY_GAME_DRIVES:
             continue
         add(drive)
+        add(f"{drive}\\Goldclub")
         add(f"{drive}\\Goldclub\\slot")
 
-    for profile in profiles:
-        for raw in profile.discover_targets:
-            add(raw)
-        add(profile.default_target)
+    return candidates
 
-    return local_candidates + remote_candidates
 
 
 def is_slot_cabinet_scan_target(target: str) -> bool:
@@ -755,6 +813,52 @@ def match_profile_for_target(
     return None
 
 
+def scan_target_resolution_candidates(
+    scan_target: str,
+    profiles: list[GameProfile] | None = None,
+) -> list[str]:
+    """Paths to try when resolving an explicit scan target (USB ConfigScanner subfolder, parents)."""
+    explicit = normalize_scan_target(scan_target.strip())
+    if not explicit:
+        return []
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str | None) -> None:
+        if not raw or not str(raw).strip():
+            return
+        norm = normalize_scan_target(str(raw).strip())
+        key = norm.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(norm)
+
+    add(explicit)
+    local_equiv = prefer_local_scan_target(explicit)
+    if local_equiv.casefold() != explicit.casefold():
+        add(local_equiv)
+
+    path = scan_target_path(explicit)
+    if any(part.casefold() == "configscanner" for part in path.parts):
+        add(str(path.anchor))
+    current = path
+    for _ in range(5):
+        parent = current.parent
+        if parent == current:
+            break
+        add(str(parent))
+        current = parent
+
+    if profiles:
+        for candidate in list(candidates):
+            profile = match_profile_for_target(candidate, profiles)
+            if profile:
+                return [prefer_local_scan_target(candidate)]
+    return candidates
+
+
 def resolve_scan_for_target(
     scan_target: str,
     profiles: list[GameProfile],
@@ -764,22 +868,14 @@ def resolve_scan_for_target(
     if not explicit:
         raise ValueError("scan_target is required")
 
-    candidates = [explicit]
-    local_equiv = prefer_local_scan_target(explicit)
-    if local_equiv.casefold() != explicit.casefold():
-        candidates.append(local_equiv)
-
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = candidate.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
+    checked: list[str] = []
+    for candidate in scan_target_resolution_candidates(explicit, profiles=None):
+        checked.append(candidate)
         profile = match_profile_for_target(candidate, profiles)
         if profile:
             return DiscoverResult(
                 profile_id=profile.id,
-                profile_label=profile.label,
+                profile_label=display_profile_label(profile.label, candidate),
                 target=prefer_local_scan_target(candidate),
             )
 
@@ -790,10 +886,12 @@ def resolve_scan_for_target(
             "BuildVersion.txt is roulette-only and is not used under slot folders."
         )
 
+    detail = "\n".join(f"  - {item}" for item in checked) or f"  - {explicit}"
     raise FileNotFoundError(
         f"No slot or roulette repo at:\n  {scan_target.strip()}\n\n"
-        "Expected ruleta\\BuildVersion.txt, RAM-clear maintenance script, or slot binaries "
-        "(OneHand.exe, game-start.exe, GoldClub.Settings.dll)."
+        "Expected Ruleta.exe (+ BuildVersion.txt or RAM-clear script), or slot binaries "
+        "(OneHand.exe, game-start.exe, GoldClub.Settings.dll).\n"
+        f"Tried:\n{detail}"
     )
 
 
@@ -802,15 +900,15 @@ def discover_game_repo(
     preferred: str | None = None,
 ) -> DiscoverResult:
     """Auto-detect slot or roulette repo and return matching profile + path."""
-    # Roulette USB images with RAM-clear maintenance: prefer D:\ when that marker is present.
+    # Local D: roulette with RAM-clear maintenance: prefer that when present.
     if not preferred or normalize_scan_target(preferred).casefold().rstrip("\\") == "d:":
         d_root = scan_target_path("D:")
-        if d_root.exists() and has_ramclear_script(d_root):
+        if d_root.exists() and has_roulette_game_exe(d_root) and has_ramclear_script(d_root):
             profile = match_profile_for_target("D:", profiles)
             if profile and profile.build_version_relative_path:
                 return DiscoverResult(
                     profile_id=profile.id,
-                    profile_label=profile.label,
+                    profile_label=display_profile_label(profile.label, "D:"),
                     target=prefer_local_scan_target("D:"),
                 )
 
@@ -822,14 +920,14 @@ def discover_game_repo(
             target = prefer_local_scan_target(candidate)
             return DiscoverResult(
                 profile_id=profile.id,
-                profile_label=profile.label,
+                profile_label=display_profile_label(profile.label, target),
                 target=target,
             )
 
     detail = "\n".join(f"  - {item}" for item in checked) or "  (none)"
     raise FileNotFoundError(
         "Game repo not found (slot or roulette).\n"
-        "Expected ruleta\\BuildVersion.txt, RAM-clear maintenance script, or slot binaries "
+        "Expected Ruleta.exe (+ BuildVersion.txt or RAM-clear script), or slot binaries "
         "(OneHand.exe, game-start.exe, GoldClub.Settings.dll) under:\n"
         f"{detail}"
     )

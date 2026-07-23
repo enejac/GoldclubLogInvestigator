@@ -17,7 +17,7 @@ config-scanner/          (next to LogInvestigator.exe on USB, or repo root in de
 
 ## Usage
 
-1. Connect the game image USB (`D:\` with `ruleta\BuildVersion.txt`).
+1. Point Scan target at the game root (auto-detect prefers local, then `\\10.0.0.90\c$\Goldclub` for roulette).
 2. Run **`LogInvestigator.exe`** (or `python gui_app.py` in dev).
 3. Open the **Config Scanner** tab → **Scan now**, **Compare latest two**, **Open report**.
 

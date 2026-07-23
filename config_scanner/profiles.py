@@ -65,11 +65,15 @@ def load_profiles() -> list[GameProfile]:
         return [
             GameProfile(
                 id="roulette_usb",
-                label="Roulette (USB D:)",
-                default_target="D:",
+                label="Roulette",
+                default_target=r"\\10.0.0.90\c$\Goldclub",
                 build_version_relative_path="ruleta/BuildVersion.txt",
                 build_fingerprint=None,
-                scan_roots=[ScanRootSpec(path="config", recursive=True)],
+                scan_roots=[
+                    ScanRootSpec(path="config", recursive=True),
+                    ScanRootSpec(path="bios/etc", recursive=True),
+                    ScanRootSpec(path="data", recursive=True),
+                ],
                 include_patterns=["*.xml", "*.ini", "*.conf", "*.json", "*.dat"],
                 discover_targets=[],
             )
@@ -88,3 +92,27 @@ def get_profile(profile_id: str) -> GameProfile:
 def default_profile_id() -> str:
     profiles = load_profiles()
     return profiles[0].id if profiles else "roulette_usb"
+
+
+def is_unc_scan_target(target: str | None) -> bool:
+    return bool(target) and str(target).lstrip().startswith("\\")
+
+
+def display_profile_label(label: str | None, game_drive: str | None = None) -> str:
+    """Human profile name without obsolete USB-D wording; annotate remote UNC."""
+    raw = (label or "").strip() or "—"
+    # Historical / misleading media-specific labels
+    if raw in {"Roulette (USB D:)", "Roulette (USB)", "Roulette (USB D)"}:
+        raw = "Roulette"
+    if raw.startswith("Slot (lab"):
+        raw = "Slot"
+    gd = (game_drive or "").strip()
+    if raw in {"—", "-"}:
+        return raw
+    if is_unc_scan_target(gd):
+        # \\host\share\...
+        parts = [p for p in gd.replace("/", "\\").split("\\") if p]
+        host = parts[0] if parts else "remote"
+        if not raw.endswith("(remote)") and host not in raw:
+            return f"{raw} (remote {host})"
+    return raw

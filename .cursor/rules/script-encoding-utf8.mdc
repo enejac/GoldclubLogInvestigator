@@ -1,0 +1,27 @@
+---
+description: Write all scripts as UTF-8 (never UTF-16)
+alwaysApply: true
+---
+
+# Script file encoding: UTF-8 only
+
+All scripts and text launchers must be **UTF-8** (preferably UTF-8 without BOM).
+
+Applies to: `.ps1`, `.bat`, `.cmd`, `.py`, `.vbs`, `.sh`, `.json`, `.xml`, `.md`, `.txt`, `.yml`, `.yaml`, and similar text sources.
+
+## Do
+
+- Write/edit with UTF-8 (no BOM for `.bat` / `.cmd` — `cmd.exe` breaks on UTF-16 and often on BOM).
+- When creating files via PowerShell, use ASCII or UTF-8 **without** BOM, e.g.:
+  `[System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))`
+- After writing a `.bat`/`.cmd`, verify the file does **not** start with `FF FE` or `FE FF` (UTF-16 BOM). First bytes should be plain ASCII (e.g. `@echo` → `40 65 63 68 6F`).
+
+## Do not
+
+- Never write scripts as UTF-16 LE/BE (PowerShell `Out-File` / `Set-Content` **without** `-Encoding` on Windows often defaults to UTF-16).
+- Never use `Out-File` or `Set-Content` on scripts unless you pass `-Encoding utf8` or `-Encoding ascii` explicitly.
+- Never leave duplicate `.cmd` + `.bat` wrappers for the same tool — one `.bat` (optional `.ps1` for logic).
+
+## Why
+
+UTF-16 `.bat`/`.ps1` files fail silently when double-clicked or run from PowerShell (`.\foo.bat` returns with no output). Lab USB scripts must stay UTF-8 so cabinet `cmd.exe` can run them.

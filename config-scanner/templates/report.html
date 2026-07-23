@@ -141,6 +141,26 @@
       border: 1px solid var(--border);
     }
 
+    .badge-encrypted {
+      color: #92400e;
+      background: #fff7ed;
+      border-color: #fdba74;
+    }
+
+    .badge-plain {
+      color: #1e3a5f;
+      background: #eff6ff;
+      border-color: #93c5fd;
+    }
+
+    .file-diff.encrypted-origin h3 {
+      color: #b35c00;
+    }
+
+    .file-diff.plain-origin h3 {
+      color: #1f4e79;
+    }
+
     .changed-nav {
       columns: 2;
       padding-left: 20px;
@@ -178,6 +198,21 @@
       font-style: italic;
     }
 
+    .compare-warnings {
+      margin-top: 16px;
+      border-color: #f59e0b;
+      background: #fffbeb;
+      color: #92400e;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .compare-warnings {
+        background: #451a03;
+        color: #fde68a;
+        border-color: #b45309;
+      }
+    }
+
     footer {
       text-align: center;
       color: var(--muted);
@@ -194,17 +229,25 @@
         <h2>Baseline</h2>
         <div><strong>Snapshot:</strong> __BASELINE_SNAPSHOT__</div>
         <div><strong>Build:</strong> __BASELINE_BUILD__</div>
+        <div><strong>Product version:</strong> __BASELINE_PRODUCT_VERSION__</div>
+        <div><strong>Source version:</strong> __BASELINE_SOURCE_VERSION__</div>
+        <div><strong>Exe version:</strong> __BASELINE_EXE_NAME__ __BASELINE_EXE_VERSION__</div>
         <div><strong>Branch:</strong> __BASELINE_BRANCH__</div>
         <div><strong>Scan time:</strong> __BASELINE_SCAN_TIME__</div>
         <div><strong>Game drive:</strong> __BASELINE_GAME_DRIVE__</div>
+        <div class="muted"><strong>Summary:</strong> __BASELINE_VERSION_LINE__</div>
       </div>
       <div class="panel">
         <h2>Target</h2>
         <div><strong>Snapshot:</strong> __TARGET_SNAPSHOT__</div>
         <div><strong>Build:</strong> __TARGET_BUILD__</div>
+        <div><strong>Product version:</strong> __TARGET_PRODUCT_VERSION__</div>
+        <div><strong>Source version:</strong> __TARGET_SOURCE_VERSION__</div>
+        <div><strong>Exe version:</strong> __TARGET_EXE_NAME__ __TARGET_EXE_VERSION__</div>
         <div><strong>Branch:</strong> __TARGET_BRANCH__</div>
         <div><strong>Scan time:</strong> __TARGET_SCAN_TIME__</div>
         <div><strong>Game drive:</strong> __TARGET_GAME_DRIVE__</div>
+        <div class="muted"><strong>Summary:</strong> __TARGET_VERSION_LINE__</div>
       </div>
     </div>
     <div class="summary-grid">
@@ -213,6 +256,7 @@
       <div class="summary-card">Modified<strong>__COUNT_MODIFIED__</strong></div>
       <div class="summary-card">Unchanged<strong>__COUNT_UNCHANGED__</strong></div>
     </div>
+    __COMPARE_WARNINGS__
   </header>
 
   <main>
@@ -258,7 +302,7 @@
   </main>
 
   <footer>
-    ConfigScanner USB tool
+    Config Scanner
   </footer>
 
   <script>

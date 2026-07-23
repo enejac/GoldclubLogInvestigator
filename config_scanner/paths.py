@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import string
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,13 +42,62 @@ def _migrate_legacy_nested_layout(exe_dir: Path) -> None:
         pass
 
 
+def _default_exe_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        from app_paths import app_install_dir
+
+        return app_install_dir()
+    return _package_root().parent / "config-scanner"
+
+
+def _snapshot_entry_count(root: Path) -> int:
+    snap_dir = root / "snapshots"
+    if not snap_dir.is_dir():
+        return 0
+    try:
+        return sum(1 for entry in snap_dir.iterdir() if not entry.name.startswith("."))
+    except OSError:
+        return 0
+
+
+def _portable_data_candidates(exe_dir: Path) -> list[Path]:
+    """Known QA USB / portable folders (lab default H:\\ConfigScanner first)."""
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add(raw: str | Path | None) -> None:
+        if not raw:
+            return
+        path = Path(raw).resolve()
+        key = str(path).casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(path)
+
+    add(os.environ.get("LOGINV_CONFIG_SCANNER_ROOT", "").strip())
+    add("H:/ConfigScanner")
+    for letter in string.ascii_uppercase:
+        add(f"{letter}:/ConfigScanner")
+    add(exe_dir)
+    return candidates
+
+
+def _resolve_tool_root() -> Path:
+    """Writable data folder next to LogInvestigator / config-scanner (never another drive)."""
+    exe_dir = _default_exe_dir()
+    if getattr(sys, "frozen", False):
+        _migrate_legacy_nested_layout(exe_dir)
+
+    override = os.environ.get("LOGINV_CONFIG_SCANNER_ROOT", "").strip()
+    if override:
+        return Path(override).resolve()
+    return exe_dir
+
+
 def tool_root() -> Path:
     """Writable folder for snapshots, reports, and seeded config (next to exe on USB)."""
-    if getattr(sys, "frozen", False):
-        root = Path(sys.executable).resolve().parent
-        _migrate_legacy_nested_layout(root)
-    else:
-        root = _package_root().parent / "config-scanner"
+    root = _resolve_tool_root()
     ensure_tool_data(root)
     return root
 

@@ -26,8 +26,8 @@ SHA1 snapshots of roulette **config** files for QA diff across sessions. **No Po
 
 Double-click `H:\tools\LogInvestigator.exe` → **Config Scanner** tab.
 
-## Scan scope
+## Scan scope (Roulette profile)
 
-`D:\config\**\*.{xml,ini,conf,json,dat}` — build tag from `D:\ruleta\BuildVersion.txt`.
+Recursive under game root (`C:\Goldclub` / target): `config\`, `bios\etc\`, and `data\` — patterns `*.{xml,ini,conf,json,dat}`. Build tag from `ruleta\BuildVersion.txt`.
 
-Read **`config-scanner/AGENT.md`** for limitations (live-drive content diff, obfuscated XML).
+Read **`config-scanner/AGENT.md`** for limitations. Roulette Scan decrypts encrypted `setup.xml` (gcxml) to plain settings for hash/compare.

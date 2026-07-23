@@ -20,7 +20,7 @@ Flow diagrams: [diagrams/windivert-pollaft-inject-flow.md](diagrams/windivert-po
 
 ```powershell
 .\Initialize-LabAccess.ps1 -Verify
-.\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.90 -SasPollMode WinDivert
+.\lab\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.90 -SasPollMode WinDivert
 ```
 
 ## Full procedure (wake + inject + verify)
@@ -38,7 +38,7 @@ Check TCP 31150 Established; if pollaft shows s2c=0 c2s=0 the bridge is silent.
 ### Step 3 - Inject
 
 ```powershell
-.\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.90 -SasPollMode WinDivert -MaxRetries 2
+.\lab\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.90 -SasPollMode WinDivert -MaxRetries 2
 ```
 
 ### Step 4 - Success criteria
@@ -55,6 +55,40 @@ Check TCP 31150 Established; if pollaft shows s2c=0 c2s=0 the bridge is silent.
 | Exception 69 | -ClearPendingAft |
 | Ingest only | Wait WAT2AFT UP; post-AFT polls (PostAftPollMs=3000) |
 
-## Proven run 2026-07-10 txn 84
+## Proven run 2026-07-10 txn 84 (slot path)
 
 See test-runs/20260710-073042-after/inject-summary.md
+
+---
+
+## Roulette path (.90 / GCC_RT_330106_01) — proven 2026-07-23
+
+Roulette does **not** use CommCtrlSAS `:31150`. Use the WakeUpPort / MUX channel
+(usually **30550**) via the roulette wrapper. Full notes:
+[lab/roulette/README.md](../lab/roulette/README.md).
+
+| Field | Value |
+|-------|--------|
+| Cabinet | `10.0.0.90` (GST20664) |
+| EGM | `GCC_RT_330106_01`, asset `777`, SASAddress `1` |
+| Bridge | CommCtrlSAS **WakeUpPort 30550** → Aurum (ClientsSet Port=30500) |
+| Method | `lab\roulette\Invoke-WinDivertAftRoulette.ps1 -Send` (`pollaft` + AutoWake) |
+| Last full success | **2026-07-23** txn 37 — ingest + NonRestricted 100000 credited |
+
+### One-shot (roulette)
+
+```powershell
+.\Initialize-LabAccess.ps1 -Verify
+.\lab\roulette\Invoke-WinDivertAftRoulette.ps1 -Send -IP 10.0.0.90 -nr 100000
+```
+
+### Success criteria (2026-07-23)
+
+- BridgePort auto-selected: `30550` (ESTABLISHED)
+- Exception **66** (cashout) ignored — not a host→EGM busy
+- AutoWake (WinRM) restarted Gateway SAS + Aurum when WAT was stale; WAT2AFT UP
+- sasmsgr: `qGMID1:0172...` INGESTED (addr 1, non-restricted amount 100000)
+- Aurum: `FULL_TRANSFER_SUCCESSFUL` — NonRestricted Req/Com **100000**
+
+Do **not** point slot `Invoke-WinDivertAft.ps1` at `:31150` on this roulette image
+(`NO_ESTABLISHED`). If only `:40000` is listening, restore COM5/MUX USB and cold-boot.

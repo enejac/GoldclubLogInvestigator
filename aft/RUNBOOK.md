@@ -16,10 +16,12 @@ the existing** `CommCtrlSAS:31150 -> Aurum:<ephemeral>` flow at the correct sequ
 number, so Aurum reads it as the next in-order bytes and commits the transfer.
 
 - **Lab cabinet:** `10.0.0.90` (host `GST20664`)
-- **EGM:** `GCC_ST_20664_01`, asset `777`
+- **EGM (slot path):** `GCC_ST_20664_01`, asset `777`, bridge `:31150`
+- **EGM (roulette path):** `GCC_RT_330106_01`, asset `777`, SASAddress `1`, bridge **WakeUpPort `:30550`**
 - **Registration:** `GAMING_MACHINE_NOT_REGISTERED` (registration key = 20 zero bytes). Transfers still commit unregistered — WAT authorization, not SAS AFT registration, is the active gate.
-- **Status:** full sim path confirmed **2026-07-09** (txn 83) and **2026-07-10** (txn 84 ingest + credit, no physical polls); legacy path confirmed 2026-06-15/17.
-- **Saved procedure:** [`PROVEN-INJECT-PROCEDURE.md`](PROVEN-INJECT-PROCEDURE.md) — wake + inject + verify checklist.
+- **Status:** slot full-sim confirmed **2026-07-09/10** (txn 83/84); roulette pollaft on `:30550` confirmed **2026-07-23** (txn 37, NonRestricted 100000). Legacy path confirmed 2026-06-15/17.
+- **Saved procedure:** [`PROVEN-INJECT-PROCEDURE.md`](PROVEN-INJECT-PROCEDURE.md) — wake + inject + verify (slot + roulette).
+- **Roulette ops:** [`lab/roulette/README.md`](../lab/roulette/README.md)
 - **Flow diagrams:** [`diagrams/windivert-pollaft-inject-simple.md`](diagrams/windivert-pollaft-inject-simple.md) (one page) · [`diagrams/windivert-pollaft-inject-flow.md`](diagrams/windivert-pollaft-inject-flow.md) (full)
 
 ## Prerequisites (check before every inject)
@@ -68,14 +70,17 @@ Without L0, expect `NO_ESTABLISHED_31150`. Without L2 on the legacy path, expect
 From the repo folder `C:\Users\Ezbogar\GoldclubLogInvestigator`:
 
 ```powershell
-# One command (auto-wakes wedged bridge, sim polls, inject, verify):
-.\Send-TestAft1000.ps1 -Send
+# Slot path (:31150) — one command (auto-wakes wedged bridge, sim polls, inject, verify):
+.\lab\Send-TestAft1000.ps1 -Send
 
 # Equivalent:
-.\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.90
+.\lab\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.90
+
+# Roulette path (WakeUpPort :30550) — proven 2026-07-23 on .90:
+.\lab\roulette\Invoke-WinDivertAftRoulette.ps1 -Send -IP 10.0.0.90 -nr 100000
 
 # Manual wake only (rare — AutoWake handles this on inject):
-.\Invoke-WakeSasBridge.ps1 -IP 10.0.0.90
+.\lab\Invoke-WakeSasBridge.ps1 -IP 10.0.0.90
 ```
 
 ### Amount and transfer-type parameters
@@ -279,8 +284,8 @@ Two changes remove the trigger:
 To actually remove the driver, use the explicit safe teardown, which deletes **only** when the service is genuinely `STOPPED` (and refuses while `STOP_PENDING`, so it can never create the wedge):
 
 ```powershell
-.\Invoke-WinDivertAft.ps1 -IP 10.0.0.90 -RemoveDriver
-# or: .\Send-TestAft1000.ps1 -IP 10.0.0.90 -RemoveDriver
+.\lab\Invoke-WinDivertAft.ps1 -IP 10.0.0.90 -RemoveDriver
+# or: .\lab\Send-TestAft1000.ps1 -IP 10.0.0.90 -RemoveDriver
 ```
 
 The only remaining way to reach the stuck state is `TerminateProcess` on `WdInject.exe` mid-run (uncatchable) immediately followed by a manual `sc delete`; the script no longer does either, so a reboot-clear should not recur in normal use.

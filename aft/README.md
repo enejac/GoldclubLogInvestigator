@@ -11,12 +11,17 @@ and `probes/`.
 
 | Cabinet | Result |
 |---------|--------|
-| **10.0.0.90** (GST20664) | **Works** - full WinDivert poll-sim + inject (txn 83/84, Jul 2026) |
+| **10.0.0.90** (GST20664) slot path | **Works** — WinDivert poll-sim + inject on `:31150` (txn 83/84, Jul 2026) |
+| **10.0.0.90** roulette path | **Works** — same pollaft method on WakeUpPort **`:30550`** (txn 37, **2026-07-23**, NonRestricted 100000) |
 | **10.0.0.171** (GST19737) | **Blocked** without an organic SAS poll source - see investigations |
 
-Default path today: simulate polls with `WdPollInject` (`-SasPollMode WinDivert`),
+Default **slot** path: simulate polls with `WdPollInject` (`-SasPollMode WinDivert`),
 inject `0x72` in-stream, keep post-AFT polls for a few seconds. No physical COM11
 IGT session required on `.90` when the CommCtrlSAS <-> Aurum bridge is awake.
+
+**Roulette** on the same cabinet uses ClientsSet WakeUpPort (usually 30550), not
+31150 — use `lab\roulette\Invoke-WinDivertAftRoulette.ps1` (see
+[lab/roulette/README.md](../lab/roulette/README.md)).
 
 ## Quick start (.90)
 
@@ -84,15 +89,18 @@ Do not treat `.171` inject failures as a WinDivert bug until polls are live.
 
 | Item | Role |
 |------|------|
-| `lab/Send-TestAft1000.ps1` | Thin wrapper - default $1k promo inject |
+| `lab/Send-TestAft1000.ps1` | Thin wrapper - default $1k promo inject (slot `:31150`) |
 | `lab/Invoke-WinDivertAft.ps1` | Main inject driver (`-SasPollMode WinDivert`) |
+| `lab/roulette/Invoke-WinDivertAftRoulette.ps1` | Roulette wrapper — WakeUpPort `:30550`, proven 2026-07-23 |
 | `lab/Invoke-WakeSasBridge.ps1` | Wake CommCtrlSAS + Aurum / clear pending AFT |
 | `probes/WdPollInject.*` | Poll simulation + `pollaft` inject |
 | `probes/WdInject.*` | Legacy one-shot inject when polls already exist |
 | `lab/Convert-AftHistory.ps1` | Read-only history -> `aft/report/` |
 | `lab/Invoke-AftTransferTest.ps1` | Wait/verify helper (does not send `0x72`) |
 
-Roulette uses a different WakeUpPort path - see [lab/roulette/README.md](../lab/roulette/README.md).
+Roulette procedure + 2026-07-23 evidence:
+[lab/roulette/README.md](../lab/roulette/README.md) ·
+[PROVEN-INJECT-PROCEDURE.md](PROVEN-INJECT-PROCEDURE.md#roulette-path-90--gcc_rt_330106_01--proven-2026-07-23)
 
 ## Lab access
 

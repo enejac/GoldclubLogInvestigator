@@ -1,0 +1,60 @@
+---
+description: User-like roulette click bot - fetch LI reports, click-repro, SuperDragica-grade packs, re-verify after fix
+alwaysApply: true
+---
+
+# Roulette user-like bug repro (click bot)
+
+## Loop (every time: fetch -> repro -> report -> re-verify)
+
+1. **Auto-fetch existing reports** from GoldClub / Log Investigator (do not invent the bug):
+   - Run Bug Detector on the cabinet (UI **Bug Detector** tab, or `network.bug_detector` / `schedule_bug_detector_scan`).
+   - Pull latest `BUG-TEST-*.md` + `BUG-DEV-*.md` from the detector output dir (and any SuperDragica packs on USB if present).
+   - Also check in-repo gold samples: `_tmp_logs/bug-detector/enriched-final3/`.
+2. **Pick one incident** from those reports (title, steps, fault, godot1/ruleta paths, layout).
+3. **Replicate with clicks** (InputAgent -> Godot), same order as the TEST guide. Phase-wait on state/logs; assert with `:8090` + `godot1`/`ruleta`.
+4. **Emit a repro pack** (below). Report pass/fail + pack path to the user.
+5. **After a product bug fix**: repeat from step 1 on the same cabinet — expect **PASS** (no critical). Keep the same click script; do not "fix" the repro by switching to HTTP-only.
+
+## Click vs HTTP
+
+- **Repro body = clicks** on Godot (`godot` focus, interactive session).
+- **`:8090` = oracle** (`GET /api/data`, logs). `PUT` Success = accepted only.
+- HTTP PlaceBet/StartGame only for setup / middleware-only isolation / missing hitbox — say so when used.
+- Never edit `serialport/layout.json` / `locations.json`.
+
+## Fast UI remapping
+
+- Prefer existing tools: board mapper, `python -m automation.roulette_verify_bets --layout layoutN`, `roulette_verify_ui`, then `--write-hitboxes`.
+- Remap **only what moved**; keep hitbox **ids** stable. Follow `roulette-mapping-overlay.mdc` (regenerate overlay PNG).
+
+## SuperDragica (USB)
+
+When a removable drive has **SuperDragica** (or Dragica):
+
+1. Inventory its sample crash pack layout (files, naming, tester vs dev).
+2. Align our pack fields to that tool; document gaps under `_tmp_logs/superdragica_inventory.md` if needed.
+
+If USB is not mounted, still emit the pack below and use Bug Detector / enriched `BUG-*` as the schema reference.
+
+## Repro pack (every fail; optional on pass)
+
+```
+automation_runs/<stamp>_<ip>_repro_<caseId>/
+  manifest.json
+  click_log.jsonl
+  player_state.jsonl
+  BUG-TEST-<slug>.md
+  BUG-DEV-<slug>.md
+  logs/          # godot1 + ruleta excerpts around fault (required on FAIL)
+```
+
+**BUG-TEST**: cabinet, when, what happens, numbered **UI** steps, pass/fail table, log paths.
+
+**BUG-DEV**: metadata, :8090 cheatsheet, numbered flow (When / Actor / Godot events / Middleware after), full stack, nearby PUTs. Actors: `bot` | `human` | `free-flow` | `bug` | `ruleta`.
+
+Gold references: Collect/Payout NRE packs under `_tmp_logs/bug-detector/enriched-final3/` (layout remount may have **no** PUT; Collect can NRE **before** any Collect PUT).
+
+## One-liner
+
+**Fetch LI/Bug Detector reports -> click-repro like a user -> emit TEST+DEV pack -> after fix, fetch again and repeat until PASS.**

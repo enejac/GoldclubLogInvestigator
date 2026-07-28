@@ -74,7 +74,7 @@ if (Test-Path -LiteralPath $labAccess) {
 }
 
 Write-Host "[*] Done. Credentials persist in Credential Manager (survive reboot)." -ForegroundColor Cyan
-Write-Host "    For remote exec on non-admin cabinets, dot-source LabAccess.ps1 to get -u/-p." -ForegroundColor DarkGray
+Write-Host "    For remote exec, dot-source LabAccess.ps1 and use Invoke-LabWinRmCommand." -ForegroundColor DarkGray
 
 # WinRM-by-IP needs TrustedHosts on this workstation (one-time, requires admin to add NEW IPs).
 if (Test-Path -LiteralPath $labAccess) {

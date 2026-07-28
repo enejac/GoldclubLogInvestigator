@@ -1,21 +1,18 @@
 <#
 .SYNOPSIS
     Shared lab-cabinet credential helper. Dot-source this from any remote script
-    to get the standard GoldClub lab credential and PsExec auth arguments.
+    to get the standard GoldClub lab credential and WinRM helpers.
 
 .DESCRIPTION
     Usage (inside another script):
 
         . "$PSScriptRoot\LabAccess.ps1"
-        $cred   = Get-LabCredential
-        $psAuth = Get-LabPsExecArgs           # @('-u','GOLD-CLUB\test','-p','test')
-
-        & $PsExecPath "\\$ComputerName" -accepteula @psAuth -s -n 60 powershell.exe ...
+        $cred = Get-LabCredential
+        Invoke-LabWinRmCommand -ComputerName $ip -ScriptBlock { hostname }
 
     The credential is the lab account GOLD-CLUB\test / test. SMB share access is
-    handled separately by the persistent cmdkey mapping (see Initialize-LabAccess.ps1);
-    PsExec to cabinets where the interactive user is not a local admin (e.g.
-    10.0.0.171) needs the -u/-p arguments returned by Get-LabPsExecArgs.
+    handled separately by the persistent cmdkey mapping (see Initialize-LabAccess.ps1).
+    Remote execution should use WinRM (Invoke-Command), not PsExec.
 
 .NOTES
     Lab credential only (test/test). Not for production hosts.
@@ -31,7 +28,7 @@ function Get-LabCredential {
 }
 
 function Get-LabPsExecArgs {
-    <# Returns the PsExec auth args array: -u <user> -p <pass>. #>
+    <# Returns the PsExec auth args array: -u <user> -p <pass> (legacy AFT scripts only). #>
     return @('-u', $script:LabUser, '-p', $script:LabPass)
 }
 
@@ -44,6 +41,52 @@ function Initialize-LabSmbCredential {
     foreach ($t in $Ip) {
         cmdkey /add:$t /user:$script:LabUser /pass:$script:LabPass 2>&1 | Out-Null
     }
+}
+
+function Test-LabWinRmReachable {
+    param(
+        [Parameter(Mandatory)][string] $Computer,
+        [int] $TimeoutMs = 2500
+    )
+    $client = $null
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $iar = $client.BeginConnect($Computer, 5985, $null, $null)
+        $ok = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
+        if (-not $ok) { return $false }
+        $client.EndConnect($iar)
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($client) { try { $client.Close() } catch { } }
+    }
+}
+
+function Invoke-LabWinRmCommand {
+    <#
+    Run a script block on a lab cabinet via WinRM (Invoke-Command + Negotiate).
+    Requires Initialize-LabAccess.ps1 / TrustedHosts for the target IP.
+    #>
+    param(
+        [Parameter(Mandatory)][string] $ComputerName,
+        [Parameter(Mandatory)][scriptblock] $ScriptBlock,
+        [object[]] $ArgumentList = @(),
+        [int] $OperationTimeoutMs = 120000
+    )
+    $trusted = Initialize-LabWinRmTrustedHosts -Ip @($ComputerName)
+    if (-not $trusted.Ready) {
+        throw "WinRM TrustedHosts not configured for $ComputerName. Run .\Initialize-LabAccess.ps1 as Administrator."
+    }
+    if (-not (Test-LabWinRmReachable -Computer $ComputerName)) {
+        throw "WinRM port 5985 is not reachable on $ComputerName."
+    }
+    $sessionOption = New-PSSessionOption -OperationTimeout $OperationTimeoutMs -OpenTimeout 15000
+    Invoke-Command -ComputerName $ComputerName -Credential (Get-LabCredential) `
+        -Authentication Negotiate -SessionOption $sessionOption `
+        -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList -ErrorAction Stop
 }
 
 function Test-LabSmbAccess {

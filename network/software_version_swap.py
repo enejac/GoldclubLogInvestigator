@@ -1,0 +1,857 @@
+"""Surgical roulette software version swap (Frontend / Middleware / Backend).
+
+On start (cabinet/USB): auto-fetch live C:\\goldclub\\ruleta into
+software_versions\\<Ruleta_v…_build…> with godot\\/lib\\ hierarchy.
+Skip if that version folder already exists; a different live version creates
+a new folder. Apply: Kill-All -> copy package -> Run-FullStack (local or WinRM).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+from automation.remote_exec import ensure_lab_winrm_trusted_hosts, winrm_run_script
+from network.lab_access import (
+    LabCredentialError,
+    assert_ruleta_dest_unc,
+    ensure_lab_smb_credential,
+    require_lab_fleet_ip,
+)
+
+logger = logging.getLogger(__name__)
+
+# Relative to ruleta\ root
+SOFTWARE_VERSION_FILES: tuple[tuple[str, str], ...] = (
+    ("Frontend", r"godot\RouletteGui.pck"),
+    ("Frontend", r"godot\.mono\assemblies\RouletteWebApiModels.dll"),
+    ("Frontend", r"godot\.mono\assemblies\RouletteGui2.dll"),
+    ("Middleware", r"lib\RouletteWebApiModels.dll"),
+    ("Middleware", r"lib\GoldClub.ManagedRendererWebApiServer.dll"),
+    ("Middleware", r"lib\GoldClub.ManagedRendererWebApiProxy.dll"),
+    ("Backend", r"Ruleta.exe"),
+)
+
+# Flat drop next to LogInvestigator.exe: basename -> relative dest(s).
+# RouletteWebApiModels.dll is shipped to both Frontend and Middleware trees.
+FLAT_BASENAME_TARGETS: dict[str, tuple[str, ...]] = {
+    "RouletteGui.pck": (r"godot\RouletteGui.pck",),
+    "RouletteGui2.dll": (r"godot\.mono\assemblies\RouletteGui2.dll",),
+    "RouletteWebApiModels.dll": (
+        r"godot\.mono\assemblies\RouletteWebApiModels.dll",
+        r"lib\RouletteWebApiModels.dll",
+    ),
+    "GoldClub.ManagedRendererWebApiServer.dll": (
+        r"lib\GoldClub.ManagedRendererWebApiServer.dll",
+    ),
+    "GoldClub.ManagedRendererWebApiProxy.dll": (
+        r"lib\GoldClub.ManagedRendererWebApiProxy.dll",
+    ),
+    "Ruleta.exe": (r"Ruleta.exe",),
+}
+
+ProgressCb = Callable[[str], None]
+
+
+@dataclass(frozen=True, slots=True)
+class SwapResult:
+    ok: bool
+    log: str
+
+
+@dataclass(frozen=True, slots=True)
+class VersionPackageFetch:
+    """Result of fetching a live ruleta install into ``software_versions``."""
+
+    path: Path
+    skipped_existing: bool  # True when an identical version folder was reused
+
+
+def software_version_rel_paths() -> tuple[str, ...]:
+    return tuple(rel for _, rel in SOFTWARE_VERSION_FILES)
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _roulette_tools_dir() -> Path:
+    """Resolve roulette scripts: EXE install folder first, then frozen bundle, then repo."""
+    probe = ("Kill-All.ps1", "Run-FullStack.ps1", "GoldClubServices.ps1")
+    candidates: list[Path] = []
+    root = app_install_root()
+    candidates.extend(
+        [
+            root / "scripts" / "roulette",
+            root / "cabinet_tools" / "roulette",
+            root,
+        ]
+    )
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        meipass = Path(sys._MEIPASS)
+        candidates.extend(
+            [
+                meipass / "cabinet_tools" / "roulette",
+                meipass / "scripts" / "roulette",
+            ]
+        )
+    candidates.append(_repo_root() / "cabinet_tools" / "roulette")
+
+    for d in candidates:
+        try:
+            if all((d / name).is_file() for name in probe):
+                return d
+        except OSError:
+            continue
+    for d in candidates:
+        try:
+            if d.is_dir():
+                return d
+        except OSError:
+            continue
+    return _repo_root() / "cabinet_tools" / "roulette"
+
+
+def app_install_root() -> Path:
+    """Folder that holds LogInvestigator.exe (USB/cabinet) or repo root in dev."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    try:
+        from config_scanner.paths import tool_root
+
+        return tool_root()
+    except Exception:
+        return _repo_root()
+
+
+def software_versions_dir(install_root: Path | None = None) -> Path:
+    """Versioned packages live here for hand copy-paste upgrades."""
+    root = Path(install_root) if install_root else app_install_root()
+    return root / "software_versions"
+
+
+def local_ruleta_dest() -> Path:
+    for candidate in (Path(r"C:\goldclub\ruleta"), Path(r"C:\Goldclub\ruleta")):
+        try:
+            if candidate.is_dir():
+                return candidate
+        except OSError:
+            continue
+    return Path(r"C:\goldclub\ruleta")
+
+
+def is_local_cabinet_host() -> bool:
+    """True when this machine has a GoldClub ruleta install (run-on-cabinet)."""
+    try:
+        return local_ruleta_dest().is_dir()
+    except OSError:
+        return False
+
+
+def dest_ruleta_unc(ip: str) -> Path:
+    host = require_lab_fleet_ip(ip)
+    return Path(rf"\\{host}\c$\goldclub\ruleta")
+
+
+def is_unc_path(path: Path | str) -> bool:
+    text = str(path).replace("/", "\\")
+    return text.startswith("\\\\")
+
+
+def preflight_source(source_ruleta: Path) -> list[str]:
+    """Return relative paths missing under ``source_ruleta``."""
+    root = Path(source_ruleta)
+    missing: list[str] = []
+    for _, rel in SOFTWARE_VERSION_FILES:
+        if not (root / rel).is_file():
+            missing.append(rel)
+    return missing
+
+
+def _safe_folder_token(text: str) -> str:
+    cleaned = re.sub(r"[^\w.\-]+", "_", (text or "").strip())
+    cleaned = re.sub(r"_+", "_", cleaned).strip("._")
+    return cleaned or "package"
+
+
+def package_name_from_ruleta_exe(ruleta_exe: Path) -> str:
+    """Build folder name like ``Ruleta_v10.2.0.684_build40097``."""
+    from config_scanner.build_version import _extract_version_from_exe
+
+    info = _extract_version_from_exe(Path(ruleta_exe))
+    product = _safe_folder_token((info.product_name or "Ruleta").replace(" Module", ""))
+    ver = (info.display_version or info.file_version or info.product_version or "unknown").strip()
+    ver = ver.replace(" ", "")
+    if ver and not ver.lower().startswith("v") and ver[0].isdigit():
+        ver = f"v{ver}"
+    ver = _safe_folder_token(ver)
+
+    build = ""
+    for bv in (
+        Path(ruleta_exe).parent / "BuildVersion.txt",
+        Path(ruleta_exe).parent / "ruleta" / "BuildVersion.txt",
+        app_install_root() / "BuildVersion.txt",
+    ):
+        if not bv.is_file():
+            continue
+        try:
+            text = bv.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        match = re.search(r"(?im)^\s*Build\s+Number\s*:\s*(\d+)\s*$", text)
+        if match:
+            build = match.group(1)
+            break
+    if not build and info.file_version and info.file_version.count(".") >= 3:
+        build = info.file_version.rsplit(".", 1)[-1]
+
+    name = f"{product}_{ver}"
+    if build:
+        name = f"{name}_build{build}"
+    return name
+
+
+def find_flat_drop_files(drop_root: Path) -> dict[str, Path]:
+    """Map basename -> path for surgical binaries lying flat under ``drop_root``."""
+    root = Path(drop_root)
+    found: dict[str, Path] = {}
+    if not root.is_dir():
+        return found
+    try:
+        for entry in root.iterdir():
+            if not entry.is_file():
+                continue
+            key = entry.name
+            # Case-insensitive match to declared basenames
+            for want in FLAT_BASENAME_TARGETS:
+                if key.casefold() == want.casefold():
+                    found[want] = entry
+                    break
+    except OSError:
+        return {}
+    return found
+
+
+def flat_drop_is_complete(found: dict[str, Path]) -> bool:
+    return all(name in found for name in FLAT_BASENAME_TARGETS)
+
+
+def ingest_flat_drop(
+    drop_root: Path | None = None,
+    *,
+    versions_dir: Path | None = None,
+    progress: ProgressCb | None = None,
+    move: bool = False,
+) -> Path | None:
+    """
+    Pull flat binaries from the exe folder into
+    ``software_versions\\<Ruleta_v…>\\`` with the ruleta-relative hierarchy.
+
+    Returns the package directory, or None if nothing to ingest.
+    """
+    lines: list[str] = []
+    root = Path(drop_root) if drop_root else app_install_root()
+    out_root = Path(versions_dir) if versions_dir else software_versions_dir(root)
+    found = find_flat_drop_files(root)
+    if not flat_drop_is_complete(found):
+        missing = [n for n in FLAT_BASENAME_TARGETS if n not in found]
+        if found:
+            _emit(progress, f"Flat drop incomplete (missing: {', '.join(missing)})", lines)
+        return None
+
+    ruleta_exe = found["Ruleta.exe"]
+    pkg_name = package_name_from_ruleta_exe(ruleta_exe)
+    pkg_dir = out_root / pkg_name
+    _emit(progress, f"Packaging flat drop -> {pkg_dir}", lines)
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+
+    for basename, rels in FLAT_BASENAME_TARGETS.items():
+        src = found[basename]
+        for rel in rels:
+            dst = pkg_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if move and len(rels) == 1:
+                if dst.exists():
+                    dst.unlink()
+                shutil.move(str(src), str(dst))
+            else:
+                shutil.copy2(src, dst)
+            _emit(progress, f"  {basename} -> {rel}", lines)
+        if move and len(rels) > 1 and src.is_file():
+            try:
+                src.unlink()
+            except OSError:
+                pass
+
+    missing = preflight_source(pkg_dir)
+    if missing:
+        raise RuntimeError("Package incomplete after ingest: " + ", ".join(missing))
+    _emit(progress, f"Package ready: {pkg_dir}", lines)
+    return pkg_dir
+
+
+def list_version_packages(versions_dir: Path | None = None) -> list[Path]:
+    """Complete packages under software_versions, newest first."""
+    root = Path(versions_dir) if versions_dir else software_versions_dir()
+    if not root.is_dir():
+        return []
+    packages: list[Path] = []
+    try:
+        for child in root.iterdir():
+            if child.is_dir() and not preflight_source(child):
+                packages.append(child)
+    except OSError:
+        return []
+    packages.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return packages
+
+
+def find_live_ruleta_root(ip: str | None = None) -> Path | None:
+    """Installed ruleta tree to snapshot from (local cabinet or remote UNC)."""
+    host = (ip or "").strip().lower()
+    if host and host not in {"local", "localhost", "127.0.0.1", "."}:
+        unc = dest_ruleta_unc(ip.strip())
+        try:
+            if unc.is_dir() and (unc / "Ruleta.exe").is_file():
+                return unc
+        except OSError:
+            pass
+    live = local_ruleta_dest()
+    try:
+        if live.is_dir() and (live / "Ruleta.exe").is_file():
+            return live
+    except OSError:
+        pass
+    return None
+
+
+def _ruleta_exe_in(root: Path) -> Path | None:
+    for name in ("Ruleta.exe", "ruleta.exe"):
+        p = root / name
+        try:
+            if p.is_file():
+                return p
+        except OSError:
+            continue
+    return None
+
+
+def allocate_version_backup_dir(versions_dir: Path, base_name: str) -> Path:
+    """Next free backup folder: ``<base>_v2``, ``<base>_v3``, …"""
+    root = Path(versions_dir)
+    name = (base_name or "").strip() or "package"
+    n = 2
+    while True:
+        candidate = root / f"{name}_v{n}"
+        if not candidate.exists():
+            return candidate
+        n += 1
+        if n > 999:
+            raise RuntimeError(f"Too many backups for {name!r} under {root}")
+
+
+def snapshot_live_ruleta_package(
+    live_root: Path,
+    *,
+    install_root: Path | None = None,
+    progress: ProgressCb | None = None,
+    force_new: bool = False,
+) -> VersionPackageFetch | None:
+    """
+    Copy the 7 surgical binaries from an installed ruleta tree into
+    ``<exe>\\software_versions\\<Ruleta_v…_build…>\\`` with correct hierarchy.
+
+    If that version folder already exists and is complete, skip (return it)
+    unless ``force_new`` is set — then write ``…_v2`` / ``…_v3`` / …
+    A different live version creates a new sibling folder; older packages stay.
+    """
+    live = Path(live_root)
+    missing = preflight_source(live)
+    if missing:
+        if progress:
+            progress("Live ruleta incomplete (missing: " + ", ".join(missing) + ")")
+        return None
+
+    exe = _ruleta_exe_in(live)
+    if not exe:
+        return None
+
+    root = Path(install_root) if install_root else app_install_root()
+    versions = software_versions_dir(root)
+    pkg_name = package_name_from_ruleta_exe(exe)
+    pkg_dir = versions / pkg_name
+
+    if pkg_dir.is_dir() and not preflight_source(pkg_dir):
+        if not force_new:
+            if progress:
+                progress(f"Package already present — skip fetch: {pkg_dir}")
+            return VersionPackageFetch(path=pkg_dir, skipped_existing=True)
+        pkg_dir = allocate_version_backup_dir(versions, pkg_name)
+        if progress:
+            progress(f"Creating additional backup: {pkg_dir}")
+
+    if progress:
+        progress(f"Fetching live install {live} -> {pkg_dir}")
+    versions.mkdir(parents=True, exist_ok=True)
+    if pkg_dir.exists():
+        shutil.rmtree(pkg_dir)
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+
+    for _, rel in SOFTWARE_VERSION_FILES:
+        sp = live / rel
+        dp = pkg_dir / rel
+        dp.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(sp, dp)
+        if progress:
+            progress(f"  {rel}")
+
+    still_missing = preflight_source(pkg_dir)
+    if still_missing:
+        raise RuntimeError("Package incomplete after fetch: " + ", ".join(still_missing))
+    if progress:
+        progress(f"Package ready: {pkg_dir}")
+    return VersionPackageFetch(path=pkg_dir, skipped_existing=False)
+
+
+def ensure_local_version_package(
+    *,
+    install_root: Path | None = None,
+    progress: ProgressCb | None = None,
+    ip: str | None = None,
+    force_new: bool = False,
+) -> VersionPackageFetch | None:
+    """
+    Auto-fetch the currently installed ruleta version into software_versions\\
+    next to LogInvestigator.exe (skip if that version folder already exists).
+
+    Different live software/version => new folder; existing folders are left alone.
+    Pass ``force_new=True`` to create ``…_v2`` / ``…_v3`` when the base exists.
+    """
+    root = Path(install_root) if install_root else app_install_root()
+    live = find_live_ruleta_root(ip)
+    if live is not None:
+        return snapshot_live_ruleta_package(
+            live,
+            install_root=root,
+            progress=progress,
+            force_new=force_new,
+        )
+
+    if progress:
+        progress("No live ruleta install found to fetch (C:\\goldclub\\ruleta).")
+    return None
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _emit(cb: ProgressCb | None, msg: str, lines: list[str]) -> None:
+    lines.append(msg)
+    if cb:
+        cb(msg)
+
+
+def _stage_roulette_scripts(ip: str, lines: list[str], progress: ProgressCb | None) -> str:
+    """Copy Kill-All / Run-FullStack / Invoke-SoftwareVersionSwap to cabinet temp; return remote dir."""
+    local_dir = _roulette_tools_dir()
+    remote_dir = rf"C:\Windows\Temp\wd_software_swap"
+    unc_dir = Path(rf"\\{ip}\c$\Windows\Temp\wd_software_swap")
+    unc_dir.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "Kill-All.ps1",
+        "Run-FullStack.ps1",
+        "Invoke-SoftwareVersionSwap.ps1",
+        "GoldClubServices.ps1",
+    ):
+        src = local_dir / name
+        if not src.is_file():
+            raise FileNotFoundError(f"Missing local script: {src}")
+        dst = unc_dir / name
+        shutil.copy2(src, dst)
+        _emit(progress, f"Staged {name} -> {remote_dir}\\{name}", lines)
+    return remote_dir
+
+
+def _winrm_run_file(
+    *,
+    ip: str,
+    remote_path: str,
+    args: list[str],
+    timeout: int,
+    lines: list[str],
+    progress: ProgressCb | None,
+    label: str,
+) -> None:
+    ensure_lab_winrm_trusted_hosts(ip=ip)
+    _emit(progress, f"{label}: {remote_path} {' '.join(args)}", lines)
+    result = winrm_run_script(
+        ip=ip,
+        remote_script_path=remote_path,
+        script_args=args,
+        timeout=timeout,
+    )
+    out = (result.stdout or "").strip()
+    err = (result.stderr or "").strip()
+    if out:
+        for ln in out.splitlines()[-40:]:
+            _emit(progress, f"  {ln}", lines)
+    if err:
+        for ln in err.splitlines()[-20:]:
+            _emit(progress, f"  ERR: {ln}", lines)
+    if result.returncode not in (0, None) and result.returncode != 0:
+        # Kill-All may return 1 on already-gone races historically; treat as soft if copy can proceed
+        if "Kill-All" in label and result.returncode == 1:
+            _emit(progress, f"WARN: {label} exit={result.returncode} (continuing)", lines)
+            return
+        raise RuntimeError(f"{label} failed exit={result.returncode}")
+
+
+def _find_local_roulette_script(name: str) -> Path | None:
+    """Resolve Kill-All.ps1 / Run-FullStack.ps1 beside the exe or in repo tools."""
+    root = app_install_root()
+    candidates = (
+        root / "scripts" / "roulette" / name,
+        root / name,
+        root / "cabinet_tools" / "roulette" / name,
+        _roulette_tools_dir() / name,
+    )
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def _run_local_ps1(
+    script: Path,
+    args: list[str],
+    *,
+    timeout: int,
+    lines: list[str],
+    progress: ProgressCb | None,
+    label: str,
+) -> None:
+    _emit(progress, f"{label} (local): {script} {' '.join(args)}", lines)
+    run_kw: dict = {
+        "capture_output": True,
+        "text": True,
+        "errors": "replace",
+        "timeout": timeout,
+    }
+    if os.name == "nt":
+        run_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            *args,
+        ],
+        **run_kw,
+    )
+    out = (result.stdout or "").strip()
+    err = (result.stderr or "").strip()
+    if out:
+        for ln in out.splitlines()[-40:]:
+            _emit(progress, f"  {ln}", lines)
+    if err:
+        for ln in err.splitlines()[-20:]:
+            _emit(progress, f"  ERR: {ln}", lines)
+    if result.returncode not in (0, None) and result.returncode != 0:
+        if "Kill-All" in label and result.returncode == 1:
+            _emit(progress, f"WARN: {label} exit={result.returncode} (continuing)", lines)
+            return
+        raise RuntimeError(f"{label} failed exit={result.returncode}")
+
+
+def _wait_for_ruleta_local(
+    *,
+    timeout_s: float = 90.0,
+    progress: ProgressCb | None,
+    lines: list[str],
+) -> bool:
+    deadline = time.monotonic() + timeout_s
+    run_kw: dict = {
+        "capture_output": True,
+        "text": True,
+        "errors": "replace",
+        "timeout": 20,
+    }
+    if os.name == "nt":
+        run_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    while time.monotonic() < deadline:
+        r = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Command",
+                "if (Get-Process -Name ruleta,Ruleta -EA SilentlyContinue) { 'RULETA_UP' } else { 'RULETA_DOWN' }",
+            ],
+            **run_kw,
+        )
+        if "RULETA_UP" in ((r.stdout or "") + (r.stderr or "")):
+            _emit(progress, "ruleta process is up", lines)
+            return True
+        _emit(progress, "waiting for ruleta …", lines)
+        time.sleep(3.0)
+    _emit(progress, "WARN: timed out waiting for ruleta (launch may still be in progress)", lines)
+    return False
+
+
+def _wait_for_ruleta(
+    ip: str,
+    *,
+    timeout_s: float = 90.0,
+    progress: ProgressCb | None,
+    lines: list[str],
+) -> bool:
+    """Best-effort: Ruleta.exe appears on cabinet via WinRM (CredMan; no -Command password)."""
+    host = require_lab_fleet_ip(ip)
+    ensure_lab_winrm_trusted_hosts(ip=host)
+    unc_dir = Path(rf"\\{host}\c$\Windows\Temp\wd_software_swap")
+    try:
+        unc_dir.mkdir(parents=True, exist_ok=True)
+        probe = unc_dir / "Probe-RuletaUp.ps1"
+        probe.write_text(
+            "if (Get-Process -Name ruleta,Ruleta -ErrorAction SilentlyContinue) "
+            "{ 'RULETA_UP' } else { 'RULETA_DOWN' }\n",
+            encoding="utf-8",
+        )
+    except OSError as e:
+        _emit(progress, f"WARN: could not stage ruleta probe: {e}", lines)
+        return False
+    remote_path = r"C:\Windows\Temp\wd_software_swap\Probe-RuletaUp.ps1"
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            result = winrm_run_script(
+                ip=host,
+                remote_script_path=remote_path,
+                timeout=40,
+            )
+        except Exception as e:  # noqa: BLE001
+            _emit(progress, f"waiting for ruleta (winrm error: {e}) …", lines)
+            time.sleep(3.0)
+            continue
+        blob = (result.stdout or "") + (result.stderr or "")
+        if "RULETA_UP" in blob:
+            _emit(progress, "ruleta process is up", lines)
+            return True
+        _emit(progress, "waiting for ruleta …", lines)
+        time.sleep(3.0)
+    _emit(progress, "WARN: timed out waiting for ruleta (launch may still be in progress)", lines)
+    return False
+
+
+def _copy_surgical_files(
+    src: Path,
+    dest: Path,
+    *,
+    progress: ProgressCb | None,
+    lines: list[str],
+) -> None:
+    for layer, rel in SOFTWARE_VERSION_FILES:
+        sp = src / rel
+        dp = dest / rel
+        _emit(progress, f"Copy [{layer}] {rel} …", lines)
+        dp.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(sp, dp)
+        sh = sha256_file(sp)
+        dh = sha256_file(dp)
+        if sh != dh:
+            raise RuntimeError(f"Hash mismatch after copy: {rel}")
+        _emit(progress, f"OK {rel} sha256={sh[:12]}…", lines)
+
+
+def run_swap(
+    ip: str,
+    source_ruleta: Path | str,
+    *,
+    dest_unc: Path | str | None = None,
+    skip_kill: bool = False,
+    skip_launch: bool = False,
+    dry_run: bool = False,
+    progress: ProgressCb | None = None,
+    wait_for_game: bool = True,
+) -> SwapResult:
+    """
+    Kill game, copy surgical binaries, relaunch.
+
+    Local cabinet: ``dest`` is ``C:\\goldclub\\ruleta`` (non-UNC) — no WinRM.
+    Remote: WinRM Kill-All / SMB copy / WinRM Run-FullStack.
+
+    ``source_ruleta`` must contain the 7 relative paths (a ``ruleta`` package root).
+    """
+    lines: list[str] = []
+    host = (ip or "").strip()
+    src = Path(source_ruleta)
+    if not src.is_dir():
+        return SwapResult(False, f"Source ruleta folder not found: {src}")
+
+    missing = preflight_source(src)
+    if missing:
+        msg = "Missing source files:\n  " + "\n  ".join(missing)
+        return SwapResult(False, msg)
+
+    local_mode = False
+    if dest_unc:
+        dest = Path(dest_unc)
+        local_mode = not is_unc_path(dest)
+    elif is_local_cabinet_host() and (
+        not host or host in {"127.0.0.1", "localhost", "."} or host == "local"
+    ):
+        dest = local_ruleta_dest()
+        local_mode = True
+        host = host or "local"
+    elif not host:
+        if is_local_cabinet_host():
+            dest = local_ruleta_dest()
+            local_mode = True
+            host = "local"
+        else:
+            return SwapResult(False, "Cabinet IP is required (or run on the cabinet)")
+    else:
+        dest = dest_ruleta_unc(host)
+        local_mode = not is_unc_path(dest)
+
+    if not local_mode:
+        try:
+            host = require_lab_fleet_ip(host)
+            dest = assert_ruleta_dest_unc(host, dest)
+        except (ValueError, LabCredentialError) as e:
+            return SwapResult(False, str(e))
+
+    _emit(progress, f"Mode:   {'LOCAL (on cabinet)' if local_mode else 'REMOTE (WinRM+SMB)'}", lines)
+    _emit(progress, f"Source: {src}", lines)
+    _emit(progress, f"Dest:   {dest}", lines)
+
+    if dry_run:
+        for layer, rel in SOFTWARE_VERSION_FILES:
+            sp = src / rel
+            _emit(
+                progress,
+                f"WhatIf: [{layer}] {rel} ({sp.stat().st_size} bytes) -> {dest / rel}",
+                lines,
+            )
+        _emit(progress, "DONE OK (dry-run)", lines)
+        return SwapResult(True, "\n".join(lines))
+
+    try:
+        if local_mode:
+            if not dest.parent.exists():
+                raise FileNotFoundError(f"Destination parent not reachable: {dest.parent}")
+            kill_ps1 = _find_local_roulette_script("Kill-All.ps1")
+            run_ps1 = _find_local_roulette_script("Run-FullStack.ps1")
+            if not skip_kill:
+                if not kill_ps1:
+                    raise FileNotFoundError(
+                        "Kill-All.ps1 not found next to LogInvestigator "
+                        "(expected scripts\\roulette\\Kill-All.ps1)"
+                    )
+                _run_local_ps1(
+                    kill_ps1,
+                    ["-AlreadyElevated"],
+                    timeout=180,
+                    lines=lines,
+                    progress=progress,
+                    label="Kill-All",
+                )
+            else:
+                _emit(progress, "SkipKill", lines)
+
+            _copy_surgical_files(src, dest, progress=progress, lines=lines)
+
+            if not skip_launch:
+                if not run_ps1:
+                    raise FileNotFoundError(
+                        "Run-FullStack.ps1 not found next to LogInvestigator "
+                        "(expected scripts\\roulette\\Run-FullStack.ps1)"
+                    )
+                _run_local_ps1(
+                    run_ps1,
+                    ["-AlreadyElevated"],
+                    timeout=300,
+                    lines=lines,
+                    progress=progress,
+                    label="Run-FullStack",
+                )
+                if wait_for_game:
+                    _wait_for_ruleta_local(progress=progress, lines=lines)
+            else:
+                _emit(progress, "SkipLaunch", lines)
+        else:
+            ensure_lab_smb_credential(host)
+            if not dest.parent.exists():
+                raise FileNotFoundError(f"Destination parent not reachable: {dest.parent}")
+
+            remote_dir = _stage_roulette_scripts(host, lines, progress)
+            kill_ps1 = rf"{remote_dir}\Kill-All.ps1"
+            run_ps1 = rf"{remote_dir}\Run-FullStack.ps1"
+
+            usb_kill = Path(rf"\\{host}\usb\ConfigScanner\scripts\roulette\Kill-All.ps1")
+            usb_run = Path(rf"\\{host}\usb\ConfigScanner\scripts\roulette\Run-FullStack.ps1")
+            if usb_kill.is_file():
+                kill_ps1 = r"D:\ConfigScanner\scripts\roulette\Kill-All.ps1"
+                _emit(progress, f"Using USB Kill-All: {kill_ps1}", lines)
+            if usb_run.is_file():
+                run_ps1 = r"D:\ConfigScanner\scripts\roulette\Run-FullStack.ps1"
+                _emit(progress, f"Using USB Run-FullStack: {run_ps1}", lines)
+
+            if not skip_kill:
+                _winrm_run_file(
+                    ip=host,
+                    remote_path=kill_ps1,
+                    args=["-AlreadyElevated"],
+                    timeout=180,
+                    lines=lines,
+                    progress=progress,
+                    label="Kill-All",
+                )
+            else:
+                _emit(progress, "SkipKill", lines)
+
+            _copy_surgical_files(src, dest, progress=progress, lines=lines)
+
+            if not skip_launch:
+                _winrm_run_file(
+                    ip=host,
+                    remote_path=run_ps1,
+                    args=["-AlreadyElevated"],
+                    timeout=300,
+                    lines=lines,
+                    progress=progress,
+                    label="Run-FullStack",
+                )
+                if wait_for_game:
+                    _wait_for_ruleta(host, progress=progress, lines=lines)
+            else:
+                _emit(progress, "SkipLaunch", lines)
+
+        _emit(progress, "DONE OK", lines)
+        return SwapResult(True, "\n".join(lines))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("software version swap failed")
+        _emit(progress, f"FAIL: {e}", lines)
+        return SwapResult(False, "\n".join(lines))

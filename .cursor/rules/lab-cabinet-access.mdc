@@ -1,22 +1,22 @@
 ---
-description: Lab cabinet SMB/PsExec credentials and how to auto-apply them
+description: Lab cabinet SMB/WinRM credentials and how to auto-apply them
 alwaysApply: true
 ---
 
-# GoldClub lab cabinet access (SMB + PsExec)
+# GoldClub lab cabinet access (SMB + WinRM)
 
 All GoldClub lab cabinets authenticate with the lab account **`GOLD-CLUB\test`**,
 password **`test`** (lab-only credential — never reuse for production).
 
 The interactive workstation user is **not** a local admin on every cabinet
-(notably `10.0.0.171`), so without a stored credential, SMB and PsExec return
+(notably `10.0.0.171`), so without a stored credential, SMB and WinRM return
 **"Access is denied" / System error 5**.
 
 ## Auto-apply (do this, don't ask the user to enter SMB creds)
 
 SMB share access is made automatic by a **persistent `cmdkey` mapping** (stored in
 Windows Credential Manager; survives logoff/reboot). If a `\\<ip>\c$\...` read or
-PsExec call fails with access denied, register the cabinet first:
+WinRM call fails with access denied, register the cabinet first:
 
 ```powershell
 cmdkey /add:<ip> /user:GOLD-CLUB\test /pass:test
@@ -32,23 +32,25 @@ Known cabinet IPs: `10.0.0.83`, `10.0.0.90`, `10.0.0.100`, `10.0.0.110`,
 `10.0.0.112`, `10.0.0.171`. The working AFT reference cabinet is `10.0.0.90`
 (`GST20664`); the credit-blocked target is `10.0.0.171` (`GST19737`).
 
-## PsExec on non-admin cabinets
+## Remote execution (WinRM — do not use PsExec)
 
-The remote scripts run `PsExec -s` relying on the caller's network credentials.
-For cabinets where the interactive user is not a local admin (e.g. `10.0.0.171`),
-pass explicit auth. Dot-source the shared helper:
+Use **WinRM** (`Invoke-Command`) for remote PowerShell on lab cabinets. It is much
+faster than PsExec (~2–5 s vs ~40 s). Dot-source the shared helper:
 
 ```powershell
 . "$PSScriptRoot\LabAccess.ps1"
-$psAuth = Get-LabPsExecArgs          # @('-u','GOLD-CLUB\test','-p','test')
-& $PsExecPath "\\$ip" -accepteula @psAuth -s -n 60 powershell.exe -NoProfile ...
+Invoke-LabWinRmCommand -ComputerName $ip -ScriptBlock { hostname }
 ```
 
-PsExec to `10.0.0.171` is slow to connect (~40 s) but works once the credential
-is supplied. Verified host responds `GST19737`.
+WinRM-by-IP requires the target in **TrustedHosts** on the workstation (added by
+`Initialize-LabAccess.ps1` when run elevated). Port **5985** must be open on the
+cabinet (`Enable-PSRemoting` / `cabinet_tools/usb_scripts/Enable-WinRM.ps1`).
+
+Deploy to EGM: `.\deploy_egm.ps1` stages over SMB to `c$`, mirrors to `D:\` via
+D$ SMB when available, otherwise via WinRM.
 
 ## Files
 
-- `Initialize-LabAccess.ps1` — one-shot fleet credential bootstrap (cmdkey + verify).
-- `LabAccess.ps1` — dot-sourceable helper: `Get-LabCredential`, `Get-LabPsExecArgs`,
-  `Initialize-LabSmbCredential`.
+- `Initialize-LabAccess.ps1` — one-shot fleet credential bootstrap (cmdkey + TrustedHosts + verify).
+- `LabAccess.ps1` — dot-sourceable helper: `Get-LabCredential`, `Invoke-LabWinRmCommand`,
+  `Initialize-LabSmbCredential`, `Initialize-LabWinRmTrustedHosts`.

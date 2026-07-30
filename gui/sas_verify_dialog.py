@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from gui.sas_money_format import (
@@ -25,8 +25,21 @@ import sys
 import threading
 import traceback
 
-from PySide6.QtCore import QEvent, QObject, QRunnable, QSettings, QThread, QThreadPool, Signal, Qt, QPoint, QSize, QTimer
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QPalette, QShortcut
+from PySide6.QtCore import (
+    QEvent,
+    QFileSystemWatcher,
+    QObject,
+    QRunnable,
+    QSettings,
+    QThread,
+    QThreadPool,
+    Signal,
+    Qt,
+    QPoint,
+    QSize,
+    QTimer,
+)
+from PySide6.QtGui import QAction, QBrush, QColor, QFont, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractScrollArea,
@@ -60,6 +73,7 @@ from pathlib import Path
 from config_manager import SettingsManager
 from gui.machine_yield_chart import MachineYieldChartWidget
 from gui.palette_adapt import surface_is_light
+from gui.win_title_bar import set_window_always_on_top
 
 # --- EGM currency / dollar display (100 credits = $1 on USD cabinets) ---
 RAW_VALUE_ROLE = int(Qt.ItemDataRole.UserRole)
@@ -183,6 +197,7 @@ _KEY_COM_PORT = "com_port"
 _KEY_COM_BAUD = "com_baud"
 _KEY_COM_WIRE = "com_wire_mode"
 _KEY_COM_RTS = "com_rts"
+_KEY_ALWAYS_ON_TOP = "always_on_top"
 # Bump when default column layout changes so saved prefs reset once.
 _SAS_VERIFY_COLUMN_PREFS_VERSION = 2
 _KEY_COLUMN_PREFS_VERSION = "column_prefs_version"
@@ -768,10 +783,80 @@ def _extract_unc_host(scan_root: str) -> str:
 
     return extract_ip_from_path(s)
 
+def _newest_existing_file(paths: Iterable[Path]) -> Path | None:
+    """Most recently modified file among *paths* that actually exists, or None."""
+    best: Path | None = None
+    best_mtime = -1.0
+    for p in paths:
+        try:
+            if not p.is_file():
+                continue
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        if mtime > best_mtime:
+            best_mtime = mtime
+            best = p
+    return best
+
 
 # Prefetch may reuse an in-memory Machine snapshot briefly; explicit Get Meters /
 # Compare / Refresh always force-reload (see ``_begin_cabinet_compare(force=True)``).
 CABINET_MACHINE_CACHE_TTL_S = 15.0
+
+# How long the busy line keeps animating after work stops, so back-to-back
+# phases (cabinet load -> COM capture) read as one run instead of blinking.
+_BUSY_IDLE_DEBOUNCE_MS = 400
+
+# Auto fetch: minimum spacing between forced refreshes (coalesces a burst of
+# EGM state writes into one reload) and the retry delay when work is already
+# in flight (never start a refresh on top of a live compare / COM capture).
+AUTO_FETCH_MIN_REFRESH_S = 3.0
+# Local EGM / local disk: tighter coalesce — QFileSystemWatcher already fires
+# instantly; this only merges a burst of sibling AFT/DeviceManager writes.
+AUTO_FETCH_MIN_REFRESH_LOCAL_S = 0.4
+AUTO_FETCH_BUSY_RETRY_S = 1.0
+AUTO_FETCH_POLL_INTERVAL_MS = 4000
+AUTO_FETCH_POLL_INTERVAL_LOCAL_MS = 500
+# How long a SYNCING row is given to settle before the table repaints itself
+# to show the real MATCH/MISMATCH verdict (see compare_status()).
+_SETTLE_REPAINT_MS = 1500
+
+# Soft pulse on value cells after a successful meter refresh (text stays opaque).
+METER_FLASH_DURATION_S = 1.35
+METER_FLASH_TICK_MS = 40
+# Peak fill is translucent teal — never dims the cell text (foreground untouched).
+METER_FLASH_RGB = (42, 168, 148)
+METER_FLASH_PEAK_ALPHA = 72
+# Auto-fetch watchdogs: a wedged mtime poll or open round must not block forever.
+AUTO_FETCH_POLL_STALE_S = 30.0
+AUTO_FETCH_ROUND_STALE_S = 90.0
+# Value columns that pulse when their displayed raw value changes on refresh.
+_METER_FLASH_COLS = frozenset({COL_SAS_6F_VALUE, COL_SAS_2F_VALUE, COL_MACHINE_VALUE})
+
+
+def meter_flash_strength(elapsed_s: float, duration_s: float = METER_FLASH_DURATION_S) -> float:
+    """0..1 pulse envelope: two soft beats that fade to 0. Never used to dim text."""
+    import math
+
+    if elapsed_s < 0.0 or duration_s <= 0.0 or elapsed_s >= duration_s:
+        return 0.0
+    t = elapsed_s / duration_s
+    pulse = 0.55 + 0.45 * math.sin(4.0 * math.pi * t)
+    decay = (1.0 - t) ** 1.2
+    return max(0.0, min(1.0, pulse * decay))
+
+
+def meter_flash_background(strength: float) -> QColor | None:
+    """Translucent fill for a flashing cell, or ``None`` when the pulse is over."""
+    s = max(0.0, min(1.0, float(strength)))
+    if s <= 0.001:
+        return None
+    alpha = int(round(METER_FLASH_PEAK_ALPHA * s))
+    if alpha <= 0:
+        return None
+    r, g, b = METER_FLASH_RGB
+    return QColor(r, g, b, alpha)
 
 
 def should_skip_cabinet_reload(
@@ -824,6 +909,59 @@ def evaluate_auto_fetch_poll(baseline_mtime: float, current_mtime: float) -> tup
 def meters_fetched_status_text(fetched_at: datetime) -> str:
     """Status-bar message for a completed meter fetch, second-accurate."""
     return f"Meters fetched {fetched_at.strftime('%Y-%m-%d %H:%M:%S')}"
+
+
+# Row status wording for a SAS cell with no value yet.
+SAS_STATUS_PENDING = "PENDING"
+SAS_STATUS_NOT_REPORTED = "NOT REPORTED"
+# Row status while a COM capture and a snapshot re-read are a few games apart
+# (Auto fetch mid-round) — held instead of flashing MISMATCH.
+SAS_STATUS_SYNCING = "SYNCING"
+
+
+def missing_sas_status(*, sas_capture_expected: bool) -> str:
+    """Wording for an empty SAS cell: still coming, or nothing will ever arrive.
+
+    A local scan root has no host cable to poll — an unlisted meter in the
+    cabinet's own snapshot is not "pending", it simply is not reported there.
+    """
+    return SAS_STATUS_PENDING if sas_capture_expected else SAS_STATUS_NOT_REPORTED
+
+
+def compare_status(*, match: bool, sources_settled: bool) -> str:
+    """MATCH/MISMATCH verdict, held to SYNCING while the sources have not landed together.
+
+    A COM capture takes seconds and a snapshot read milliseconds, so during
+    Auto fetch the two columns are briefly a few games apart on a machine in
+    play. A difference in that window is not a real mismatch yet.
+    """
+    if match:
+        return "MATCH"
+    return "MISMATCH" if sources_settled else SAS_STATUS_SYNCING
+
+
+def auto_fetch_refresh_delay_s(
+    *,
+    now_mono: float,
+    last_refresh_mono: float,
+    busy: bool,
+    min_refresh_s: float | None = None,
+) -> float:
+    """Seconds to wait before running a queued Auto fetch refresh.
+
+    Two independent brakes, the longer one wins: a minimum spacing between
+    forced refreshes (coalesces a burst of EGM state writes into one reload),
+    and a short retry when a compare / COM capture is already in flight (never
+    start a refresh on top of live work).
+    """
+    spacing = (
+        AUTO_FETCH_MIN_REFRESH_S if min_refresh_s is None else float(min_refresh_s)
+    )
+    elapsed = max(0.0, now_mono - last_refresh_mono)
+    spacing_remaining = max(0.0, spacing - elapsed)
+    if not busy:
+        return spacing_remaining
+    return max(spacing_remaining, AUTO_FETCH_BUSY_RETRY_S)
 
 
 _COM_PORT_BUSY_ERROR_MARKERS = (
@@ -1014,6 +1152,7 @@ def busy_progress_should_run(
     compare_ui_pending: bool = False,
     compare_running: bool = False,
     meter_fetch_running: bool = False,
+    local_diff_running: bool = False,
 ) -> bool:
     """True only while real work is in flight (never "have cached meters").
 
@@ -1021,12 +1160,14 @@ def busy_progress_should_run(
     which left the blue progress line spinning forever after startup prefetch.
     The OneHand/Godot probe is advisory (banner only) — a slow WinRM/WMIC check
     must never keep the bar animating after meters and Machine are loaded.
+    Local EGM mode also runs a gm2au vs SASControler1 diff after Machine loads.
     """
     return bool(
         meters_ui_pending
         or compare_ui_pending
         or compare_running
         or meter_fetch_running
+        or local_diff_running
     )
 
 
@@ -1765,7 +1906,7 @@ class _RecoveryProbeTask(QRunnable):
 
 
 class _LocalDiffSignals(QObject):
-    done = Signal(str)  # human summary of the local folder cross-check
+    done = Signal(str, object)  # human summary + SASControler* snapshot (dict)
 
 
 class _LocalDiffTask(QRunnable):
@@ -1778,20 +1919,23 @@ class _LocalDiffTask(QRunnable):
         self._signals = signals
 
     def run(self) -> None:
+        local_sas_state: dict[str, str] = {}
         try:
             from network.accounting_state_loader import (
                 diff_machine_state_sources,
                 load_machine_state_sources,
+                pick_sas_controller_source,
             )
 
             sources = load_machine_state_sources(self._scan_root)
             summary = local_diff_summary_text(
                 list(sources.keys()), diff_machine_state_sources(sources)
             )
+            local_sas_state = pick_sas_controller_source(sources)
         except Exception:  # noqa: BLE001
             summary = ""
         try:
-            self._signals.done.emit(summary)
+            self._signals.done.emit(summary, local_sas_state)
         except RuntimeError:
             pass  # dialog already destroyed
 
@@ -1801,7 +1945,7 @@ class _StateMtimePollSignals(QObject):
 
 
 class _StateMtimePollTask(QRunnable):
-    """Stat DeviceManagerData.xml_* mtimes off the UI thread (SMB stats can block)."""
+    """Stat DeviceManagerData + AFT XML mtimes off the UI thread (SMB can block)."""
 
     def __init__(self, scan_root: str, signals: _StateMtimePollSignals) -> None:
         super().__init__()
@@ -2078,6 +2222,7 @@ class SasVerifyDialog(QDialog):
         self._loaded_cabinet_scan_root = ""
         self._machine_state_loaded_at = 0.0
         self._cabinet_compare_force_pending = False
+        self._compare_started_mono = 0.0
         self._meters_ui_pending = False
         self._compare_ui_pending = False
         self._cabinet_compare_prefetch = False
@@ -2097,8 +2242,39 @@ class SasVerifyDialog(QDialog):
             self._on_state_mtime_polled, Qt.ConnectionType.QueuedConnection
         )
         self._auto_fetch_timer = QTimer(self)
-        self._auto_fetch_timer.setInterval(4000)
+        self._auto_fetch_timer.setInterval(AUTO_FETCH_POLL_INTERVAL_MS)
         self._auto_fetch_timer.timeout.connect(self._on_auto_fetch_timer)
+        # Instant local-disk watcher (AFT XML + DeviceManagerData folders).
+        # Remote UNC keeps the poll timer only — SMB watchers are unreliable.
+        self._auto_fetch_fs_watcher = QFileSystemWatcher(self)
+        self._auto_fetch_fs_watcher.directoryChanged.connect(self._on_auto_fetch_fs_changed)
+        self._auto_fetch_fs_watcher.fileChanged.connect(self._on_auto_fetch_fs_changed)
+        # Coalesced refresh queued by the mtime watcher / the toggle turning on;
+        # runs after the spacing/busy brake in auto_fetch_refresh_delay_s() clears.
+        self._auto_fetch_refresh_queued = False
+        self._auto_fetch_last_force_mono = 0.0
+        self._auto_fetch_queue_timer = QTimer(self)
+        self._auto_fetch_queue_timer.setSingleShot(True)
+        self._auto_fetch_queue_timer.timeout.connect(self._run_queued_auto_fetch_refresh)
+        self._auto_fetch_poll_started_mono = 0.0
+        self._auto_fetch_round_started_mono = 0.0
+        # Soft pulse on value cells that changed after a successful refresh.
+        self._meter_flash_arm = False
+        self._meter_flash_started_mono = 0.0
+        self._meter_flash_keys: set[tuple[str, int]] = set()
+        self._meter_flash_timer = QTimer(self)
+        self._meter_flash_timer.setInterval(METER_FLASH_TICK_MS)
+        self._meter_flash_timer.timeout.connect(self._on_meter_flash_tick)
+        # A round holds MISMATCH -> SYNCING while a forced COM capture and the
+        # paired Machine re-read have not both landed (see compare_status()).
+        self._auto_fetch_round_active = False
+        self._auto_fetch_round_resynced = False
+        # Manual Refresh Meters in flight — Auto fetch must queue, not restart.
+        self._manual_meters_refresh = False
+        self._settle_repaint_timer = QTimer(self)
+        self._settle_repaint_timer.setSingleShot(True)
+        self._settle_repaint_timer.setInterval(_SETTLE_REPAINT_MS)
+        self._settle_repaint_timer.timeout.connect(self._on_settle_repaint)
 
         # Auto-recovery: retry COM capture when the SAS tester releases the port,
         # and retry the Machine share when access comes back. No busy bar while
@@ -2110,6 +2286,10 @@ class SasVerifyDialog(QDialog):
         self._game_recovery_seen_down = False
         self._recovery_probe_running = False
         self._local_diff_summary = ""
+        self._local_diff_running = False
+        # Local scan root SAS side (SASControler* snapshot) — slot only; a
+        # roulette state folder carries no SAS controller meters.
+        self._local_sas_state: dict[str, str] = {}
         self._local_diff_signals = _LocalDiffSignals()
         self._local_diff_signals.done.connect(
             self._on_local_diff_done, Qt.ConnectionType.QueuedConnection
@@ -2131,29 +2311,36 @@ class SasVerifyDialog(QDialog):
         self.resize(1180, 780)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 8)
-        root.setSpacing(6)
+        root.setContentsMargins(8, 6, 8, 5)
+        root.setSpacing(4)
+        self._always_on_top = False
         root.addWidget(self._build_view_menu_bar())
-        root.addWidget(
-            QLabel(
-                "Compare: SAS columns = live COM (host cable / MUX); "
-                "Machine column = scan-root snapshot (cabinet DeviceManager XML). "
-                "On a workstation, Machine prefers the remote share even when COM is attached "
-                "(local G:\\ is not the EGM on the cable). Local scan root only when running "
-                "on the EGM, or when remote is down (then D:\\ USB / local folder). "
-                "Close IGT SAS tester if it holds the COM port. "
-                "Diagnostics: SasVerifyMeters.log next to this program "
-                "(or LogInvestigator.log when opened from the main app)."
-            )
-        )
-        legend = QLabel(
-            f"Meter Name legend: "
-            f"<b style='color:{_TRUE_METER_COLOR};'>True meter</b> (direct cabinet value) &nbsp;·&nbsp; "
+        self._always_on_top_action.setChecked(self._read_always_on_top_pref())
+        info_label = QLabel(
+            f"Compare: SAS = live COM · Machine = scan-root snapshot &nbsp;·&nbsp; "
+            f"<b style='color:{_TRUE_METER_COLOR};'>True meter</b> / "
             f"<i style='color:{_DERIVED_METER_COLOR};'>Derived meter</i> "
-            f"(computed in code from multiple meters — hover for formula)"
+            f"&nbsp;·&nbsp; hover for details"
         )
-        legend.setTextFormat(Qt.TextFormat.RichText)
-        root.addWidget(legend)
+        info_label.setTextFormat(Qt.TextFormat.RichText)
+        info_label.setStyleSheet("QLabel { font-size: 11px; }")
+        info_label.setToolTip(
+            "<div style='max-width:480px;'>"
+            "Compare: SAS columns = live COM (host cable / MUX); "
+            "Machine column = scan-root snapshot (cabinet DeviceManager XML). "
+            "On a workstation, Machine prefers the remote share even when COM is attached "
+            "(local G:\\\\ is not the EGM on the cable). Local scan root only when running "
+            "on the EGM, or when remote is down (then D:\\\\ USB / local folder). "
+            "Close IGT SAS tester if it holds the COM port. "
+            "Diagnostics: SasVerifyMeters.log next to this program "
+            "(or LogInvestigator.log when opened from the main app)."
+            "<br><br>Meter Name legend: "
+            f"<b style='color:{_TRUE_METER_COLOR};'>True meter</b> = direct cabinet value "
+            f"&nbsp;·&nbsp; <i style='color:{_DERIVED_METER_COLOR};'>Derived meter</i> "
+            "= computed in code from multiple meters (hover the meter name for its formula)."
+            "</div>"
+        )
+        root.addWidget(info_label)
 
         # Allow operators to paste/override UNC paths (do not lock this field).
         scan_row = QHBoxLayout()
@@ -2188,18 +2375,24 @@ class SasVerifyDialog(QDialog):
 
         self._busy_progress = make_thin_busy_progress(self)
         root.addWidget(self._busy_progress)
+        self._busy_progress_suppressed = False
+        self._busy_idle_timer = QTimer(self)
+        self._busy_idle_timer.setSingleShot(True)
+        self._busy_idle_timer.setInterval(_BUSY_IDLE_DEBOUNCE_MS)
+        self._busy_idle_timer.timeout.connect(self._apply_busy_progress_idle)
 
+        self._prefetch_status_full = ""
         self._prefetch_status_label = QLabel("")
-        self._prefetch_status_label.setWordWrap(True)
-        self._prefetch_status_label.setMinimumHeight(36)
+        self._prefetch_status_label.setWordWrap(False)
+        self._prefetch_status_label.setFixedHeight(18)
         self._prefetch_status_label.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         self._prefetch_status_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
         self._prefetch_status_label.setStyleSheet(
-            "QLabel { color: #475569; padding: 2px 0; }"
+            "QLabel { color: #475569; font-size: 11px; padding: 1px 0; }"
         )
         root.addWidget(self._prefetch_status_label)
 
@@ -2233,8 +2426,9 @@ class SasVerifyDialog(QDialog):
         self._paste.setPlaceholderText(
             "Paste TX>= / RX<= hex, or IGT Message Display ($6F = Meter N Code / Meter N)…"
         )
-        self._paste.setMinimumHeight(56)
-        self._paste.setMaximumHeight(160)
+        # Compact strip — the meter tabs (esp. Accounting) need the vertical room.
+        self._paste.setMinimumHeight(40)
+        self._paste.setMaximumHeight(90)
 
         self._table = self._make_verify_table_widget()
         self._verify_tables: tuple[QTableWidget, ...] = (self._table,)
@@ -2318,7 +2512,7 @@ class SasVerifyDialog(QDialog):
         self._content_split.addWidget(self._meter_tabs)
         # Table should absorb almost all resize; paste stays a compact strip.
         self._content_split.setStretchFactor(0, 1)
-        self._content_split.setStretchFactor(1, 9)
+        self._content_split.setStretchFactor(1, 14)
         self._content_split.setChildrenCollapsible(False)
         self._split_meter_dominant_applied = False
         self._window_geometry_restored = False
@@ -2336,8 +2530,9 @@ class SasVerifyDialog(QDialog):
         row.addStretch(1)
         self._auto_fetch_toggle = QCheckBox("Auto fetch")
         self._auto_fetch_toggle.setToolTip(
-            "Watch the EGM's DeviceManager state files and re-fetch Machine meters "
-            "automatically when the cabinet writes an update."
+            "Watch cabinet state folders (DeviceManagerData + AFT XML) and reload "
+            "meters when they change. On a local EGM this is near-instant via the "
+            "filesystem watcher; remote cabinets poll over SMB."
         )
         self._auto_fetch_toggle.setChecked(False)
         self._auto_fetch_toggle.toggled.connect(self._on_auto_fetch_toggle)
@@ -3311,6 +3506,11 @@ class SasVerifyDialog(QDialog):
     def _build_view_menu_bar(self) -> QMenuBar:
         bar = QMenuBar(self)
         view_menu = bar.addMenu("&View")
+        self._always_on_top_action = QAction("Always on top", self)
+        self._always_on_top_action.setCheckable(True)
+        self._always_on_top_action.toggled.connect(self._on_always_on_top_toggled)
+        view_menu.addAction(self._always_on_top_action)
+        view_menu.addSeparator()
         self._columns_menu = view_menu.addMenu("&Columns")
         self._columns_menu.setToolTip(
             "Show or hide meter table columns (copy/export uses visible columns only)."
@@ -3351,6 +3551,61 @@ class SasVerifyDialog(QDialog):
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+
+    def _read_always_on_top_pref(self) -> bool:
+        s = QSettings()
+        s.beginGroup(_SAS_VERIFY_SETTINGS_GROUP)
+        try:
+            return bool(s.value(_KEY_ALWAYS_ON_TOP, False, type=bool))
+        finally:
+            s.endGroup()
+
+    def _save_always_on_top_pref(self, on: bool) -> None:
+        s = QSettings()
+        s.beginGroup(_SAS_VERIFY_SETTINGS_GROUP)
+        try:
+            s.setValue(_KEY_ALWAYS_ON_TOP, bool(on))
+        finally:
+            s.endGroup()
+        s.sync()
+
+    def _apply_always_on_top(self, on: bool) -> None:
+        """Move the window in/out of the topmost band; Qt hint is the fallback.
+
+        ``set_window_always_on_top`` only changes the native z-order band and
+        keeps focus/theming intact. When it is unavailable (non-Windows, or no
+        HWND yet) ``Qt.WindowStaysOnTopHint`` still works, at the cost of
+        recreating the native window.
+        """
+        if set_window_always_on_top(self, on):
+            return
+        flags = self.windowFlags()
+        if on:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        else:
+            flags &= ~Qt.WindowType.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
+
+    def _reapply_always_on_top(self) -> None:
+        """Re-assert the topmost band after a show()/restyle recreates the HWND.
+
+        Never switches the band on when the user has it off.
+        """
+        if self._always_on_top:
+            self._apply_always_on_top(True)
+
+    def _on_always_on_top_toggled(self, checked: bool) -> None:
+        self._always_on_top = bool(checked)
+        self._apply_always_on_top(self._always_on_top)
+        self._save_always_on_top_pref(self._always_on_top)
+
+    def _window_context_menu(self) -> QMenu:
+        menu = QMenu(self)
+        menu.addAction(self._always_on_top_action)
+        return menu
+
+    def contextMenuEvent(self, event) -> None:  # type: ignore[override]
+        self._window_context_menu().exec(event.globalPos())
 
     def _on_meter_tab_changed(self, index: int) -> None:
         self._sync_columns_menus_for_tab(index)
@@ -3437,8 +3692,19 @@ class SasVerifyDialog(QDialog):
         except Exception:
             return False
 
-    def _stop_compare_thread(self, wait_ms: int = 300) -> None:
-        self._quit_or_orphan_thread(self._compare_thread, wait_ms)
+    def _stop_compare_thread(self, wait_ms: int = 300) -> bool:
+        """Stop or orphan the Machine-load thread and drop dialog refs.
+
+        Clearing refs is required: an orphaned QThread that is still referenced
+        keeps ``_compare_running()`` True forever, which blocks Auto fetch and
+        makes Refresh/Compare look dead while the UI stays on
+        "Loading Machine meters…".
+        """
+        stopped = self._quit_or_orphan_thread(self._compare_thread, wait_ms)
+        self._compare_thread = None
+        self._compare_worker = None
+        self._compare_started_mono = 0.0
+        return stopped
 
     def _stop_meter_fetch_thread(self, wait_ms: int = 300) -> bool:
         stopped = self._quit_or_orphan_thread(self._meter_fetch_thread, wait_ms)
@@ -3460,6 +3726,19 @@ class SasVerifyDialog(QDialog):
         th = self._compare_thread
         return th is not None and th.isRunning()
 
+    def _set_prefetch_status_text(self, text: str) -> None:
+        """One thin, non-wrapping status row; the full text is on the tooltip.
+
+        A wrapped multi-line status used to push the busy strip up and down as
+        the message changed length; a fixed-height single line (Qt clips
+        overflow at the widget edge, no eliding needed) keeps
+        ``_prefetch_status_label`` a constant height across every state.
+        """
+        full = str(text or "")
+        self._prefetch_status_full = full
+        self._prefetch_status_label.setText(full)
+        self._prefetch_status_label.setToolTip(full)
+
     def _busy_progress_should_run(self) -> bool:
         """True while cabinet compare / COM capture is in flight (OneHand is advisory)."""
         return busy_progress_should_run(
@@ -3467,6 +3746,7 @@ class SasVerifyDialog(QDialog):
             compare_ui_pending=self._compare_ui_pending,
             compare_running=self._compare_running(),
             meter_fetch_running=self._meter_fetch_running(),
+            local_diff_running=self._local_diff_running,
         )
 
     def _onehand_check_running(self) -> bool:
@@ -3474,6 +3754,13 @@ class SasVerifyDialog(QDialog):
         return th is not None and th.isRunning()
 
     def _set_busy_progress_active(self, active: bool | None = None) -> None:
+        """Turn the busy line on now, or debounce turning it off.
+
+        Idle is delayed by ``_busy_idle_timer`` so a phase change (cabinet load
+        finishes, COM capture starts a beat later) reads as one continuous run
+        rather than a blink. ``Auto fetch`` unchecking bypasses this via
+        ``_suppress_busy_progress`` so the line parks immediately.
+        """
         from gui.thin_progress import set_thin_busy_progress_active
 
         bar = getattr(self, "_busy_progress", None)
@@ -3481,12 +3768,50 @@ class SasVerifyDialog(QDialog):
             return
         if active is None:
             active = self._busy_progress_should_run()
-        set_thin_busy_progress_active(bar, bool(active))
+        active = bool(active) and not self._busy_progress_suppressed
+        if active:
+            if self._busy_idle_timer.isActive():
+                self._busy_idle_timer.stop()
+            set_thin_busy_progress_active(bar, True)
+            return
+        if not self._busy_idle_timer.isActive():
+            self._busy_idle_timer.start()
+
+    def _apply_busy_progress_idle(self) -> None:
+        """Debounce timeout: park the busy line unless work restarted first."""
+        if self._busy_idle_timer.isActive():
+            self._busy_idle_timer.stop()
+        if self._busy_progress_suppressed or self._busy_progress_should_run():
+            return
+        from gui.thin_progress import set_thin_busy_progress_active
+
+        bar = getattr(self, "_busy_progress", None)
+        if bar is not None:
+            set_thin_busy_progress_active(bar, False)
+
+    def _suppress_busy_progress(self) -> None:
+        """Park the busy line immediately and refuse to restart it.
+
+        Used when the user turns ``Auto fetch`` off: a leftover COM capture /
+        cabinet load worker still in flight must not keep the blue line
+        running after the toggle says otherwise.
+        """
+        self._busy_progress_suppressed = True
+        if self._busy_idle_timer.isActive():
+            self._busy_idle_timer.stop()
+        from gui.thin_progress import set_thin_busy_progress_active
+
+        bar = getattr(self, "_busy_progress", None)
+        if bar is not None:
+            set_thin_busy_progress_active(bar, False)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         SettingsManager.save_sas_verify_dialog_geometry(self)
         self._accept_worker_signals = False
         self._auto_fetch_timer.stop()
+        if self._auto_fetch_queue_timer.isActive():
+            self._auto_fetch_queue_timer.stop()
+        self._clear_auto_fetch_file_watcher()
         self._recovery_timer.stop()
         self._pending_forced_fetch = None
         self._stop_compare_thread(wait_ms=500)
@@ -3524,7 +3849,7 @@ class SasVerifyDialog(QDialog):
         if not self._split_meter_dominant_applied:
             self._split_meter_dominant_applied = True
             split_h = max(self._content_split.height(), 480)
-            paste_h = min(140, max(72, int(split_h * 0.13)))
+            paste_h = min(90, max(40, int(split_h * 0.07)))
             self._content_split.setSizes([paste_h, split_h - paste_h])
         # First paint ASAP — UNC theme catalog + serial enum are deferred.
         QTimer.singleShot(0, self._start_prefetch)
@@ -4035,18 +4360,18 @@ class SasVerifyDialog(QDialog):
         self._sync_get_meters_button_label()
         self._set_busy_progress_active()
         if override:
-            self._prefetch_status_label.setText(override)
+            self._set_prefetch_status_text(override)
             return
         # Auto-recovery waiting states: nothing is in flight, so no busy bar —
         # say exactly what is being waited for and that it resolves by itself.
         if not self._meter_fetch_running() and not self._compare_running():
             if self._com_recovery_pending:
-                self._prefetch_status_label.setText(
+                self._set_prefetch_status_text(
                     com_recovery_waiting_status(self._resolved_com_port_for_fetch())
                 )
                 return
             if self._game_recovery_pending:
-                self._prefetch_status_label.setText(
+                self._set_prefetch_status_text(
                     game_recovery_waiting_status(
                         self._game_client_exe_label(),
                         self._cabinet_ip_from_scan_root() or self._scan_root_unc_host(),
@@ -4054,40 +4379,40 @@ class SasVerifyDialog(QDialog):
                 )
                 return
             if self._share_recovery_pending and not self._machine_loaded_for_current_root():
-                self._prefetch_status_label.setText(
+                self._set_prefetch_status_text(
                     share_recovery_waiting_status(
                         self._scan_root, _extract_unc_host(self._scan_root)
                     )
                 )
                 return
             if self._local_files_only_mode() and self._machine_loaded_for_current_root():
-                self._prefetch_status_label.setText(
+                self._set_prefetch_status_text(
                     local_files_only_status(self._scan_root, self._local_diff_summary)
                 )
                 return
         if self._cached_meter_result is not None and self._machine_loaded_for_current_root():
             if self._meter_fetch_user_clicked_apply:
-                self._prefetch_status_label.setText(
+                self._set_prefetch_status_text(
                     "Meters displayed — click Refresh Meters to capture again from COM."
                 )
             else:
-                self._prefetch_status_label.setText("Applying prefetched COM meters…")
+                self._set_prefetch_status_text("Applying prefetched COM meters…")
                 QTimer.singleShot(0, self._auto_apply_cached_meters_if_needed)
             return
         if self._meter_fetch_error and not self._cached_meter_result:
             if self._machine_loaded_for_current_root():
-                self._prefetch_status_label.setText(
+                self._set_prefetch_status_text(
                     f"Cabinet loaded — COM capture failed: {self._meter_fetch_error} "
                     "(Machine column from snapshot; click Refresh Meters to retry COM)"
                 )
             else:
-                self._prefetch_status_label.setText(
+                self._set_prefetch_status_text(
                     f"COM capture failed: {self._meter_fetch_error} "
                     "(click Refresh Meters to retry)"
                 )
             return
         if self._machine_loaded_for_current_root() and self._meter_fetch_running() and not self._compare_running():
-            self._prefetch_status_label.setText(
+            self._set_prefetch_status_text(
                 "Cabinet loaded — COM capture in progress "
                 "(Machine column filled; SAS fills when capture completes)…"
             )
@@ -4098,32 +4423,32 @@ class SasVerifyDialog(QDialog):
         if self._meter_fetch_running():
             parts.append("COM capture")
         if parts:
-            self._prefetch_status_label.setText(
+            self._set_prefetch_status_text(
                 f"Prefetching: {' and '.join(parts)}…"
             )
             return
         if self._cached_meter_result is not None:
             if self._meter_fetch_user_clicked_apply:
-                self._prefetch_status_label.setText(
+                self._set_prefetch_status_text(
                     "Meters displayed — click Refresh Meters to capture again from COM."
                 )
             else:
-                self._prefetch_status_label.setText("Applying prefetched COM meters…")
+                self._set_prefetch_status_text("Applying prefetched COM meters…")
                 QTimer.singleShot(0, self._auto_apply_cached_meters_if_needed)
             return
         if self._machine_loaded_for_current_root():
-            self._prefetch_status_label.setText(
+            self._set_prefetch_status_text(
                 "Cabinet loaded — prefetching COM meters (tables fill automatically)…"
             )
             return
         if not self._resolved_com_port_for_fetch():
-            self._prefetch_status_label.setText(
+            self._set_prefetch_status_text(
                 "SAS/MUX not available — cabinet meters load from the scan root "
                 "(remote share when reachable, otherwise local/USB). "
                 "Attach SAS/MUX for a live capture."
             )
             return
-        self._prefetch_status_label.setText(
+        self._set_prefetch_status_text(
             "Cabinet loading… SAS/MUX meters will appear automatically when capture finishes."
         )
 
@@ -4156,6 +4481,13 @@ class SasVerifyDialog(QDialog):
         from network.sas_serial_meters import find_running_sas_com_blockers
 
         log = get_logger("gui.sas_verify")
+        if self._local_files_only_mode() or self._offline_log_scan():
+            # Local EGM / USB snapshot: no host cable to poll. Opening COM here
+            # hangs Refresh forever (MUX is not a view of *this* machine).
+            log.info(
+                "begin_meter_fetch skipped — local/offline files only (no COM)"
+            )
+            return False
         blockers = find_running_sas_com_blockers()
         self._update_com_blocker_warning(blockers)
         port = self._resolved_com_port_for_fetch()
@@ -4365,6 +4697,7 @@ class SasVerifyDialog(QDialog):
             self._begin_cabinet_compare(prefetch=True, force=True)
         if not self._begin_meter_fetch(prefetch=False, force=True):
             self._meters_ui_pending = False
+            self._manual_meters_refresh = False
             self._btn_get_meters.setEnabled(True)
             self._sync_get_meters_button_label()
             self._set_busy_progress_active()
@@ -4379,26 +4712,52 @@ class SasVerifyDialog(QDialog):
 
     def _on_get_meters_clicked(self) -> None:
         # Instant UI feedback before COM/MUX probe or any heavy work.
-        if self._meters_ui_pending or self._meter_fetch_running():
+        if self._meter_fetch_running():
+            # Never ignore a second Refresh press — queue a forced recapture.
+            self._pending_forced_fetch = {
+                "prefetch": False,
+                "full_timing": True,
+            }
             self._btn_get_meters.setEnabled(False)
             self._btn_get_meters.setText("Capturing COM…")
             self._set_busy_progress_active(True)
-            self._prefetch_status_label.setText(
-                "COM capture already in progress — tables update when it finishes…"
+            self._set_prefetch_status_text(
+                "Queued — will recapture when the current COM read finishes…"
             )
             self._paint_immediate_busy_feedback()
+            if self._compare_running():
+                self._begin_cabinet_compare(
+                    prefetch=False, force=True, immediate_paint=True
+                )
             return
+        if self._meters_ui_pending:
+            # Stuck UI flag with no live COM thread — clear and restart.
+            self._meters_ui_pending = False
+            if self._compare_running():
+                self._begin_cabinet_compare(
+                    prefetch=False, force=True, immediate_paint=True
+                )
         self._meters_ui_pending = True
+        self._manual_meters_refresh = True
         self._btn_get_meters.setEnabled(False)
-        self._btn_get_meters.setText("Capturing COM…")
-        self._set_busy_progress_active(True)
-        self._prefetch_status_label.setText("Starting COM capture…")
+        local_only = self._local_files_only_mode()
+        if local_only:
+            self._btn_get_meters.setText("Refreshing…")
+            self._set_busy_progress_active(True)
+            self._set_prefetch_status_text(
+                "Refreshing Machine meters from local files…"
+            )
+        else:
+            self._btn_get_meters.setText("Capturing COM…")
+            self._set_busy_progress_active(True)
+            self._set_prefetch_status_text("Starting COM capture…")
         self._paint_immediate_busy_feedback()
         QTimer.singleShot(0, self._continue_get_meters_after_ui_feedback)
 
     def _continue_get_meters_after_ui_feedback(self) -> None:
         if not self._worker_signals_enabled():
             self._meters_ui_pending = False
+            self._manual_meters_refresh = False
             return
         port, mux_detail = self._sas_mux_accessible()
         if not port:
@@ -4440,11 +4799,14 @@ class SasVerifyDialog(QDialog):
                 self._invalidate_machine_cabinet_cache()
                 self._begin_cabinet_compare(prefetch=False, force=True)
                 self._meters_ui_pending = False
+                # Keep _manual_meters_refresh until Machine (+ local diff) lands
+                # so Auto fetch queues instead of restarting this load.
                 self._btn_get_meters.setEnabled(True)
                 self._sync_get_meters_button_label()
                 self._set_busy_progress_active()
                 return
             self._meters_ui_pending = False
+            self._manual_meters_refresh = False
             self._btn_get_meters.setEnabled(True)
             self._sync_get_meters_button_label()
             self._set_busy_progress_active()
@@ -4477,6 +4839,7 @@ class SasVerifyDialog(QDialog):
         if not self._worker_signals_enabled():
             return
         self._meters_ui_pending = False
+        self._manual_meters_refresh = False
         self._cached_meter_result = result
         self._meter_fetch_error = None
         self._com_recovery_pending = False
@@ -4503,6 +4866,8 @@ class SasVerifyDialog(QDialog):
                 "COM done but Machine empty — restarting cabinet compare"
             )
             self._begin_cabinet_compare(prefetch=True)
+        if self._auto_fetch_round_active:
+            self._resync_machine_after_auto_fetch_capture()
         self._update_prefetch_status()
 
     def _retry_prefetch_with_full_timing(self) -> None:
@@ -4523,6 +4888,7 @@ class SasVerifyDialog(QDialog):
         if not self._worker_signals_enabled():
             return
         self._meters_ui_pending = False
+        self._manual_meters_refresh = False
         self._meter_fetch_error = message or "Serial meter fetch failed."
         self._btn_get_meters.setEnabled(True)
         was_prefetch = self._meter_fetch_prefetch
@@ -4570,6 +4936,10 @@ class SasVerifyDialog(QDialog):
         # COM/MUX capture failed for good — re-evaluate the cabinet banner so the
         # tiered fallback (PsExec) or the final "all failed" warning can react.
         self._update_onehand_warning_label(self._onehand_check_ip)
+        if self._auto_fetch_round_active and not self._meter_fetch_running():
+            # Do not leave SYNCING stuck after a failed Auto-fetch COM round.
+            if not self._com_recovery_pending and not self._game_recovery_pending:
+                self._end_auto_fetch_round()
         if was_prefetch:
             # Tier 1 failed. Tier 2 is remote share (cabinet compare). Local D:\ /
             # G:\ prompt only when COM is unavailable and IGT is not the holder
@@ -4636,7 +5006,7 @@ class SasVerifyDialog(QDialog):
             self.ui.compare_btn.setEnabled(False)
             self.ui.compare_btn.setText("Scanning Cabinet...")
             self._set_busy_progress_active(True)
-            self._prefetch_status_label.setText(
+            self._set_prefetch_status_text(
                 "Cabinet scan already in progress — Machine column updates when it finishes…"
             )
             self._paint_immediate_busy_feedback()
@@ -4663,7 +5033,7 @@ class SasVerifyDialog(QDialog):
         self.ui.compare_btn.setEnabled(False)
         self.ui.compare_btn.setText("Scanning Cabinet...")
         self._set_busy_progress_active(True)
-        self._prefetch_status_label.setText("Reloading Machine meters from cabinet…")
+        self._set_prefetch_status_text("Reloading Machine meters from cabinet…")
         self._paint_immediate_busy_feedback()
 
         self._last_parsed_rows = parsed
@@ -4685,17 +5055,28 @@ class SasVerifyDialog(QDialog):
         finally:
             self._compare_ui_pending = False
 
-    def _begin_cabinet_compare(self, *, prefetch: bool = False, force: bool = False) -> None:
-        """Load Machine column from cabinet state XML (Scan root UNC). Runs off the UI thread."""
+    def _begin_cabinet_compare(
+        self,
+        *,
+        prefetch: bool = False,
+        force: bool = False,
+        immediate_paint: bool = True,
+    ) -> None:
+        """Load Machine column from cabinet state XML (Scan root UNC). Runs off the UI thread.
+
+        ``immediate_paint=False`` is for Auto fetch background rounds: keep the
+        current table visible while a fresh snapshot loads in the background.
+        """
         # Paint busy state before scan-root resolve / SMB work on the UI thread.
-        if force or not prefetch:
+        paint_busy = bool(immediate_paint) and (force or not prefetch)
+        if paint_busy:
             if not prefetch:
                 self.ui.compare_btn.setEnabled(False)
                 self.ui.compare_btn.setText("Scanning Cabinet...")
             self._set_busy_progress_active(True)
-            self._prefetch_status_label.setText("Loading Machine meters from cabinet…")
+            self._set_prefetch_status_text("Loading Machine meters from cabinet…")
             self._paint_immediate_busy_feedback()
-        elif not self._cabinet_cache_valid():
+        elif immediate_paint and not self._cabinet_cache_valid():
             self._set_busy_progress_active(True)
             self._paint_immediate_busy_feedback()
 
@@ -4724,9 +5105,25 @@ class SasVerifyDialog(QDialog):
 
         if self._compare_running():
             if force:
-                # Finish the in-flight load, then reload again for a fresh snapshot.
-                self._cabinet_compare_force_pending = True
-            return
+                elapsed = 0.0
+                if self._compare_started_mono:
+                    elapsed = time.monotonic() - float(self._compare_started_mono)
+                # Restart only when stuck (>=20s). Auto-fetch used to restart
+                # immediately (immediate_paint=False), which fought Refresh Meters
+                # and left "Scanning Cabinet…" / the busy bar running forever on
+                # a busy local EGM. The 45s orphan in _on_auto_fetch_timer still
+                # recovers a truly wedged load.
+                restart_now = elapsed >= 20.0
+                if restart_now:
+                    self._cabinet_compare_force_pending = False
+                    self._compare_job_id += 1
+                    self._active_compare_job_id = self._compare_job_id
+                    self._stop_compare_thread(wait_ms=400)
+                else:
+                    self._cabinet_compare_force_pending = True
+                    return
+            else:
+                return
 
         self._cabinet_compare_force_pending = False
         self._cabinet_compare_prefetch = prefetch
@@ -4773,6 +5170,7 @@ class SasVerifyDialog(QDialog):
         self._compare_worker.error.connect(self._compare_worker.deleteLater)
         self._compare_thread.finished.connect(self._compare_thread.deleteLater)
         self._compare_thread.finished.connect(self._on_compare_thread_finished)
+        self._compare_started_mono = time.monotonic()
         self._compare_thread.start()
 
     def _on_worker_finished(self, state_obj: object, job_id: int | None = None) -> None:
@@ -4805,9 +5203,17 @@ class SasVerifyDialog(QDialog):
                     if self._local_files_only_mode():
                         # Local EGM: the only honest compare is between the local
                         # state folders — run it off the UI thread and report.
+                        self._local_diff_running = True
+                        self._set_busy_progress_active(True)
                         self._pool.start(
                             _LocalDiffTask(self._scan_root, self._local_diff_signals)
                         )
+                    elif (
+                        self._auto_fetch_round_active
+                        and not self._meter_fetch_running()
+                    ):
+                        # Files-only / no COM round: Machine alone settles the pair.
+                        self._end_auto_fetch_round()
                 else:
                     self._machine_state_loaded_at = 0.0
                     # Empty state on a UNC root usually means no share access
@@ -4819,16 +5225,37 @@ class SasVerifyDialog(QDialog):
                         self._share_recovery_reloading = False
                     elif (self._scan_root or "").startswith("\\\\"):
                         self._arm_share_recovery()
+                    if (
+                        self._auto_fetch_round_active
+                        and not self._meter_fetch_running()
+                        and not self._local_diff_running
+                    ):
+                        self._end_auto_fetch_round()
             else:
                 self._machine_state = {}
                 self._machine_state_loaded = False
                 self._machine_state_loaded_at = 0.0
+                if (
+                    self._auto_fetch_round_active
+                    and not self._meter_fetch_running()
+                    and not self._local_diff_running
+                ):
+                    self._end_auto_fetch_round()
+            if self._auto_fetch_round_resynced:
+                # The paired re-read just landed — the round's verdicts may
+                # show again, held or not, on the render below.
+                self._auto_fetch_round_resynced = False
+                self._auto_fetch_round_active = False
+                if self._settle_repaint_timer.isActive():
+                    self._settle_repaint_timer.stop()
             # Always refresh the Machine column as soon as cabinet XML loads.
             # COM capture may still be running for the SAS column; do not block on it.
             self._run_cabinet_ui_refresh()
         except Exception:
             traceback.print_exc()
         finally:
+            if not self._local_diff_running:
+                self._manual_meters_refresh = False
             self.ui.compare_btn.setEnabled(True)
             self.ui.compare_btn.setText("Compare")
             self._btn_get_meters.setEnabled(True)
@@ -4838,9 +5265,17 @@ class SasVerifyDialog(QDialog):
             if self._cabinet_compare_force_pending and self._worker_signals_enabled():
                 self._cabinet_compare_force_pending = False
                 self._invalidate_machine_cabinet_cache()
+                auto_on = bool(
+                    getattr(self, "_auto_fetch_toggle", None)
+                    and self._auto_fetch_toggle.isChecked()
+                )
                 QTimer.singleShot(
                     0,
-                    lambda: self._begin_cabinet_compare(prefetch=True, force=True),
+                    lambda: self._begin_cabinet_compare(
+                        prefetch=True,
+                        force=True,
+                        immediate_paint=not auto_on,
+                    ),
                 )
 
     def _run_cabinet_ui_refresh(self) -> None:
@@ -4959,29 +5394,134 @@ class SasVerifyDialog(QDialog):
 
     def _on_auto_fetch_toggle(self, checked: bool) -> None:
         if checked:
+            self._busy_progress_suppressed = False
             # Fresh baseline: the first poll only records the current mtime.
             self._auto_fetch_baseline_mtime = 0.0
             self._auto_fetch_baseline_root = ""
+            self._sync_auto_fetch_watch_mode()
             self._auto_fetch_timer.start()
-            self._on_auto_fetch_timer()
+            # Queued, never run inline — starting a cabinet load / COM capture
+            # here would re-enter the dialog from inside the toggled handler.
+            self._queue_auto_fetch_refresh()
         else:
             self._auto_fetch_timer.stop()
+            if self._auto_fetch_queue_timer.isActive():
+                self._auto_fetch_queue_timer.stop()
+            self._auto_fetch_refresh_queued = False
+            self._clear_auto_fetch_file_watcher()
+            # A leftover COM capture / cabinet load worker must not keep the
+            # busy line running after the checkbox says otherwise.
+            self._suppress_busy_progress()
+
+    def _auto_fetch_uses_local_disk(self) -> bool:
+        """True when scan root is on a local drive (instant FS watcher path)."""
+        from network.goldclub_paths import (
+            local_filesystem_path_for_scan_root,
+            path_is_local_filesystem,
+        )
+
+        sr = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        if not sr:
+            return False
+        if self._local_files_only_mode():
+            return True
+        local = local_filesystem_path_for_scan_root(sr)
+        return bool(local) and path_is_local_filesystem(local)
+
+    def _clear_auto_fetch_file_watcher(self) -> None:
+        watcher = getattr(self, "_auto_fetch_fs_watcher", None)
+        if watcher is None:
+            return
+        for path in list(watcher.directories()) + list(watcher.files()):
+            watcher.removePath(path)
+
+    def _sync_auto_fetch_watch_mode(self) -> None:
+        """Arm QFileSystemWatcher on local state dirs; fast poll as backup.
+
+        Remote UNC keeps the slower SMB poll only — directory watchers over
+        admin shares miss AFT writes and fire spuriously.
+        """
+        local = self._auto_fetch_uses_local_disk()
+        self._auto_fetch_timer.setInterval(
+            AUTO_FETCH_POLL_INTERVAL_LOCAL_MS
+            if local
+            else AUTO_FETCH_POLL_INTERVAL_MS
+        )
+        self._clear_auto_fetch_file_watcher()
+        if not local or not self._auto_fetch_toggle.isChecked():
+            return
+        from network.accounting_state_loader import device_state_watch_directories
+
+        sr = (self._scan_root_edit.text() or self._scan_root or "").strip()
+        for directory in device_state_watch_directories(sr):
+            path = str(directory)
+            if path not in self._auto_fetch_fs_watcher.directories():
+                self._auto_fetch_fs_watcher.addPath(path)
+
+    def _on_auto_fetch_fs_changed(self, path: str = "") -> None:
+        """Instant local-disk notify: queue a meter reload (AFT / DeviceManager)."""
+        if not self._worker_signals_enabled() or not self._auto_fetch_toggle.isChecked():
+            return
+        # Windows sometimes drops a watch after a replace-write — re-arm.
+        if path and path not in self._auto_fetch_fs_watcher.directories():
+            try:
+                if Path(path).is_dir():
+                    self._auto_fetch_fs_watcher.addPath(path)
+            except OSError:
+                pass
+        self._queue_auto_fetch_refresh()
 
     def _on_auto_fetch_timer(self) -> None:
         if not self._worker_signals_enabled() or not self._auto_fetch_toggle.isChecked():
             return
-        if self._auto_fetch_poll_running or self._compare_running():
+        if self._auto_fetch_round_active:
+            started = float(getattr(self, "_auto_fetch_round_started_mono", 0.0) or 0.0)
+            if started and (time.monotonic() - started) >= AUTO_FETCH_ROUND_STALE_S:
+                # COM / Machine round never settled — release SYNCING and allow
+                # the next mtime change to start a fresh round.
+                self._end_auto_fetch_round()
+                self._set_busy_progress_active()
+        if self._compare_running():
+            started = float(getattr(self, "_compare_started_mono", 0.0) or 0.0)
+            if started and (time.monotonic() - started) >= 45.0:
+                # Wedged Machine load blocks Auto fetch forever — orphan and
+                # force a fresh round on the next queue tick.
+                self._compare_job_id += 1
+                self._active_compare_job_id = self._compare_job_id
+                self._stop_compare_thread(wait_ms=200)
+                self._cabinet_compare_force_pending = True
+                QTimer.singleShot(
+                    0,
+                    lambda: self._begin_cabinet_compare(
+                        prefetch=True,
+                        force=True,
+                        immediate_paint=not self._auto_fetch_toggle.isChecked(),
+                    ),
+                )
             return
+        if self._auto_fetch_poll_running:
+            started = float(getattr(self, "_auto_fetch_poll_started_mono", 0.0) or 0.0)
+            if started and (time.monotonic() - started) >= AUTO_FETCH_POLL_STALE_S:
+                # SMB mtime poll never returned — clear the latch so polling resumes.
+                self._auto_fetch_poll_running = False
+                self._auto_fetch_poll_started_mono = 0.0
+            else:
+                return
         # Edit box wins (same precedence as compare/fetch paths) so a freshly
         # typed root is watched immediately, not after the next compare.
         scan_root = (self._scan_root_edit.text() or self._scan_root or "").strip()
         if not scan_root:
             return
+        # Re-sync watcher targets if the scan root moved to a local tree.
+        if self._auto_fetch_uses_local_disk() and not self._auto_fetch_fs_watcher.directories():
+            self._sync_auto_fetch_watch_mode()
         self._auto_fetch_poll_running = True
+        self._auto_fetch_poll_started_mono = time.monotonic()
         self._pool.start(_StateMtimePollTask(scan_root, self._auto_fetch_signals))
 
     def _on_state_mtime_polled(self, mtime: float, scan_root: str) -> None:
         self._auto_fetch_poll_running = False
+        self._auto_fetch_poll_started_mono = 0.0
         if not self._worker_signals_enabled() or not self._auto_fetch_toggle.isChecked():
             return
         current_root = (self._scan_root_edit.text() or self._scan_root or "").strip()
@@ -4993,25 +5533,270 @@ class SasVerifyDialog(QDialog):
             # Root changed since the baseline was taken — start over.
             self._auto_fetch_baseline_root = scan_root
             self._auto_fetch_baseline_mtime = mtime if mtime > 0.0 else 0.0
+            self._sync_auto_fetch_watch_mode()
             return
         self._auto_fetch_baseline_mtime, should_fetch = evaluate_auto_fetch_poll(
             self._auto_fetch_baseline_mtime, mtime
         )
-        if should_fetch and not self._compare_running():
+        if should_fetch:
+            self._queue_auto_fetch_refresh()
+
+    def _auto_fetch_min_refresh_s(self) -> float:
+        if self._auto_fetch_uses_local_disk():
+            return AUTO_FETCH_MIN_REFRESH_LOCAL_S
+        return AUTO_FETCH_MIN_REFRESH_S
+
+    def _auto_fetch_refresh_delay_now(self) -> float:
+        busy = (
+            self._meter_fetch_running()
+            or self._compare_running()
+            or self._local_diff_running
+            or self._manual_meters_refresh
+        )
+        return auto_fetch_refresh_delay_s(
+            now_mono=time.monotonic(),
+            last_refresh_mono=self._auto_fetch_last_force_mono,
+            busy=busy,
+            min_refresh_s=self._auto_fetch_min_refresh_s(),
+        )
+
+    def _queue_auto_fetch_refresh(self) -> None:
+        self._auto_fetch_refresh_queued = True
+        delay_s = self._auto_fetch_refresh_delay_now()
+        self._auto_fetch_queue_timer.start(max(1, int(round(delay_s * 1000.0))))
+
+    def _run_queued_auto_fetch_refresh(self) -> None:
+        if self._auto_fetch_queue_timer.isActive():
+            self._auto_fetch_queue_timer.stop()
+        if not self._auto_fetch_refresh_queued:
+            return
+        delay_s = self._auto_fetch_refresh_delay_now()
+        if delay_s > 0.0:
+            # Still spaced out / still busy — reschedule rather than run now.
+            self._auto_fetch_queue_timer.start(max(1, int(round(delay_s * 1000.0))))
+            return
+        self._auto_fetch_refresh_queued = False
+        self._auto_fetch_last_force_mono = time.monotonic()
+        self._auto_fetch_round_active = True
+        self._auto_fetch_round_resynced = False
+        self._auto_fetch_round_started_mono = time.monotonic()
+        try:
             self._invalidate_machine_cabinet_cache()
-            self._begin_cabinet_compare(prefetch=True, force=True)
+            self._begin_cabinet_compare(
+                prefetch=True, force=True, immediate_paint=False
+            )
+            # Local / offline: files only — never open COM (hangs Refresh).
+            if self._local_files_only_mode() or self._offline_log_scan():
+                if not self._compare_running() and not self._local_diff_running:
+                    # Compare was skipped (no scan root) — do not leave SYNCING.
+                    self._end_auto_fetch_round()
+            else:
+                self._begin_meter_fetch(prefetch=True, force=True)
+        except Exception:
+            from gui.app_logging import get_logger
+
+            get_logger("gui.sas_verify").exception(
+                "auto-fetch refresh failed — ending stuck round"
+            )
+            self._end_auto_fetch_round()
+            self.ui.compare_btn.setEnabled(True)
+            self.ui.compare_btn.setText("Compare")
+            self._btn_get_meters.setEnabled(True)
+            self._sync_get_meters_button_label()
+            self._set_busy_progress_active()
+            self._update_prefetch_status(
+                "Auto fetch failed to start — click Refresh Meters to retry."
+            )
+
+    def _resync_machine_after_auto_fetch_capture(self) -> None:
+        """A forced COM capture just landed mid-round: re-read Machine to pair with it.
+
+        The slow side (SAS/COM) finishes last, so the fast side (Machine
+        snapshot) is re-read again once it does, rather than trusting the
+        earlier read from before the capture started.
+        """
+        if not self._auto_fetch_toggle.isChecked():
+            # Nothing else is coming (Auto fetch off) — stop holding verdicts.
+            self._end_auto_fetch_round()
+            return
+        self._auto_fetch_round_resynced = True
+        QTimer.singleShot(
+            0,
+            lambda: self._begin_cabinet_compare(
+                prefetch=True, force=True, immediate_paint=False
+            ),
+        )
+
+    def _end_auto_fetch_round(self) -> None:
+        if not self._auto_fetch_round_active:
+            return
+        self._auto_fetch_round_active = False
+        self._auto_fetch_round_resynced = False
+        self._auto_fetch_round_started_mono = 0.0
+        if self._settle_repaint_timer.isActive():
+            self._settle_repaint_timer.stop()
+        if self._last_parsed_rows:
+            self._render(parsed_rows=self._last_parsed_rows, allow_machine_lookup=True)
+
+    def _compare_sources_settled(self) -> bool:
+        """True once both columns are guaranteed to be from the same round.
+
+        False while a COM capture, a local-folder diff, or a paired re-read is
+        still in flight — a difference seen in that window is not trustworthy
+        yet (see compare_status()).
+        """
+        if self._meter_fetch_running():
+            return False
+        if self._local_diff_running:
+            return False
+        if self._auto_fetch_round_active:
+            return False
+        return True
+
+    def _arm_settle_repaint(self) -> None:
+        if not self._settle_repaint_timer.isActive():
+            self._settle_repaint_timer.start()
+
+    def _on_settle_repaint(self) -> None:
+        if self._last_parsed_rows:
+            self._render(parsed_rows=self._last_parsed_rows, allow_machine_lookup=True)
 
     def _mark_meters_fetched(self) -> None:
         self._fetched_status_label.setText(meters_fetched_status_text(datetime.now()))
+        # Next table paint records which value cells changed, then pulses them.
+        self._meter_flash_arm = True
 
-    def _on_local_diff_done(self, summary: str) -> None:
+    def _stop_meter_flash(self) -> None:
+        if self._meter_flash_timer.isActive():
+            self._meter_flash_timer.stop()
+        self._meter_flash_keys.clear()
+        self._meter_flash_started_mono = 0.0
+        self._meter_flash_arm = False
+
+    def _meter_flash_strength_now(self) -> float:
+        started = float(self._meter_flash_started_mono or 0.0)
+        if started <= 0.0 or not self._meter_flash_keys:
+            return 0.0
+        return meter_flash_strength(time.monotonic() - started)
+
+    def _paint_meter_flash_on_item(
+        self, item: QTableWidgetItem | None, meter_code: str, col: int
+    ) -> None:
+        if item is None:
+            return
+        key = ((meter_code or "").strip().upper(), int(col))
+        if key not in self._meter_flash_keys:
+            item.setBackground(QBrush())
+            return
+        bg = meter_flash_background(self._meter_flash_strength_now())
+        if bg is None:
+            item.setBackground(QBrush())
+        else:
+            item.setBackground(QBrush(bg))
+
+    def _paint_meter_flash_cells(self) -> None:
+        strength = self._meter_flash_strength_now()
+        bg = meter_flash_background(strength)
+        for tbl in self._verify_tables:
+            for row in range(tbl.rowCount()):
+                code = self._meter_code_for_row(row, tbl)
+                if not code:
+                    continue
+                for col in _METER_FLASH_COLS:
+                    if (code, int(col)) not in self._meter_flash_keys:
+                        continue
+                    item = tbl.item(row, int(col))
+                    if item is None:
+                        continue
+                    if bg is None:
+                        item.setBackground(QBrush())
+                    else:
+                        item.setBackground(QBrush(bg))
+
+    def _on_meter_flash_tick(self) -> None:
+        if not self._worker_signals_enabled():
+            self._stop_meter_flash()
+            return
+        strength = self._meter_flash_strength_now()
+        if strength <= 0.0:
+            self._paint_meter_flash_cells()
+            self._stop_meter_flash()
+            return
+        self._paint_meter_flash_cells()
+
+    def _on_local_diff_done(
+        self, summary: str, local_sas_state: dict[str, str] | None = None
+    ) -> None:
         if not self._worker_signals_enabled():
             return
+        self._local_diff_running = False
+        self._manual_meters_refresh = False
         self._local_diff_summary = (summary or "").strip()
+        applied = False
+        if self._resolved_game_client_kind() != "roulette":
+            applied = self._apply_local_sas_source(local_sas_state)
         if self._local_files_only_mode() and self._machine_loaded_for_current_root():
-            self._update_prefetch_status(
-                local_files_only_status(self._scan_root, self._local_diff_summary)
-            )
+            self._seed_verify_rows_from_cabinet_if_needed()
+            if applied:
+                status = (
+                    "Local EGM mode — Machine meters loaded from local files "
+                    f"({self._scan_root}). SAS column filled from the cabinet's "
+                    "own SASControler1 snapshot (No COM capture — no host "
+                    f"cable to poll on the machine itself). {self._local_diff_summary}"
+                ).rstrip()
+            else:
+                status = local_files_only_status(self._scan_root, self._local_diff_summary)
+            self._update_prefetch_status(status)
+            if self._last_parsed_rows:
+                self._render(parsed_rows=self._last_parsed_rows, allow_machine_lookup=True)
+        if self._auto_fetch_round_active and not self._meter_fetch_running():
+            self._end_auto_fetch_round()
+        self._set_busy_progress_active()
+
+    def _local_sas_lookup(self, code: str) -> str:
+        """Local scan root only: SAS value from the SASControler* snapshot."""
+        if not self._local_sas_state:
+            return ""
+        try:
+            v = (
+                getattr(self._vm, "get_gm2u_value_for_sas_code")(code, self._local_sas_state)
+                or ""
+            ).strip()
+        except Exception:
+            v = ""
+        return v
+
+    def _apply_local_sas_source(self, state: dict[str, str] | None) -> bool:
+        """Adopt the cabinet's SASControler* snapshot as the local SAS side.
+
+        An empty/missing read is ignored rather than clearing a prior value —
+        nothing scanned yet and a genuinely empty cabinet folder look
+        identical from here, and only the former should blank the column.
+        """
+        cleaned = {
+            str(k).strip(): str(v).strip()
+            for k, v in (state or {}).items()
+            if str(v).strip()
+        }
+        if not cleaned:
+            return False
+        self._local_sas_state = cleaned
+        return True
+
+    def _sas_capture_expected(self) -> bool:
+        """True while a COM/MUX capture could still fill an empty SAS cell.
+
+        False on a local scan root (no host cable to poll — only the
+        SASControler* snapshot, already applied) and once any capture attempt
+        has finished. A finished poll that omitted a meter (length-0 RX, or
+        not in the paste) will not invent it later — show NOT REPORTED, same
+        wording as local snapshots that lack the key.
+        """
+        if self._local_files_only_mode():
+            return False
+        if self._cached_meter_result is not None:
+            return False
+        return True
 
     def _arm_com_recovery(self) -> None:
         """Wait for the SAS tester to release the COM port, then auto-recapture."""
@@ -5239,6 +6024,12 @@ class SasVerifyDialog(QDialog):
         table: QTableWidget | None = None,
     ) -> None:
         tbl = table or self._table
+        code = (meter_code or "").strip().upper()
+        new_raw = "" if (missing_display is not None and not (raw or "").strip()) else (raw or "")
+        prev_item = tbl.item(row, col)
+        prev_raw = ""
+        if prev_item is not None:
+            prev_raw = str(prev_item.data(RAW_VALUE_ROLE) or "")
         if missing_display is not None and not (raw or "").strip():
             item = QTableWidgetItem(missing_display)
             item.setData(RAW_VALUE_ROLE, "")
@@ -5247,7 +6038,18 @@ class SasVerifyDialog(QDialog):
             item.setData(RAW_VALUE_ROLE, raw)
         if tooltip:
             item.setToolTip(tooltip)
+        # Never touch foreground alpha — text stays fully opaque while the soft
+        # background pulse runs on cells whose raw value just changed.
+        if (
+            self._meter_flash_arm
+            and col in _METER_FLASH_COLS
+            and code
+            and prev_item is not None
+            and prev_raw != new_raw
+        ):
+            self._meter_flash_keys.add((code, int(col)))
         tbl.setItem(row, col, item)
+        self._paint_meter_flash_on_item(item, code, col)
 
     def _refresh_value_columns(self) -> None:
         self._apply_value_headers()
@@ -5302,6 +6104,10 @@ class SasVerifyDialog(QDialog):
                 sas_v = row.sas_value_text.strip()
                 if sas_v:
                     return self._normalize_int_for_compare(sas_v) or sas_v
+                break
+        local_v = self._local_sas_lookup(rid)
+        if local_v:
+            return self._normalize_int_for_compare(local_v) or local_v
         return ""
 
     def _machine_value_for_code(self, code: str, *, allow_machine_lookup: bool) -> str:
@@ -5726,9 +6532,12 @@ class SasVerifyDialog(QDialog):
         allow_machine_lookup: bool,
     ) -> None:
         table.setRowCount(len(parsed_rows))
+        any_syncing = False
         for row, r in enumerate(parsed_rows):
             rid = r.meter_id.upper()
             sas_v = r.sas_value_text.strip()
+            if not sas_v:
+                sas_v = self._local_sas_lookup(rid)
             has_sas = bool(sas_v)
             try:
                 from gui.view_model import SAS_6F_METER_ALIASES as aliases
@@ -5764,7 +6573,7 @@ class SasVerifyDialog(QDialog):
                 machine_missing = False
             if not has_sas:
                 match = False
-                status = "PENDING"
+                status = missing_sas_status(sas_capture_expected=self._sas_capture_expected())
             elif not self._machine_state_loaded:
                 match = False
                 # PENDING only while the cabinet XML worker is still running.
@@ -5776,13 +6585,15 @@ class SasVerifyDialog(QDialog):
                 from network.meter_comparator import bills_in_meters_match
 
                 match = bills_in_meters_match(sas_norm, mac_norm)
-                status = "MATCH" if match else "MISMATCH"
+                status = compare_status(match=match, sources_settled=self._compare_sources_settled())
             else:
                 try:
                     match = int(mac_norm) == int(sas_norm)
                 except ValueError:
                     match = mac_norm == sas_norm
-                status = "MATCH" if match else "MISMATCH"
+                status = compare_status(match=match, sources_settled=self._compare_sources_settled())
+            if status == SAS_STATUS_SYNCING:
+                any_syncing = True
             code_item = QTableWidgetItem(code_6f)
             code_item.setToolTip("6F paste table id (from RX<= 6F meter-code bytes, little-endian).")
             table.setItem(row, COL_6F_CODE, code_item)
@@ -5861,7 +6672,7 @@ class SasVerifyDialog(QDialog):
             st = QTableWidgetItem(status)
             if match:
                 st.setForeground(Qt.GlobalColor.darkGreen)
-            elif status in {"PENDING", "NO MACHINE"}:
+            elif status in {"PENDING", "NO MACHINE", SAS_STATUS_NOT_REPORTED, SAS_STATUS_SYNCING}:
                 st.setForeground(Qt.GlobalColor.darkGray)
             else:
                 f = st.font()
@@ -5869,7 +6680,18 @@ class SasVerifyDialog(QDialog):
                 st.setFont(f)
                 st.setForeground(Qt.GlobalColor.red)
             table.setItem(row, COL_STATUS, st)
+        if any_syncing:
+            self._arm_settle_repaint()
         fit_verify_table_columns(table)
+        if self._meter_flash_arm:
+            self._meter_flash_arm = False
+            if self._meter_flash_keys:
+                self._meter_flash_started_mono = time.monotonic()
+                if not self._meter_flash_timer.isActive():
+                    self._meter_flash_timer.start()
+                self._paint_meter_flash_cells()
+            else:
+                self._stop_meter_flash()
 
     def _render(self, *, parsed_rows: list[Sas6FRow], allow_machine_lookup: bool = True) -> None:
         self.setUpdatesEnabled(False)
@@ -6351,6 +7173,7 @@ class SasVerifyDialog(QDialog):
         headers_fn: Callable[[], list[str]],
         excel_text_cols: frozenset[int] = frozenset(),
         text_resolver: Callable[[int, int, str], str] | None = None,
+        open_file_actions: dict[int, tuple[str, Callable[[], object]]] | None = None,
     ) -> None:
         if table.rowCount() == 0:
             return
@@ -6414,6 +7237,13 @@ class SasVerifyDialog(QDialog):
                     text_resolver=text_resolver,
                 )
             )
+        if open_file_actions and col in open_file_actions:
+            open_label, open_resolver = open_file_actions[col]
+            menu.addSeparator()
+            act_open = menu.addAction(open_label)
+            act_open.triggered.connect(
+                lambda _checked=False, r=open_resolver: self._open_source_file(r())
+            )
         menu.exec(table.viewport().mapToGlobal(pos))
 
     def _copy_bill_table_row_tsv(self, table: QTableWidget) -> None:
@@ -6443,6 +7273,80 @@ class SasVerifyDialog(QDialog):
                 )
                 return
 
+    def _machine_source_file(self):
+        """Newest existing ``DeviceManagerData.xml`` backing the Machine column (gm2au)."""
+        sr = self._scan_root_text()
+        if not sr:
+            return None
+        from network.goldclub_paths import device_manager_data_files, resolve_goldclub_layout
+
+        try:
+            layout = resolve_goldclub_layout(sr)
+        except OSError:
+            return None
+        if layout is None or layout.state_gcmessenger is None:
+            return None
+        candidates = [
+            df
+            for df in device_manager_data_files(layout.state_gcmessenger)
+            if df.parent.name.lower() == "gm2au"
+        ]
+        return _newest_existing_file(candidates)
+
+    def _sas_source_file(self):
+        """
+        File backing the SAS column, when one exists.
+
+        On a local scan root (no host cable) the SAS side is the cabinet's own
+        ``SASControler*`` snapshot; on a live COM/MUX capture there is no such
+        file, so this falls back to this tool's own diagnostics log, which
+        records the TX/RX traffic that produced the values on screen.
+        """
+        sr = self._scan_root_text()
+        if sr:
+            from network.goldclub_paths import (
+                device_manager_data_files,
+                resolve_goldclub_layout,
+            )
+
+            try:
+                layout = resolve_goldclub_layout(sr)
+            except OSError:
+                layout = None
+            if layout is not None and layout.state_gcmessenger is not None:
+                candidates = [
+                    df
+                    for df in device_manager_data_files(layout.state_gcmessenger)
+                    if "sascontrol" in df.parent.name.lower()
+                ]
+                found = _newest_existing_file(candidates)
+                if found is not None:
+                    return found
+        from gui.app_logging import log_file_path
+
+        for name in ("SasVerifyMeters.log", "LogInvestigator.log"):
+            candidate = log_file_path(filename=name)
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
+        return None
+
+    def _open_source_file(self, path) -> None:
+        if path is None:
+            QMessageBox.information(
+                self,
+                "Open file",
+                "No source file found for this column yet (nothing scanned or captured).",
+            )
+            return
+        from gui.notepad_pp import open_with_notepad_or_npp
+
+        ok, msg = open_with_notepad_or_npp(path)
+        if not ok:
+            QMessageBox.warning(self, "Open file", msg)
+
     def _on_verify_table_context_menu(self, table: QTableWidget, pos: QPoint) -> None:
         self._show_table_copy_menu(
             table,
@@ -6451,6 +7355,14 @@ class SasVerifyDialog(QDialog):
             headers_fn=self._accounting_copy_headers,
             excel_text_cols=_EXCEL_TEXT_COLS,
             text_resolver=self._verify_cell_resolver(table),
+            open_file_actions={
+                COL_SAS_6F_VALUE: ("Open SAS source file...", self._sas_source_file),
+                COL_SAS_2F_VALUE: ("Open SAS source file...", self._sas_source_file),
+                COL_MACHINE_VALUE: (
+                    "Open Machine source file (DeviceManagerData.xml)...",
+                    self._machine_source_file,
+                ),
+            },
         )
 
     def _on_table_context_menu(self, pos: QPoint) -> None:

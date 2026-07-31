@@ -75,6 +75,61 @@ def extract_ip_from_path(path_str: str) -> str:
     return (m.group(1) if m else "").strip()
 
 
+_ADMIN_SHARE_RE = re.compile(r"^([A-Za-z])\$$")
+
+
+def local_filesystem_path_for_scan_root(scan_root: str) -> str:
+    """
+    Rewrite a UNC admin-share path to *this* machine as a local drive path.
+
+    ``\\\\127.0.0.1\\c$\\Goldclub\\var\\log`` becomes ``C:\\Goldclub\\var\\log``
+    when Investigator is running on that host. Meter XML then reads from the
+    local NTFS stack instead of looping through SMB - near-instant on the EGM.
+
+    Remote cabinet UNC paths and already-local paths are returned unchanged
+    (normalized). Does not require the rewritten path to exist.
+    """
+    normalized = normalize_path_str(scan_root)
+    if not normalized.startswith("\\\\"):
+        return normalized
+
+    from network.scanner_utils import unc_host_of
+
+    host = unc_host_of(normalized)
+    if not host:
+        return normalized
+
+    try:
+        from network.app_runtime import is_this_host
+    except Exception:  # noqa: BLE001 -- keep path helpers import-safe
+        return normalized
+    if not is_this_host(host):
+        return normalized
+
+    # \\host\c$\Goldclub\var\log - or \\?\UNC\host\c$\...
+    parts = [p for p in normalized[2:].split("\\") if p != ""]
+    if parts and parts[0] in ("?", ".") and len(parts) > 2 and parts[1].upper() == "UNC":
+        parts = parts[2:]
+    if len(parts) < 2:
+        return normalized
+    # parts[0] is the host; parts[1] must be an admin share (c$, d$, g$, ...).
+    if parts[0].casefold() != host.casefold():
+        return normalized
+    m = _ADMIN_SHARE_RE.match(parts[1])
+    if not m:
+        return normalized
+    drive = m.group(1).upper()
+    rest = parts[2:]
+    if rest:
+        return f"{drive}:\\" + "\\".join(rest)
+    return f"{drive}:\\"
+
+def path_is_local_filesystem(path_str: str) -> bool:
+    """True when *path_str* reads from a local drive (not a remote UNC share)."""
+    local = local_filesystem_path_for_scan_root(path_str)
+    return bool(local) and not local.startswith("\\\\")
+
+
 _UNC_HOST_PROBE_TTL_SEC = 5.0
 _unc_host_probe_cache: dict[str, tuple[float, bool]] = {}
 
@@ -94,6 +149,13 @@ def _unc_host_answering(path_str: str) -> bool:
     host = unc_host_of(str(path_str))
     if not host:
         return True
+    try:
+        from network.app_runtime import is_this_host
+
+        if is_this_host(host):
+            return True
+    except Exception:  # noqa: BLE001 -- probe must stay soft
+        pass
     now = time.monotonic()
     cached = _unc_host_probe_cache.get(host)
     if cached is not None and (now - cached[0]) < _UNC_HOST_PROBE_TTL_SEC:
@@ -133,6 +195,30 @@ def _resolve_var_log_base(path: Path) -> Path | None:
         cur = parent if parent != cur else None
     if _looks_like_log_tree(path):
         return path
+    return None
+
+
+def _resolve_meter_state_base(path: Path) -> Path | None:
+    """
+    If *path* is a meter-state root (or a folder under one), return that root.
+
+    Covers roulette ``…\\ruleta\\var`` and slot ``…\\GCMessenger`` (and their
+    ``gm2au`` / ``SASControler*`` children). Used when the scan root is the
+    meters folder itself rather than ``…\\var\\log``.
+    """
+    cur: Path | None = path
+    for _ in range(10):
+        if cur is None:
+            break
+        name = cur.name.lower()
+        if name == "var" and cur.parent.name.lower() == "ruleta":
+            return cur
+        if name == "gcmessenger":
+            return cur
+        if name in ("gm2au", "sascontroler1", "sascontroller1"):
+            return cur.parent
+        parent = cur.parent
+        cur = parent if parent != cur else None
     return None
 
 
@@ -207,6 +293,30 @@ def _state_has_device_manager_data(gcm: Path) -> bool:
     return False
 
 
+def prefer_var_root_when_meters_under_state(scan_root: str) -> str:
+    """Shrink ``…\\var\\log`` → ``…\\var`` when sibling ``…\\var\\state`` holds meters.
+
+    Startup and help text prefer the ``var`` tree so the Scan root field matches
+    where DeviceManagerData actually lives. A persisted ``…\\var\\log`` hint still
+    loads via layout sibling resolution, but the status line then reports
+    "not found under …\\var\\log" after a brief empty window (e.g. post RAM Clear).
+    Remapping the displayed root to ``…\\var`` keeps messaging accurate.
+    """
+    normalized = normalize_path_str(scan_root)
+    if not normalized:
+        return (scan_root or "").strip()
+    path = Path(normalized)
+    parts = [p.lower() for p in path.parts]
+    if len(parts) < 2 or parts[-1] != "log" or parts[-2] != "var":
+        return normalized
+    var_root = path.parent
+    state_parent = var_root / "state"
+    for gcm in _gcm_rel_variants(state_parent):
+        if _state_has_device_manager_data(gcm) or _path_exists_dir(gcm):
+            return str(var_root)
+    return normalized
+
+
 def _pick_state_gcmessenger(candidates: tuple[Path, ...]) -> Path | None:
     """Prefer a GCMessenger folder that actually contains meter XML."""
     existing = [p for p in candidates if _path_exists_dir(p)]
@@ -273,15 +383,28 @@ def _state_gcm_candidates_for_log_root(log_root: Path) -> tuple[Path, ...]:
         add_goldclub_meter_roots(install)
         add_root(install / "ruleta" / "var")
 
-    # Same-drive Goldclub / ruleta (hybrid: game on G:, platform on C: or G:\Goldclub)
-    if drive is not None:
+    parts_l = [p.lower() for p in log_root.parts]
+    under_goldclub = "goldclub" in parts_l
+    usb_export = bool(_RE_USB_LOG_FOLDER.match(log_root.name or "")) or _is_usb_export_folder(
+        log_root
+    )
+
+    # Same-drive Goldclub / ruleta (hybrid: game on G:, platform on C: or G:\Goldclub).
+    # Skip when the scan root is already under a Goldclub/USB tree — otherwise a
+    # temp test path on C: (or a USB export) steals meters from C:\Goldclub.
+    if drive is not None and not under_goldclub and not usb_export:
         add_goldclub_meter_roots(drive / "Goldclub")
         add_goldclub_meter_roots(drive / "goldclub")
         add_root(drive / "ruleta" / "var")
         add_gcm_under(drive / "var" / "state")
 
-    # Always consider local cabinet meter roots last
-    add_goldclub_meter_roots(LOCAL_GOLDCLUB_ROOT)
+    # C:\Goldclub fallback is only for hybrid layouts (game on G:, platform on
+    # C:) where the scan root is NOT already inside a Goldclub or USB export
+    # tree. Adding it unconditionally made Auto-fetch / USB resolves steal
+    # meters from a leftover local install whenever the scan-local GCMessenger
+    # folder existed but had no DeviceManagerData yet.
+    if not under_goldclub and not usb_export:
+        add_goldclub_meter_roots(LOCAL_GOLDCLUB_ROOT)
 
     return tuple(cands)
 
@@ -315,19 +438,24 @@ def resolve_goldclub_layout(scan_root: str) -> GoldclubLayout | None:
     ip = extract_ip_from_path(normalized)
     if ip and normalized.startswith("\\\\"):
         log_root = _resolve_var_log_base(path) or path
-        # Prefer the casing that exists; roulette meters live under ruleta\var.
-        unc_candidates: list[Path] = []
-        for gc_name in ("Goldclub", "goldclub"):
-            goldclub = Path(rf"\\{ip}\c$\{gc_name}")
-            unc_candidates.extend(_meter_state_roots_for_goldclub(goldclub))
-        unc_candidates.extend(_state_gcm_candidates_for_log_root(log_root))
-        state_gcm = _pick_state_gcmessenger(tuple(unc_candidates))
+        # Resolve the share once, then only probe meter roots under it.
+        # Do NOT call _state_gcm_candidates_for_log_root here — that list
+        # includes C:\Goldclub and other local-drive guesses, each of which
+        # is a slow SMB miss when the scan root is already \\ip\c$\….
         goldclub_picked = Path(rf"\\{ip}\c$\Goldclub")
         for gc_name in ("Goldclub", "goldclub"):
             cand = Path(rf"\\{ip}\c$\{gc_name}")
             if _path_exists_dir(cand):
                 goldclub_picked = cand
                 break
+        unc_candidates = _meter_state_roots_for_goldclub(goldclub_picked)
+        # Adjacent …\var\state next to a …\var\log scan root (same share only).
+        if log_root.name.lower() == "log" and log_root.parent.name.lower() == "var":
+            unc_candidates = (
+                *unc_candidates,
+                *_gcm_rel_variants(log_root.parent / "state"),
+            )
+        state_gcm = _pick_state_gcmessenger(tuple(unc_candidates))
         themes = goldclub_picked / "slot" / "themes"
         return GoldclubLayout(
             scan_root=path,
@@ -342,43 +470,85 @@ def resolve_goldclub_layout(scan_root: str) -> GoldclubLayout | None:
     log_root = _resolve_var_log_base(path)
     if log_root is None and _is_usb_export_folder(path):
         log_root = path
-    if log_root is None:
+    meter_only = _resolve_meter_state_base(path) if log_root is None else None
+    if log_root is None and meter_only is None:
         return None
 
+    # Meter-only roots (ruleta\var / GCMessenger) act as both log_root and state.
+    effective_root = log_root if log_root is not None else meter_only
+    assert effective_root is not None
+
     goldclub_root: Path | None = None
-    parts_lower = [p.lower() for p in log_root.parts]
+    parts_lower = [p.lower() for p in effective_root.parts]
     if "goldclub" in parts_lower:
         idx = parts_lower.index("goldclub")
-        goldclub_root = Path(*log_root.parts[: idx + 1])
+        goldclub_root = Path(*effective_root.parts[: idx + 1])
 
     if goldclub_root is not None and _path_exists_dir(goldclub_root):
         state_gcm = _pick_state_gcmessenger(
             (
                 *_meter_state_roots_for_goldclub(goldclub_root),
-                *_state_gcm_candidates_for_log_root(log_root),
+                *_state_gcm_candidates_for_log_root(effective_root),
+                *((meter_only,) if meter_only is not None else ()),
             )
         )
         themes = goldclub_root / "slot" / "themes"
         kind = GoldclubLayoutKind.LOCAL_CABINET
-    elif _is_usb_export_folder(log_root):
+    elif log_root is not None and _is_usb_export_folder(log_root):
         state_gcm = _pick_state_gcmessenger(_state_gcm_candidates_for_log_root(log_root))
         themes = _resolve_themes_root(log_root)
         goldclub_root = None
         kind = GoldclubLayoutKind.USB_EXPORT
+    elif meter_only is not None and log_root is None:
+        # Bare G:\ruleta\var (or a pasted GCMessenger path) — no Goldclub parent.
+        state_gcm = meter_only
+        themes = _resolve_themes_root(meter_only)
+        kind = GoldclubLayoutKind.CUSTOM
     else:
-        state_gcm = _pick_state_gcmessenger(_state_gcm_candidates_for_log_root(log_root))
-        themes = _resolve_themes_root(log_root)
+        state_gcm = _pick_state_gcmessenger(
+            _state_gcm_candidates_for_log_root(effective_root)
+        )
+        themes = _resolve_themes_root(effective_root)
         kind = GoldclubLayoutKind.CUSTOM
 
     return GoldclubLayout(
         scan_root=path,
-        log_root=log_root,
+        log_root=effective_root,
         state_gcmessenger=state_gcm,
         themes_root=themes,
         goldclub_root=goldclub_root,
         kind=kind,
         cabinet_ip=ip or None,
     )
+
+
+def meter_state_roots_for_layout(layout: GoldclubLayout | None) -> list[Path]:
+    """All candidate parents of ``gm2au`` / ``SASControler1`` for *layout*.
+
+    Slot cabinets use GCMessenger; roulette uses ``ruleta\\var``. Hybrid installs
+    may have both — callers that need per-theme perf meters should scan every root
+    that exists, not only ``layout.state_gcmessenger``.
+    """
+    if layout is None:
+        return []
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Path | None) -> None:
+        if path is None:
+            return
+        key = str(path).lower()
+        if key in seen:
+            return
+        seen.add(key)
+        if _path_exists_dir(path):
+            roots.append(path)
+
+    _add(layout.state_gcmessenger)
+    if layout.goldclub_root is not None:
+        for cand in _meter_state_roots_for_goldclub(layout.goldclub_root):
+            _add(cand)
+    return roots
 
 
 def device_manager_data_files(state_gcmessenger: Path) -> list[Path]:

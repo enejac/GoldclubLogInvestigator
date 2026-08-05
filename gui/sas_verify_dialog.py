@@ -448,11 +448,15 @@ _COINS_PANELS: tuple[tuple[str, str], ...] = (
 # Handpay In is not SAS LP 0023 (that is Total Hand Paid / out). EGM Maestro
 # "Insertar el pago manual" comes from DeviceManager handpay*InAmt — synthetic HPIN.
 MASTER_HANDPAY_IN_CODE = "HPIN"
-MASTER_CREDIT_IN_CODES: tuple[str, ...] = ("000B", "0000", "0017", "0015", MASTER_HANDPAY_IN_CODE)
+# Cash / transfer into the machine only. SAS 0000 (Total Coin In) is amount
+# *wagered* - including it here made Master Credit In / Total In grow on every
+# bet ("cash inside also adds a bet").
+MASTER_CREDIT_IN_CODES: tuple[str, ...] = ("000B", "0017", "0015", MASTER_HANDPAY_IN_CODE)
 MASTER_CREDIT_OUT_CODES: tuple[str, ...] = ("006E", "0001", "0003", "0016", "0018")
 MASTER_HANDPAY_CODES: tuple[str, ...] = ("0003", "0002", "001F", "0020", "001D")
 MASTER_CANCELLED_CODE = "0004"
-MASTER_WAGERED_CODES: tuple[str, ...] = ("001C", "00A4", "00A2")
+# 0000 = Total Coin In (credits played / bets), not physical cash drop.
+MASTER_WAGERED_CODES: tuple[str, ...] = ("0000", "001C", "00A4", "00A2")
 MASTER_TRACKED_CODES: tuple[str, ...] = (
     *MASTER_CREDIT_IN_CODES,
     *MASTER_CREDIT_OUT_CODES,
@@ -462,7 +466,6 @@ MASTER_TRACKED_CODES: tuple[str, ...] = (
 )
 MASTER_CREDIT_IN_ROWS: tuple[tuple[str, str], ...] = (
     ("Bill In", "000B"),
-    ("Coin In", "0000"),
     ("Remote In", "0017"),
     ("Ticket In", "0015"),
     ("Handpay In", MASTER_HANDPAY_IN_CODE),
@@ -480,6 +483,7 @@ MASTER_JACKPOT_SUB_ROWS: tuple[tuple[str, str], ...] = (
     ("Progressive", "001D"),
 )
 MASTER_WAGERED_ROWS: tuple[tuple[str, str], ...] = (
+    ("Coin In (wagered)", "0000"),
     ("Cashable wagered", "001C"),
     ("Promotional wagered", "00A4"),
     ("Non Cashable wagered", "00A2"),

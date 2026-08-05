@@ -658,10 +658,10 @@ def test_compute_master_summary_reference_totals() -> None:
 
     values = {
         "000B": "20800",
-        "0000": "0",
+        "0000": "999999",  # wagered - must not inflate Credit In / Total In
         "0017": "500",
         "0015": "500",
-        "0023": "500",
+        "HPIN": "500",
         "006E": "0",
         "0001": "0",
         "0003": "21555",
@@ -674,6 +674,28 @@ def test_compute_master_summary_reference_totals() -> None:
     assert abs(totals["total_credit"] - 7.45) < 0.01
     assert totals["inout_pct"] is not None
     assert abs(totals["inout_pct"] - 96.66) < 0.05
+
+
+def test_master_credit_in_excludes_coin_in_wagered() -> None:
+    """SAS 0000 is bets played; cash-inside Total In must ignore it."""
+    from gui.sas_verify_dialog import (
+        MASTER_CREDIT_IN_CODES,
+        MASTER_CREDIT_IN_ROWS,
+        MASTER_WAGERED_CODES,
+        compute_master_summary,
+    )
+
+    assert "0000" not in MASTER_CREDIT_IN_CODES
+    assert all(code != "0000" for _title, code in MASTER_CREDIT_IN_ROWS)
+    assert "0000" in MASTER_WAGERED_CODES
+    cash_only = compute_master_summary(
+        {"000B": "10000", "0017": "0", "0015": "0", "HPIN": "0", "0000": "50000"}
+    )
+    with_bets_ignored = compute_master_summary(
+        {"000B": "10000", "0017": "0", "0015": "0", "HPIN": "0", "0000": "0"}
+    )
+    assert cash_only["credit_in"] == with_bets_ignored["credit_in"]
+    assert abs(cash_only["credit_in"] - 100.0) < 0.01
 
 
 def test_format_transfer_count_display() -> None:

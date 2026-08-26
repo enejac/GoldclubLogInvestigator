@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from config_manager import THEME_CHOICES, THEME_DARK, THEME_LIGHT, THEME_SYSTEM
 from gui.theme import STYLESHEET
-from gui.win_title_bar import sync_all_title_bars
+from gui.win_title_bar import schedule_title_bar_theme, sync_all_title_bars
 
 _ALLOWED = frozenset(THEME_CHOICES)
 
@@ -25,8 +25,8 @@ def _dark_palette() -> QPalette:
     p.setColor(QPalette.ColorRole.WindowText, QColor("#d4d4d4"))
     p.setColor(QPalette.ColorRole.Base, QColor("#121212"))
     p.setColor(QPalette.ColorRole.AlternateBase, QColor("#1e1e1e"))
-    p.setColor(QPalette.ColorRole.ToolTipBase, QColor("#ffffff"))
-    p.setColor(QPalette.ColorRole.ToolTipText, QColor("#000000"))
+    p.setColor(QPalette.ColorRole.ToolTipBase, QColor("#252526"))
+    p.setColor(QPalette.ColorRole.ToolTipText, QColor("#d4d4d4"))
     p.setColor(QPalette.ColorRole.Text, QColor("#ffffff"))
     p.setColor(QPalette.ColorRole.Button, QColor("#333333"))
     p.setColor(QPalette.ColorRole.ButtonText, QColor("#ffffff"))
@@ -78,4 +78,7 @@ def apply_theme(app: QApplication | None, theme_name: str) -> None:
     # Ensure widgets pick up the new palette/stylesheet without a nested refresh storm.
     app.style().unpolish(app)
     app.style().polish(app)
-    sync_all_title_bars(app, theme_name)
+    sync_all_title_bars(app, mode)
+    for widget in app.topLevelWidgets():
+        if widget.isWindow():
+            schedule_title_bar_theme(widget, mode)

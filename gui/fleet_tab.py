@@ -45,6 +45,7 @@ from gui.palette_adapt import (
     text_success,
     text_warning,
 )
+from network.fleet_scanner import is_ipv4_address
 
 
 def _drift_seconds_is_displayable(cd: object) -> bool:
@@ -225,8 +226,9 @@ class MachineCard(QFrame):
                 self._clock_lbl.setText("✓ Clock OK")
                 self._clock_kind = "ok"
                 self._clock_lbl.setToolTip(
-                    "Newest log line timestamp is within "
-                    f"{drift_threshold}s of this PC (UTC)."
+                    "Cabinet Windows clock vs this PC (UTC). "
+                    "After Sync Time this uses the post-sync wall clock; "
+                    "fleet scan otherwise compares the newest log line timestamp."
                 )
             else:
                 self._clock_lbl.setText(_format_clock_drift_warning(d))
@@ -440,6 +442,30 @@ class FleetTabWidget(QWidget):
         sr.addWidget(self._btn_add_cabinet)
         root.addWidget(scan_box)
 
+        # Always visible — Sync Time used to live only on MachineCards, so an empty
+        # fleet hid the control entirely.
+        sync_box = QGroupBox("Clock sync")
+        sync_row = QHBoxLayout(sync_box)
+        sync_row.addWidget(QLabel("Cabinet IP:"))
+        self._sync_ip_edit = QLineEdit()
+        self._sync_ip_edit.setPlaceholderText("e.g. 10.0.0.90")
+        self._sync_ip_edit.setClearButtonEnabled(True)
+        self._sync_ip_edit.setMaximumWidth(160)
+        sync_row.addWidget(self._sync_ip_edit)
+        self._btn_sync_time = QPushButton("🔄 Sync Time")
+        self._btn_sync_time.setToolTip(
+            "Copy this PC's time zone and wall clock to a lab cabinet (WinRM preferred).\n"
+            "Requires the lab LAN (10.0.0.x) — not internet.\n"
+            "First use on this PC: .\\Initialize-LabAccess.ps1 -Verify (elevated).\n"
+            "PsExec fallback only if tools\\psexec.exe is present."
+        )
+        self._btn_sync_time.clicked.connect(self._on_toolbar_sync_time_clicked)
+        self._sync_time_default = "🔄 Sync Time"
+        self._toolbar_sync_busy_ip: str | None = None
+        sync_row.addWidget(self._btn_sync_time)
+        sync_row.addStretch(1)
+        root.addWidget(sync_box)
+
         self._progress = QProgressBar()
         self._progress.setRange(0, 1)
         self._progress.setValue(0)
@@ -469,6 +495,30 @@ class FleetTabWidget(QWidget):
 
     def _emit_refresh(self) -> None:
         self.request_refresh.emit(self._workers.value())
+
+    def _on_toolbar_sync_time_clicked(self) -> None:
+        ip = (self._sync_ip_edit.text() or "").strip()
+        if not ip:
+            QMessageBox.information(
+                self,
+                "Sync Time",
+                "Enter a cabinet IP (e.g. 10.0.0.90), then click Sync Time.",
+            )
+            self._sync_ip_edit.setFocus()
+            return
+        if not is_ipv4_address(ip):
+            QMessageBox.warning(
+                self,
+                "Sync Time",
+                "Enter a valid IPv4 address (e.g. 10.0.0.90).",
+            )
+            self._sync_ip_edit.setFocus()
+            return
+        fleet_timesync_logger().info(
+            "Sync Time toolbar: clicked ip=%s (PsExec runs on worker thread)", ip
+        )
+        self.set_sync_time_busy(ip, True)
+        self.card_action.emit("sync_time", ip)
 
     def _on_add_cabinet_clicked(self) -> None:
         dlg = AddMachineDialog(self)
@@ -557,12 +607,20 @@ class FleetTabWidget(QWidget):
             "set_fleet_rows: finished layout for %s card(s)", len(view_rows)
         )
         self._status.setText(f"{len(view_rows)} machine(s) in database.")
+        # Prefill toolbar IP when empty so Sync Time is one click after enroll/refresh.
+        if not (self._sync_ip_edit.text() or "").strip() and view_rows:
+            first_ip = str(view_rows[0].get("ip_address", "")).strip()
+            if first_ip:
+                self._sync_ip_edit.setText(first_ip)
 
     def _on_sort_toggle(self, _state: int = 0) -> None:
         if self._last_fleet_rows:
             self.set_fleet_rows(self._last_fleet_rows)
 
     def _relay_card_action(self, action: str, ip: str) -> None:
+        if action == "sync_time":
+            # Keep the always-visible toolbar in sync with per-card Sync Time.
+            self.set_sync_time_busy(ip, True)
         self.card_action.emit(action, ip)
 
     def _clear_grid(self) -> None:
@@ -579,9 +637,20 @@ class FleetTabWidget(QWidget):
             card.set_janitor_busy(busy)
 
     def set_sync_time_busy(self, ip: str, busy: bool) -> None:
-        card = self._cards_by_ip.get((ip or "").strip())
+        ip_key = (ip or "").strip()
+        card = self._cards_by_ip.get(ip_key)
         if card is not None:
             card.set_sync_time_busy(busy)
+        if busy:
+            self._toolbar_sync_busy_ip = ip_key
+            self._btn_sync_time.setEnabled(False)
+            self._btn_sync_time.setText("Syncing…")
+            self._sync_ip_edit.setEnabled(False)
+        elif self._toolbar_sync_busy_ip == ip_key or not ip_key:
+            self._toolbar_sync_busy_ip = None
+            self._btn_sync_time.setEnabled(True)
+            self._btn_sync_time.setText(self._sync_time_default)
+            self._sync_ip_edit.setEnabled(True)
 
     def set_all_capture_screen_busy(self, busy: bool) -> None:
         for card in self._cards_by_ip.values():
@@ -600,3 +669,7 @@ class FleetTabWidget(QWidget):
         self._btn_ref.setEnabled(enabled)
         self._btn_add_cabinet.setEnabled(enabled)
         self._sort_by_health.setEnabled(enabled)
+        # Clock sync stays usable during discovery busy states unless a sync is in flight.
+        if self._toolbar_sync_busy_ip is None:
+            self._sync_ip_edit.setEnabled(True)
+            self._btn_sync_time.setEnabled(True)

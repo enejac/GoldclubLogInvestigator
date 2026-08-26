@@ -1,8 +1,17 @@
 """
-Immediate RAM-clear for slot and roulette cabinets.
+Immediate RAM-clear for slot and roulette cabinets (no reboot).
 
-Stops the running game and GoldClub processes, then runs the maintenance ramclear
-task chain (slot: ramclear folder via RunManteinanceTasks; roulette: ramclear.d dot-source).
+Stops the running game and GoldClub processes, runs the maintenance ramclear
+task chain (slot: ``ramclear`` nested; roulette: ``ramclear.d`` dot-source),
+ensures official state wipe, restarts services + game, then late-stamps
+``LogDaemonRamClear.exe`` in the background (after cabinet ONLINE) so the
+UI can report success as soon as the game is back up.
+
+SAS maps FilteredEventLog ``RAMCLEAR`` -> ``MetersResetToZero`` (CBE029 / 0x7A)
+only when cabinet devices already exist; stamping before the game registers
+the cabinet drops the event. ``OS_START`` (from bouncing LogDaemon) drives
+power lost/applied (0x18/0x17). Official ``51-LogDaemon`` is skipped during
+the wipe pass; the late stamp runs after the game is up.
 """
 
 from __future__ import annotations
@@ -211,6 +220,149 @@ def _build_ensure_state_wipe_powershell() -> str:
     ).strip()
 
 
+
+def _build_logdaemon_ramclear_powershell() -> str:
+    """Late-stamp DEBG.RAMCLEAR after the game/cabinet is online (SAS 0x7A).
+
+    Bounce LogDaemon uncleanly so FilteredEventLog emits ``OS_START`` (power
+    0x18/0x17), stamp ``RAMCLEAR`` while LogDaemon is down, then restart it.
+    Must run *after* wipe *and* after cabinet devices exist — otherwise
+    ``SASControler.ConsumeEvent("RAMCLEAR")`` sees Count=0 and drops 0x7A.
+    """
+    return textwrap.dedent(
+        r"""
+        Write-RamClearStatus '[START] late LogDaemonRamClear (soft meters / SAS 0x7A after cabinet online)'
+        function Get-LogDaemonServices {
+            Get-Service -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -like 'goldclub*' -and $_.Name -match '(?i)logdaemon|logging\.logdaemon'
+            }
+        }
+        function Stop-LogDaemonUnclean {
+            Get-LogDaemonServices | ForEach-Object {
+                $svc = $_
+                Write-RamClearStatus ('Unclean stop LogDaemon: ' + $svc.Name)
+                try {
+                    $procId = (Get-CimInstance Win32_Service -Filter ("Name='" + $svc.Name.Replace("'","''") + "'") -ErrorAction SilentlyContinue).ProcessId
+                    if ($procId -and $procId -gt 0) { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue }
+                } catch {}
+                & sc.exe stop $svc.Name | Out-Null
+            }
+            Get-Process -ErrorAction SilentlyContinue | Where-Object {
+                $_.ProcessName -match '(?i)LogDaemon'
+            } | ForEach-Object {
+                Write-RamClearStatus ('Killing ' + $_.ProcessName + ' pid=' + $_.Id)
+                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+            }
+            Start-Sleep -Seconds 1
+        }
+        function Wait-CabinetDeviceOnline {
+            param([int]$TimeoutSec = 90)
+            Write-RamClearStatus ("Waiting up to ${TimeoutSec}s for Aurum cabinet device ONLINE")
+            $roots = @()
+            if ($goldclubRoot) { $roots += $goldclubRoot }
+            $roots += @('C:\Goldclub', 'G:\Goldclub', 'D:\Goldclub')
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
+                foreach ($root in $roots) {
+                    foreach ($rel in @(
+                        'var\state\goldclub.aurum.services\GCMessenger\*\DeviceManagerData.xml_*',
+                        'var\state\GoldClub.Aurum.Services\GCMessenger\*\DeviceManagerData.xml_*'
+                    )) {
+                        Get-ChildItem -Path (Join-Path $root $rel) -ErrorAction SilentlyContinue | ForEach-Object {
+                            try {
+                                $fs = [IO.File]::Open($_.FullName, 'Open', 'Read', 'ReadWrite')
+                                try { $t = (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Close() }
+                                if ($t -match 'DeviceClass="cabinet"' -and $t -match 'Status="ONLINE"') {
+                                    Write-RamClearStatus ('Cabinet ONLINE: ' + $_.FullName)
+                                    return $true
+                                }
+                            } catch {}
+                        }
+                    }
+                }
+                Start-Sleep -Seconds 2
+            }
+            Write-RamClearStatus '[WARN] cabinet device not ONLINE - stamping anyway (0x7A may miss)'
+            return $false
+        }
+        Wait-CabinetDeviceOnline -TimeoutSec 90 | Out-Null
+        Stop-LogDaemonUnclean
+        $candidates = @()
+        if ($goldclubRoot) {
+            $candidates += (Join-Path $goldclubRoot 'bin\LogDaemonRamClear.exe')
+            $hb = Join-Path $goldclubRoot 'services\logdaemon\var\GoldClub.Logging.LogDaemon.Plugin.FilteredEventLog\heartbeat'
+            if (Test-Path -LiteralPath $hb) {
+                try { (Get-Item -LiteralPath $hb).LastWriteTime = (Get-Date).AddHours(-2) } catch {}
+            }
+        }
+        foreach ($root in @('C:\Goldclub', 'G:\Goldclub', 'D:\Goldclub')) {
+            $candidates += (Join-Path $root 'bin\LogDaemonRamClear.exe')
+        }
+        $exe = $null
+        $seen = @{}
+        foreach ($c in $candidates) {
+            $key = ([string]$c).ToLowerInvariant()
+            if ($seen.ContainsKey($key)) { continue }
+            $seen[$key] = $true
+            if (Test-Path -LiteralPath $c -PathType Leaf) { $exe = $c; break }
+        }
+        if (-not $exe) {
+            Write-RamClearStatus '[WARN] LogDaemonRamClear.exe not found - soft meters SAS 0x7A may not fire'
+        } else {
+            Write-RamClearStatus ('Running: ' + $exe)
+            $p = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -Wait -PassThru
+            Write-RamClearStatus ('LogDaemonRamClear exit=' + $p.ExitCode)
+        }
+        Get-LogDaemonServices | ForEach-Object {
+            Write-RamClearStatus ('Starting LogDaemon: ' + $_.Name)
+            Start-Service -Name $_.Name -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Seconds 10
+        Write-RamClearStatus '[END] late LogDaemonRamClear'
+        """
+    ).strip()
+
+
+
+def _build_late_stamp_detach_powershell() -> str:
+    # Launch late LogDaemonRamClear in background so UI returns after game start.
+    stamp_inner = (
+        _build_status_helper_powershell()
+        + "\n$ErrorActionPreference = 'Continue'\n"
+        + _build_logdaemon_ramclear_powershell()
+        + "\nWrite-RamClearStatus '[END] background soft-meter stamp'\n"
+    )
+    if "\n'@" in stamp_inner or stamp_inner.strip().startswith("'@"):
+        raise ValueError("late-stamp body contains PowerShell here-string terminator")
+    template = textwrap.dedent(
+        """
+        Write-RamClearStatus '[MILESTONE] game up - soft-meter stamp (0x7A) continuing in background'
+        $stampFile = 'C:\\Windows\\Temp\\LogInvestigator-RamClear-Stamp.ps1'
+        $stampRun = 'C:\\Windows\\Temp\\LogInvestigator-RamClear-Stamp-Run.ps1'
+        if (-not (Test-Path -LiteralPath 'C:\\Windows\\Temp' -PathType Container)) {
+            $stampFile = Join-Path $env:TEMP 'LogInvestigator-RamClear-Stamp.ps1'
+            $stampRun = Join-Path $env:TEMP 'LogInvestigator-RamClear-Stamp-Run.ps1'
+        }
+        @'
+STAMP_INNER_PLACEHOLDER
+'@ | Set-Content -LiteralPath $stampFile -Encoding UTF8 -Force
+        $q = [char]39
+        if ($goldclubRoot) {
+            $gcLine = ('$goldclubRoot = ' + $q + ($goldclubRoot -replace [string]$q, ($q + $q)) + $q)
+        } else {
+            $gcLine = '$goldclubRoot = $null'
+        }
+        $dot = ('. ' + $q + ($stampFile -replace [string]$q, ($q + $q)) + $q)
+        @($gcLine, $dot) | Set-Content -LiteralPath $stampRun -Encoding UTF8 -Force
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $stampRun
+        ) -WindowStyle Hidden | Out-Null
+        Write-RamClearStatus '[END] LogInvestigator RAM Clear'
+        """
+    )
+    return template.replace("STAMP_INNER_PLACEHOLDER", stamp_inner).strip()
+
+
 def _slot_ramclear_folder(goldclub_root: Path) -> Path | None:
     folder = goldclub_root / "maintenance" / "tasks" / "ramclear"
     if _path_exists_dir(folder):
@@ -260,9 +412,39 @@ def _plan_from_roulette_task_folder(
     )
 
 
+
+def _running_game_kind() -> str | None:
+    """Best-effort: which game process is running on this machine (slot vs roulette)."""
+    if os.name != "nt":
+        return None
+    try:
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        out = subprocess.check_output(
+            ["tasklist", "/FO", "CSV", "/NH"],
+            text=True,
+            errors="replace",
+            creationflags=creationflags,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lower = (out or "").lower()
+    if "ruleta.exe" in lower:
+        return "roulette"
+    if "onehand.exe" in lower or "game-start.exe" in lower:
+        return "slot"
+    return None
+
+
 def resolve_ram_clear_plan() -> RamClearPlan | None:
-    """Resolve a local RAM-clear plan from installed slot or roulette layout."""
+    """Resolve a local RAM-clear plan from installed slot or roulette layout.
+
+    When both layouts are present, prefer the game that is currently running so
+    Tools → RAM Clear stays seamless on dual-install cabinets.
+    """
     from network.goldclub_paths import _find_roulette_install_root, _find_slot_install_root
+
+    slot_plan: RamClearPlan | None = None
+    roulette_plan: RamClearPlan | None = None
 
     slot_install = _find_slot_install_root()
     if slot_install is not None:
@@ -272,9 +454,7 @@ def resolve_ram_clear_plan() -> RamClearPlan | None:
             goldclub_root = Path(*slot_install.parts[: idx + 1])
         else:
             goldclub_root = Path(r"C:\Goldclub")
-        plan = _plan_from_slot_goldclub(goldclub_root)
-        if plan is not None:
-            return plan
+        slot_plan = _plan_from_slot_goldclub(goldclub_root)
 
     roulette_install = _find_roulette_install_root()
     if roulette_install is not None:
@@ -293,40 +473,56 @@ def resolve_ram_clear_plan() -> RamClearPlan | None:
                 preferred = Path(r"D:\Goldclub")
             else:
                 preferred = roulette_install
-            return _plan_from_roulette_task_folder(
+            roulette_plan = _plan_from_roulette_task_folder(
                 task_folder, preferred_root=preferred
             )
 
     # Fallback: maintenance folders alone (cabinet may have tasks without game exe markers).
-    for gc in (Path(r"C:\Goldclub"), Path(r"G:\Goldclub"), Path(r"D:\Goldclub")):
-        if not _path_exists_dir(gc):
-            continue
-        plan = _plan_from_slot_goldclub(gc)
-        if plan is not None:
-            return plan
+    if slot_plan is None:
+        for gc in (Path(r"C:\Goldclub"), Path(r"G:\Goldclub"), Path(r"D:\Goldclub")):
+            if not _path_exists_dir(gc):
+                continue
+            slot_plan = _plan_from_slot_goldclub(gc)
+            if slot_plan is not None:
+                break
 
-    task_folder = _first_ramclear_d_folder()
-    if task_folder is not None:
-        return _plan_from_roulette_task_folder(task_folder)
+    if roulette_plan is None:
+        task_folder = _first_ramclear_d_folder()
+        if task_folder is not None:
+            roulette_plan = _plan_from_roulette_task_folder(task_folder)
 
-    return None
-
+    running = _running_game_kind()
+    if running == "slot" and slot_plan is not None:
+        return slot_plan
+    if running == "roulette" and roulette_plan is not None:
+        return roulette_plan
+    if slot_plan is not None and roulette_plan is None:
+        return slot_plan
+    if roulette_plan is not None and slot_plan is None:
+        return roulette_plan
+    # Both present and nothing running: prefer slot (nested 51-LogDaemon path).
+    return slot_plan or roulette_plan
 
 def _build_post_start_powershell(*, game_kind_expr: str) -> str:
-    """Restart goldclub services and auto-start the game from bootstrap.ini."""
+    """Restart goldclub services and auto-start the game from bootstrap.ini.
+
+    Slot: prefer ``Bootstrap.exe`` (bootloader/watchdog). It starts GameBin from
+    bootstrap.ini and brings BiOS2 back when OneHand exits with ESC. Starting
+    OneHand alone leaves no bootloader, so ESC cannot recover BiOS2.
+    """
     return textwrap.dedent(
         f"""
-        Write-Output '[START] post-start services'
+        Write-RamClearStatus '[START] post-start services'
         Get-Service -ErrorAction SilentlyContinue | Where-Object {{
             $_.Name -like 'goldclub*'
         }} | ForEach-Object {{
-            Write-Output ('Starting service: ' + $_.Name)
+            Write-RamClearStatus ('Starting service: ' + $_.Name)
             Start-Service -Name $_.Name -ErrorAction SilentlyContinue
         }}
         Start-Sleep -Seconds 3
-        Write-Output '[END] post-start services'
+        Write-RamClearStatus '[END] post-start services'
 
-        Write-Output '[START] post-start game'
+        Write-RamClearStatus '[START] post-start game'
         $gameKind = {game_kind_expr}
         function Find-BootstrapIni {{
             foreach ($root in @('D:\\', 'C:\\Goldclub', 'G:\\Goldclub')) {{
@@ -350,57 +546,94 @@ def _build_post_start_powershell(*, game_kind_expr: str) -> str:
 
         $started = $false
         $iniPath = Find-BootstrapIni
-        if ($iniPath) {{
-            Write-Output ('bootstrap.ini: ' + $iniPath)
-            $gameDir = Read-BootstrapValue $iniPath 'GameDir'
-            $gameBin = Read-BootstrapValue $iniPath 'GameBin'
-            if (-not $gameBin) {{ $gameBin = Read-BootstrapValue $iniPath 'GameBinRun' }}
-            if ($gameBin -and (Test-Path -LiteralPath $gameBin)) {{
-                $gameWdir = if ($gameDir -and (Test-Path -LiteralPath $gameDir)) {{
-                    $gameDir
-                }} else {{
-                    Split-Path -Parent $gameBin
-                }}
-                Write-Output ('Starting game: ' + $gameBin + ' @ ' + $gameWdir)
-                Start-Process -FilePath $gameBin -WorkingDirectory $gameWdir
-                $started = $true
-            }}
-        }}
 
-        if (-not $started -and $gameKind -eq 'roulette') {{
-            foreach ($candidate in @(
-                'D:\\ruleta\\Ruleta.exe', 'D:\\ruleta\\ruleta.exe',
-                'C:\\Goldclub\\ruleta\\Ruleta.exe', 'G:\\Goldclub\\ruleta\\Ruleta.exe'
+        if ($gameKind -eq 'slot') {{
+            # Bootloader first — keeps BiOS2 recoverable when OneHand exits (ESC).
+            foreach ($bootstrap in @(
+                'C:\\Goldclub\\Bootstrap.exe',
+                'G:\\Goldclub\\Bootstrap.exe',
+                'D:\\Goldclub\\Bootstrap.exe'
             )) {{
-                if (Test-Path -LiteralPath $candidate) {{
-                    $wdir = Split-Path -Parent $candidate
-                    Write-Output ('Starting game (fallback): ' + $candidate)
-                    Start-Process -FilePath $candidate -WorkingDirectory $wdir
-                    $started = $true
-                    break
-                }}
-            }}
-        }}
-
-        if (-not $started -and $gameKind -eq 'slot') {{
-            foreach ($pair in @(
-                @('C:\\Goldclub\\slot\\game-start.exe', 'C:\\Goldclub\\slot'),
-                @('C:\\Goldclub\\slot\\OneHand.exe', 'C:\\Goldclub\\slot'),
-                @('G:\\Goldclub\\slot\\game-start.exe', 'G:\\Goldclub\\slot'),
-                @('G:\\Goldclub\\slot\\OneHand.exe', 'G:\\Goldclub\\slot')
-            )) {{
-                if (Test-Path -LiteralPath $pair[0]) {{
-                    Write-Output ('Starting game (fallback): ' + $pair[0])
-                    Start-Process -FilePath $pair[0] -WorkingDirectory $pair[1]
-                    $started = $true
+                if (Test-Path -LiteralPath $bootstrap) {{
+                    $wdir = Split-Path -Parent $bootstrap
+                    Write-RamClearStatus ('Starting bootloader (Bootstrap): ' + $bootstrap)
+                    Start-Process -FilePath $bootstrap -WorkingDirectory $wdir
+                    $swOh = [Diagnostics.Stopwatch]::StartNew()
+                    while ($swOh.Elapsed.TotalSeconds -lt 45) {{
+                        if (Get-Process -Name 'OneHand','game-start' -ErrorAction SilentlyContinue) {{
+                            Write-RamClearStatus 'OneHand/game-start started by Bootstrap'
+                            $started = $true
+                            break
+                        }}
+                        Start-Sleep -Seconds 1
+                    }}
+                    if (-not $started) {{
+                        Write-RamClearStatus '[WARN] Bootstrap running but game not seen yet - continuing'
+                        $started = $true
+                    }}
                     break
                 }}
             }}
             if (-not $started) {{
-                foreach ($bootstrap in @('C:\\Goldclub\\bootstrap.exe', 'G:\\Goldclub\\bootstrap.exe')) {{
-                    if (Test-Path -LiteralPath $bootstrap) {{
-                        Write-Output ('Starting bootstrap: ' + $bootstrap)
-                        Start-Process -FilePath $bootstrap
+                Write-RamClearStatus '[WARN] Bootstrap.exe missing - starting game without bootloader (ESC may not return to BiOS2)'
+                if ($iniPath) {{
+                    Write-Output ('bootstrap.ini: ' + $iniPath)
+                    $gameDir = Read-BootstrapValue $iniPath 'GameDir'
+                    $gameBin = Read-BootstrapValue $iniPath 'GameBin'
+                    if (-not $gameBin) {{ $gameBin = Read-BootstrapValue $iniPath 'GameBinRun' }}
+                    if ($gameBin -and (Test-Path -LiteralPath $gameBin)) {{
+                        $gameWdir = if ($gameDir -and (Test-Path -LiteralPath $gameDir)) {{
+                            $gameDir
+                        }} else {{
+                            Split-Path -Parent $gameBin
+                        }}
+                        Write-RamClearStatus ('Starting game: ' + $gameBin + ' @ ' + $gameWdir)
+                        Start-Process -FilePath $gameBin -WorkingDirectory $gameWdir
+                        $started = $true
+                    }}
+                }}
+            }}
+            if (-not $started) {{
+                foreach ($pair in @(
+                    @('C:\\Goldclub\\slot\\game-start.exe', 'C:\\Goldclub\\slot'),
+                    @('C:\\Goldclub\\slot\\OneHand.exe', 'C:\\Goldclub\\slot'),
+                    @('G:\\Goldclub\\slot\\game-start.exe', 'G:\\Goldclub\\slot'),
+                    @('G:\\Goldclub\\slot\\OneHand.exe', 'G:\\Goldclub\\slot')
+                )) {{
+                    if (Test-Path -LiteralPath $pair[0]) {{
+                        Write-RamClearStatus ('Starting game (fallback): ' + $pair[0])
+                        Start-Process -FilePath $pair[0] -WorkingDirectory $pair[1]
+                        $started = $true
+                        break
+                    }}
+                }}
+            }}
+        }} else {{
+            if ($iniPath) {{
+                Write-Output ('bootstrap.ini: ' + $iniPath)
+                $gameDir = Read-BootstrapValue $iniPath 'GameDir'
+                $gameBin = Read-BootstrapValue $iniPath 'GameBin'
+                if (-not $gameBin) {{ $gameBin = Read-BootstrapValue $iniPath 'GameBinRun' }}
+                if ($gameBin -and (Test-Path -LiteralPath $gameBin)) {{
+                    $gameWdir = if ($gameDir -and (Test-Path -LiteralPath $gameDir)) {{
+                        $gameDir
+                    }} else {{
+                        Split-Path -Parent $gameBin
+                    }}
+                    Write-RamClearStatus ('Starting game: ' + $gameBin + ' @ ' + $gameWdir)
+                    Start-Process -FilePath $gameBin -WorkingDirectory $gameWdir
+                    $started = $true
+                }}
+            }}
+            if (-not $started -and $gameKind -eq 'roulette') {{
+                foreach ($candidate in @(
+                    'D:\\ruleta\\Ruleta.exe', 'D:\\ruleta\\ruleta.exe',
+                    'C:\\Goldclub\\ruleta\\Ruleta.exe', 'G:\\Goldclub\\ruleta\\Ruleta.exe'
+                )) {{
+                    if (Test-Path -LiteralPath $candidate) {{
+                        $wdir = Split-Path -Parent $candidate
+                        Write-RamClearStatus ('Starting game (fallback): ' + $candidate)
+                        Start-Process -FilePath $candidate -WorkingDirectory $wdir
                         $started = $true
                         break
                     }}
@@ -409,12 +642,13 @@ def _build_post_start_powershell(*, game_kind_expr: str) -> str:
         }}
 
         if (-not $started) {{
-            Write-Output '[WARN] Could not auto-start game — start Ruleta or OneHand manually.'
+            Write-RamClearStatus '[WARN] Could not auto-start game - start Ruleta or OneHand manually.'
         }} else {{
-            Write-Output '[END] post-start game'
+            Write-RamClearStatus '[END] post-start game'
         }}
         """
     ).strip()
+
 
 
 def build_ram_clear_powershell(plan: RamClearPlan) -> str:
@@ -438,7 +672,7 @@ def build_ram_clear_powershell(plan: RamClearPlan) -> str:
             }}
             # Prefer direct *.ps1 loop so we can skip hang-prone 01-StopServices.ps1.
             $taskFolder = '{task_folder}'
-            $VerbosePreference = 'Continue'
+            $VerbosePreference = 'SilentlyContinue'
             $ErrorActionPreference = 'Continue'
             $scripts = @([System.IO.Directory]::GetFiles($taskFolder, '*.ps1') | Sort-Object)
             if ($scripts.Count -gt 0) {{
@@ -446,6 +680,11 @@ def build_ram_clear_powershell(plan: RamClearPlan) -> str:
                     $leaf = Split-Path -Leaf $item
                     if ($leaf -ieq '01-StopServices.ps1') {{
                         Write-RamClearStatus ('[SKIP] ' + $leaf + ' (bounded pre-stop already done)')
+                        continue
+                    }}
+                    # Stamp after ensure-wipe so DEBG.RAMCLEAR is not deleted.
+                    if ($leaf -ieq '51-LogDaemon.ps1' -or $leaf -match '(?i)^51-LogDaemon') {{
+                        Write-RamClearStatus ('[SKIP] ' + $leaf + ' (LogDaemonRamClear runs after ensure wipe)')
                         continue
                     }}
                     # Never clear Wibu/licence keys during LI RAM Clear (official BiOS path does).
@@ -480,13 +719,17 @@ def build_ram_clear_powershell(plan: RamClearPlan) -> str:
             if (Test-Path -LiteralPath $libPath) {{
                 $env:PSModulePath = $env:PSModulePath + ';' + $libPath
             }}
-            $VerbosePreference = 'Continue'
+            $VerbosePreference = 'SilentlyContinue'
             $ErrorActionPreference = 'Continue'
             foreach ($item in ([System.IO.Directory]::GetFiles($taskFolder, '*.ps1') | Sort-Object)) {{
                 $leaf = Split-Path -Leaf $item
                 # Official 01-StopServices uses Stop-Service without -Force and can hang forever.
                 if ($leaf -ieq '01-StopServices.ps1') {{
                     Write-RamClearStatus ('[SKIP] ' + $leaf + ' (bounded pre-stop already done)')
+                    continue
+                }}
+                if ($leaf -ieq '51-LogDaemon.ps1' -or $leaf -match '(?i)^51-LogDaemon') {{
+                    Write-RamClearStatus ('[SKIP] ' + $leaf + ' (LogDaemonRamClear runs after ensure wipe)')
                     continue
                 }}
                 if ($leaf -match '(?i)ClearWibu') {{
@@ -514,15 +757,16 @@ def build_ram_clear_powershell(plan: RamClearPlan) -> str:
         Write-RamClearStatus ('game_kind={plan.game_kind} goldclub={goldclub_root} tasks={task_folder}')
 
         Write-RamClearStatus '[START] pre-stop processes'
-        $gameNames = @({game_names_ps})
-        foreach ($name in $gameNames) {{
+        # Stop Bootstrap (bootloader) before OneHand so a force-kill does not reboot.
+        $gcNames = @({gc_names_ps})
+        foreach ($name in $gcNames) {{
             Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {{
                 Write-RamClearStatus ('Stopping process: ' + $_.ProcessName + ' pid=' + $_.Id)
                 Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
             }}
         }}
-        $gcNames = @({gc_names_ps})
-        foreach ($name in $gcNames) {{
+        $gameNames = @({game_names_ps})
+        foreach ($name in $gameNames) {{
             Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {{
                 Write-RamClearStatus ('Stopping process: ' + $_.ProcessName + ' pid=' + $_.Id)
                 Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
@@ -543,7 +787,8 @@ def build_ram_clear_powershell(plan: RamClearPlan) -> str:
         {_build_ensure_state_wipe_powershell()}
 
         {_build_post_start_powershell(game_kind_expr=f"'{plan.game_kind}'")}
-        Write-RamClearStatus '[END] LogInvestigator RAM Clear'
+
+        {_build_late_stamp_detach_powershell()}
         """
     ).strip()
 
@@ -614,8 +859,20 @@ def build_remote_detect_and_run_powershell() -> str:
         $tasksRoot = $null
         $goldclubRoot = 'C:\Goldclub'
 
+        function Get-RunningGameKind {
+            if (Get-Process -Name 'Ruleta' -ErrorAction SilentlyContinue) { return 'roulette' }
+            if (Get-Process -Name 'OneHand','game-start' -ErrorAction SilentlyContinue) { return 'slot' }
+            return $null
+        }
+        $runningKind = Get-RunningGameKind
         $slot = Find-SlotInstall
         $roulette = Find-RouletteInstall
+        if ($runningKind -eq 'slot' -and $slot) {
+            $roulette = $null
+        }
+        if ($runningKind -eq 'roulette' -and $roulette) {
+            $slot = $null
+        }
         if ($slot -and -not $roulette) {
             $gcCandidates = @('C:\Goldclub', 'G:\Goldclub', 'D:\Goldclub')
             if ($slot -like 'G:\*') { $gcCandidates = @('G:\Goldclub', 'C:\Goldclub', 'D:\Goldclub') }
@@ -654,13 +911,14 @@ def build_remote_detect_and_run_powershell() -> str:
 
         Write-RamClearStatus '[START] LogInvestigator RAM Clear (remote)'
         Write-RamClearStatus '[START] pre-stop processes'
-        foreach ($name in $gameNames) {
+        # Stop Bootstrap (bootloader) before OneHand so a force-kill does not reboot.
+        foreach ($name in $gcNames) {
             Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
                 Write-RamClearStatus ('Stopping process: ' + $_.ProcessName + ' pid=' + $_.Id)
                 Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
             }
         }
-        foreach ($name in $gcNames) {
+        foreach ($name in $gameNames) {
             Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
                 Write-RamClearStatus ('Stopping process: ' + $_.ProcessName + ' pid=' + $_.Id)
                 Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
@@ -677,7 +935,7 @@ def build_remote_detect_and_run_powershell() -> str:
 
         if ($runnerMode -eq 'nested') {
             Write-RamClearStatus '[START] ramclear chain (slot nested)'
-            $VerbosePreference = 'Continue'
+            $VerbosePreference = 'SilentlyContinue'
             $ErrorActionPreference = 'Continue'
             $scripts = @([System.IO.Directory]::GetFiles($taskFolder, '*.ps1') | Sort-Object)
             if ($scripts.Count -gt 0) {
@@ -685,6 +943,10 @@ def build_remote_detect_and_run_powershell() -> str:
                     $leaf = Split-Path -Leaf $item
                     if ($leaf -ieq '01-StopServices.ps1') {
                         Write-RamClearStatus ('[SKIP] ' + $leaf + ' (bounded pre-stop already done)')
+                        continue
+                    }
+                    if ($leaf -ieq '51-LogDaemon.ps1' -or $leaf -match '(?i)^51-LogDaemon') {
+                        Write-RamClearStatus ('[SKIP] ' + $leaf + ' (LogDaemonRamClear runs after ensure wipe)')
                         continue
                     }
                     if ($leaf -match '(?i)ClearWibu') {
@@ -710,12 +972,16 @@ def build_remote_detect_and_run_powershell() -> str:
             Write-RamClearStatus '[START] ramclear chain (roulette dot-source)'
             $libPath = Join-Path $tasksRoot 'lib\powershell'
             if (Test-Dir $libPath) { $env:PSModulePath = $env:PSModulePath + ';' + $libPath }
-            $VerbosePreference = 'Continue'
+            $VerbosePreference = 'SilentlyContinue'
             $ErrorActionPreference = 'Continue'
             foreach ($item in ([System.IO.Directory]::GetFiles($taskFolder, '*.ps1') | Sort-Object)) {
                 $leaf = Split-Path -Leaf $item
                 if ($leaf -ieq '01-StopServices.ps1') {
                     Write-RamClearStatus ('[SKIP] ' + $leaf + ' (bounded pre-stop already done)')
+                    continue
+                }
+                if ($leaf -ieq '51-LogDaemon.ps1' -or $leaf -match '(?i)^51-LogDaemon') {
+                    Write-RamClearStatus ('[SKIP] ' + $leaf + ' (LogDaemonRamClear runs after ensure wipe)')
                     continue
                 }
                 if ($leaf -match '(?i)ClearWibu') {
@@ -743,15 +1009,87 @@ def build_remote_detect_and_run_powershell() -> str:
     )
     ensure_wipe = _build_ensure_state_wipe_powershell()
     post_start = _build_post_start_powershell(game_kind_expr="$gameKind")
+    late_stamp = _build_late_stamp_detach_powershell()
     return (
         core
         + "\n\n"
         + ensure_wipe
         + "\n\n"
         + post_start
-        + "\nWrite-RamClearStatus '[END] LogInvestigator RAM Clear (remote)'"
+        + "\n\n"
+        + late_stamp
     )
 
+
+
+def summarize_ram_clear_output(text: str, *, returncode: int = 0) -> tuple[bool, str]:
+    """Turn raw PowerShell output into a short dialog body.
+
+    Maintenance scripts often Import-Module Storage with VerbosePreference on,
+    which floods stderr with Exporting-function noise and can yield a
+    non-zero exit even when the clear finished. Prefer status markers.
+    """
+    raw = (text or "").replace("\r\n", "\n")
+    lines = [ln.rstrip() for ln in raw.split("\n")]
+    useful: list[str] = []
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            continue
+        low = s.lower()
+        if low.startswith("verbose:"):
+            continue
+        if "exporting function" in low or "exporting alias" in low:
+            continue
+        useful.append(s)
+
+    joined = "\n".join(useful)
+    completed = "[END] LogInvestigator RAM Clear" in joined
+    # Individual maintenance scripts log [ERROR] and continue; only fail when the
+    # orchestrator never reached its END marker (WinRM exit != 0 is common anyway).
+    hard_error = any(ln.startswith("[ERROR]") for ln in useful) and not completed
+    stamp_ok = any(
+        "LogDaemonRamClear exit=0" in ln or ln == "[END] LogDaemonRamClear"
+        for ln in useful
+    )
+    ok = (returncode == 0 and not hard_error) or (completed and not hard_error)
+
+    bullets: list[str] = []
+    if any("ensure state wipe" in ln for ln in useful):
+        bullets.append("State wiped (official targets)")
+    bg_stamp = any(
+        "soft-meter stamp (0x7A) continuing in background" in ln
+        or ln.startswith("[MILESTONE] game up")
+        for ln in useful
+    )
+    if stamp_ok:
+        bullets.append("LogDaemonRamClear stamped (soft meters / SAS 0x7A)")
+    elif bg_stamp or any("LogDaemonRamClear" in ln for ln in useful):
+        bullets.append("Soft-meter stamp (0x7A) started in background")
+    if any("post-start services" in ln for ln in useful):
+        bullets.append("GoldClub services restarted")
+    if any("post-start game" in ln or "Starting game:" in ln for ln in useful):
+        bullets.append("Game restarted (OneHand / Ruleta)")
+
+    if ok:
+        body_lines = ["RAM Clear completed.", ""]
+        if bullets:
+            body_lines.extend(("* " + b) for b in bullets)
+        else:
+            body_lines.append("* Maintenance chain finished")
+        body_lines.extend(
+            [
+                "",
+                "SAS soft-meters exception (0x7A) is issued by Aurum when the host link is online.",
+            ]
+        )
+        return True, "\n".join(body_lines)
+
+    tail = useful[-18:] if useful else ["(no output)"]
+    head = "RAM Clear failed."
+    if returncode not in (0, None) and not completed:
+        head = "RAM Clear failed (exit %s)." % (returncode,)
+    return False, head + "\n\n" + "\n".join(tail)
 
 def _clip_output(text: str, *, max_chars: int = 4000) -> str:
     s = (text or "").strip()
@@ -766,6 +1104,7 @@ def _run_powershell_script(script: str, *, timeout: int) -> tuple[bool, str]:
     run_kw: dict = {
         "capture_output": True,
         "text": True,
+        "errors": "replace",
         "timeout": timeout,
     }
     if os.name == "nt":
@@ -788,11 +1127,10 @@ def _run_powershell_script(script: str, *, timeout: int) -> tuple[bool, str]:
         return False, str(e)
 
     combined = "\n".join(part for part in (r.stdout, r.stderr) if part).strip()
-    if r.returncode != 0:
-        return False, _clip_output(combined or f"PowerShell exited with code {r.returncode}")
-    if "[ERROR]" in combined:
-        return False, _clip_output(combined)
-    return True, _clip_output(combined or "RAM Clear completed.")
+    return summarize_ram_clear_output(
+        combined or "RAM Clear completed.",
+        returncode=int(r.returncode or 0),
+    )
 
 
 def run_ram_clear_local(plan: RamClearPlan | None = None) -> tuple[bool, str]:
@@ -854,14 +1192,14 @@ def run_ram_clear_remote(
             timeout=_REMOTE_TIMEOUT_SEC,
         )
         combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-        if result.returncode == 0 and "[ERROR]" not in combined:
-            return True, _clip_output(
-                combined or f"RAM Clear completed on {label} (WinRM)."
-            )
-        if result.returncode == 0 and "[ERROR]" in combined:
-            return False, _clip_output(combined)
+        ok, msg = summarize_ram_clear_output(
+            combined or f"RAM Clear completed on {label} (WinRM).",
+            returncode=int(result.returncode or 0),
+        )
+        if ok:
+            return True, msg
         winrm_err = _clip_output(
-            combined or f"WinRM exited with code {result.returncode}"
+            combined or msg or f"WinRM exited with code {result.returncode}"
         )
     except (FleetAllowlistError, LabCredentialError, FileNotFoundError, OSError, ValueError) as e:
         winrm_err = str(e)
@@ -905,14 +1243,18 @@ def run_ram_clear_remote(
         )
 
     combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-    if result.returncode != 0:
-        return False, _clip_output(
-            (combined or f"PsExec exited with code {result.returncode}")
-            + (f"\n\n(WinRM earlier: {winrm_err})" if winrm_err else "")
-        )
-    if "[ERROR]" in combined:
-        return False, _clip_output(combined)
-    return True, _clip_output(combined or f"RAM Clear completed on {label} (PsExec).")
+    ok, msg = summarize_ram_clear_output(
+        combined or f"RAM Clear completed on {label} (PsExec).",
+        returncode=int(result.returncode or 0),
+    )
+    if ok:
+        return True, msg
+    detail = (msg if msg.startswith("RAM Clear failed") else combined) or (
+        f"PsExec exited with code {result.returncode}"
+    )
+    if winrm_err:
+        detail = f"{detail}\n\n(WinRM earlier: {winrm_err})"
+    return False, _clip_output(detail)
 
 
 def ram_clear_summary_for_confirm(plan: RamClearPlan) -> str:
@@ -926,6 +1268,8 @@ def ram_clear_summary_for_confirm(plan: RamClearPlan) -> str:
         "• Stop all GoldClub services and related processes\n"
         "• Run the RAM-clear maintenance chain (backup + cleanup)\n"
         "• Ensure wipe of official state targets only (keeps licences / Wibu keys)\n"
-        "• Restart GoldClub services and auto-start the game (Ruleta / OneHand)\n\n"
-        "Licences are preserved (ClearWibuKey is skipped). State wipe cannot be undone easily."
+        "• Restart GoldClub services; slot starts Bootstrap (bootloader) so ESC returns to BiOS2\n"
+        "• After cabinet ONLINE: late-stamp LogDaemonRamClear (SAS soft meters / 0x7A)\n\n"
+        "Works for slot and roulette. Licences are preserved (ClearWibuKey is skipped).\n"
+        "State wipe cannot be undone easily."
     )

@@ -48,7 +48,11 @@ from automation.remote_input_agent import (
     capture_client_screenshot,
     stage_input_agent,
 )
+from app_paths import app_tmp_logs_dir
 from automation.roulette_layout import ROULETTE_FOCUS_PROCESS
+from automation.roulette_layout_store import (
+    hitboxes_path as store_hitboxes_path,
+)
 from automation.roulette_layout_store import load_hitboxes, resolve_hitbox_center
 from automation.roulette_middleware import (
     cancel_all_bets,
@@ -67,7 +71,7 @@ from automation.roulette_runner import (
 from automation.roulette_surface import DEFAULT_LAYOUT, surface_for
 
 DEFAULT_IP = "10.0.0.90"
-OUT_ROOT = Path("_tmp_logs") / "verify_ui"
+OUT_ROOT = app_tmp_logs_dir() / "verify_ui"
 
 # A pixel counts as changed when any channel moves this far; below it is JPEG-ish
 # noise and the slow fade the cloth does between phases.
@@ -95,8 +99,7 @@ def results_path_for(layout_id: str | None = None) -> Path:
 
 
 def hitboxes_path_for(layout_id: str | None = None) -> Path:
-    lid = (layout_id or DEFAULT_LAYOUT).strip().lower()
-    return Path("automation") / "layouts" / f"{lid}_hitboxes.json"
+    return store_hitboxes_path(layout_id or DEFAULT_LAYOUT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,7 +554,7 @@ def home_reference(layout_id: str) -> Path | None:
 def view_reference(layout_id: str, view: str) -> Path | None:
     """Stored capture of one of the two cloths a skin can show."""
     lid = (layout_id or DEFAULT_LAYOUT).strip().lower()
-    base = Path("_tmp_logs") / "map_overlay"
+    base = app_tmp_logs_dir() / "map_overlay"
     name = "screen_base.png" if view == "square" else f"screen_{view}.png"
     shot = (base if lid == DEFAULT_LAYOUT else base / lid) / name
     return shot if shot.is_file() else None

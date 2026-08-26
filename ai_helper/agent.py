@@ -7,7 +7,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ai_helper.com_answer import synthesize_com_port_answer
+from ai_helper.config_map import (
+    format_config_map_answer,
+    match_config_map,
+    pick_primary_hit,
+)
 from ai_helper.option_answer import synthesize_setup_option_answer
+from ai_helper.roulette_error_answer import synthesize_roulette_error_answer
 from ai_helper.engine import HelperEngine, create_engine
 from ai_helper.model_paths import models_dir_hint, resolve_gguf_path
 from ai_helper.prompts import SYSTEM_PROMPT, build_user_prompt, format_hits_for_prompt
@@ -23,33 +29,145 @@ class HelperAnswer:
     cancelled: bool = False
 
 
+_MAX_RELATED_HITS = 3
+_MAX_EXCERPT_CHARS_SEARCH = 900
+
+
 def format_search_only_answer(question: str, hits: list[RetrievalHit]) -> str:
     """Deterministic answer when no GGUF / llama-cpp is available."""
+    roulette = synthesize_roulette_error_answer(question)
+    map_answer = format_config_map_answer(question, hits)
+
+    if not hits and map_answer:
+        return (
+            map_answer
+            + "\n\n(Search-only mode — curated answer from "
+            "data/ai_helper_config_map.json; open a GoldClub install root to "
+            "resolve the live path and excerpt.)\n"
+        )
+    if not hits and roulette:
+        return (
+            roulette
+            + "\n\n(Search-only mode — catalog answer from LogInvestigator "
+            "data/roulette_error_catalog.json; no GoldClub install files required.)\n"
+        )
     if not hits:
         return (
             f"No matching config/log files found for:\n  {question.strip()}\n\n"
             "Try a more specific name (e.g. AurumSetup.xml, SASControler, mgconfig.xml, "
-            "ruleta setup.xml) "
+            "ruleta setup.xml, payout method, Roulette ERROR 12) "
             "or check that the scan root points at a GoldClub install."
         )
+
     parts: list[str] = []
-    verdict = synthesize_com_port_answer(question, hits)
+    verdict = map_answer
+    if not verdict:
+        verdict = synthesize_com_port_answer(question, hits)
     if not verdict:
         verdict = synthesize_setup_option_answer(question, hits)
+    if not verdict:
+        verdict = roulette
+
+    matched = match_config_map(question)
     if verdict:
         parts.append(verdict)
         parts.append("")
-        parts.append("---")
+        # Curated hit: one primary excerpt, then at most a couple related paths.
+        if matched is not None:
+            primary = pick_primary_hit(matched.entry, hits)
+            excerpt_text = ""
+            excerpt_path = ""
+            if primary is not None:
+                excerpt_path = primary.path
+                excerpt_text = (primary.excerpt or "").rstrip()
+                # Re-center on curated needles when the hit excerpt missed them.
+                needles = [
+                    str(n)
+                    for n in (matched.entry.get("excerpt_needles") or [])
+                    if str(n).strip()
+                ]
+                if needles and not any(n.lower() in excerpt_text.lower() for n in needles):
+                    try:
+                        from pathlib import Path as _P
+
+                        from ai_helper.retrieve import read_excerpt
+
+                        recenter = read_excerpt(_P(primary.path), needle=needles[0])
+                        if recenter.strip():
+                            excerpt_text = recenter.rstrip()
+                    except Exception:
+                        pass
+            if excerpt_text:
+                if len(excerpt_text) > _MAX_EXCERPT_CHARS_SEARCH:
+                    excerpt_text = (
+                        excerpt_text[:_MAX_EXCERPT_CHARS_SEARCH].rstrip() + "\n…"
+                    )
+                parts.append(f"Excerpt ({excerpt_path}):")
+                parts.append("```")
+                parts.append(excerpt_text)
+                parts.append("```")
+                parts.append("")
+            related = [
+                h
+                for h in hits
+                if (primary is None or h.path != primary.path)
+                and "xml-configs" not in (h.path or "").replace("\\", "/").casefold()
+                and "externalapps" not in (h.path or "").replace("\\", "/").casefold()
+            ][: max(0, _MAX_RELATED_HITS - 1)]
+            if matched.entry.get("id") == "roulette-main-payout-method" and primary is not None:
+                from ai_helper.config_map import _find_driverssetup_near
+                from ai_helper.retrieve import RetrievalHit as _RH
+
+                ds_path = _find_driverssetup_near(primary.path)
+                if ds_path:
+                    related = [
+                        _RH(path=ds_path, excerpt="", score=0.0, reason="driverssetup"),
+                        *[
+                            h
+                            for h in related
+                            if "driverssetup" not in (h.path or "").casefold()
+                        ],
+                    ][: max(0, _MAX_RELATED_HITS - 1)]
+            if related:
+                parts.append("Related:")
+                for hit in related:
+                    parts.append(f"- {hit.path}")
+                parts.append("")
+        else:
+            parts.append("---")
+            parts.append("")
+            parts.append(f"Found {len(hits)} match(es) for: {question.strip()}")
+            parts.append("")
+            for i, hit in enumerate(hits[:_MAX_RELATED_HITS], start=1):
+                parts.append(f"{i}. {hit.path}")
+                if hit.excerpt.strip():
+                    excerpt = hit.excerpt.rstrip()
+                    if len(excerpt) > _MAX_EXCERPT_CHARS_SEARCH:
+                        excerpt = excerpt[:_MAX_EXCERPT_CHARS_SEARCH].rstrip() + "\n…"
+                    parts.append("```")
+                    parts.append(excerpt)
+                    parts.append("```")
+                parts.append("")
+    else:
+        parts.append(f"Found {len(hits)} match(es) for: {question.strip()}")
         parts.append("")
-    parts.append(f"Found {len(hits)} match(es) for: {question.strip()}")
-    parts.append("")
-    for i, hit in enumerate(hits, start=1):
-        parts.append(f"{i}. {hit.path}")
-        if hit.excerpt.strip():
-            parts.append("```")
-            parts.append(hit.excerpt.rstrip())
-            parts.append("```")
-        parts.append("")
+        for i, hit in enumerate(hits[:_MAX_RELATED_HITS], start=1):
+            parts.append(f"{i}. {hit.path}")
+            if hit.excerpt.strip():
+                excerpt = hit.excerpt.rstrip()
+                if len(excerpt) > _MAX_EXCERPT_CHARS_SEARCH:
+                    excerpt = excerpt[:_MAX_EXCERPT_CHARS_SEARCH].rstrip() + "\n…"
+                parts.append("```")
+                parts.append(excerpt)
+                parts.append("```")
+            parts.append("")
+        if len(hits) > _MAX_RELATED_HITS:
+            parts.append(f"… {len(hits) - _MAX_RELATED_HITS} more hit(s) omitted")
+            parts.append("")
+        if len(hits) > _MAX_RELATED_HITS:
+            parts.append(f"… {len(hits) - _MAX_RELATED_HITS} more hit(s) omitted")
+            parts.append("")
+
     parts.append(
         "(Search-only mode — place a Qwen3-4B Q4_K_M GGUF in "
         f"{models_dir_hint()} and install llama-cpp-python for natural-language answers.)"
@@ -148,6 +266,19 @@ def ask(
 
     hits_block = format_hits_for_prompt(hits)
     user = build_user_prompt(q, hits_block)
+    map_lead = format_config_map_answer(q, hits)
+    if map_lead:
+        user = (
+            f"Curated lead-in (prefer this path over serialport layout dumps):\n"
+            f"{map_lead}\n\n"
+            f"{user}"
+        )
+    roulette = synthesize_roulette_error_answer(q)
+    if roulette:
+        user = (
+            f"Catalog lead-in (authoritative for Roulette ERROR N):\n{roulette}\n\n"
+            f"{user}"
+        )
     try:
         text = engine.generate(SYSTEM_PROMPT, user)
     except Exception as exc:  # noqa: BLE001

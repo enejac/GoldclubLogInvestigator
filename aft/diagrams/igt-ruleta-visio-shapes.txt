@@ -1,0 +1,377 @@
+================================================================================
+Roulette ruleta.exe — ALL cashflow layers — Visio shape text
+Cabinet: 10.0.0.90 (GST20664 / GCC_RT_330106_01)
+================================================================================
+Mirror of igt-onehand-visio-shapes.txt but for roulette + all cash buses.
+Build top-to-bottom per PATH, or use swimlanes: Physical | Gateway | TCP | Services | ruleta | State | Logs.
+
+================================================================================
+PATH A — BILL IN (physical cash → credit)
+================================================================================
+
+[SHAPE A1]
+TITLE: Bill Validator (physical)
+BODY:
+COM3 UART
+Stacker + escrow
+Lab: note acceptor on .90
+
+ARROW LABEL (→ gateway):
+Note accepted / stacked
+
+[SHAPE A2]
+TITLE: CommCtrl.exe :30300
+BODY:
+Serial gateway COM3 → TCP 30300
+Same bus as KeyCtrl / Dallas
+Process: C:\goldclub\bin\CommCtrl.exe
+
+ARROW LABEL (→ protocol):
+ASCII lines terminated \r\n
+
+[SHAPE A3]
+TITLE: KeyCtrl line protocol (bill)
+BODY:
+Idle: 899/AL heartbeat
+Zone: BZ 0↔888, BZ 1↔999
+Event: 821 XX (denom code TBD)
+Credit: BL N / CN N
+Choreo: 807, 803, 701, 666
+
+ARROW LABEL (→ ruleta):
+BL 1 + CN 1 = credited
+
+[SHAPE A4]
+TITLE: ruleta.exe (bill credit)
+BODY:
+KeyCtrl consumer on :30300
+RCM s= c= credit meter
+GM2AU noteAcceptor_events.dat
+
+ARROW LABEL (→ SAS):
+Bill total mirrors to SAS
+
+[SHAPE A5]
+TITLE: SAS bill meters
+BODY:
+000B total bill in
+LP $31–$37 per denom
+DeviceManagerData stacker
+
+[SHAPE A6]
+TITLE: Verify logs
+BODY:
+ruleta: RCM c= increased
+gm2au: notesAccepted / stacker events
+sasmsgr: bill LP responses
+
+--------------------------------------------------------------------------------
+EXAMPLE TRAIL A — physical bill code 27 (+200k c=, 2026-07-27 12:07)
+--------------------------------------------------------------------------------
+30300 C2S: BZ 1 → S2C: 999 → S2C: 821 27 → C2S: BL 1 / CN 1 → S2C: 700, 777
+ruleta log: RCM c= 1300000 → 1500000 · stacker installed
+
+--------------------------------------------------------------------------------
+EXAMPLE TRAIL B — physical $10 burst (+200k c=, 2026-07-27 12:33)
+--------------------------------------------------------------------------------
+30300 C2S: BZ 1 → S2C: 999 → S2C: 821 18, 821 19, 822 98 → C2S: BL 10 → S2C: 823, 821 17
+ruleta log: RCM c= 0 → 200000
+
+--------------------------------------------------------------------------------
+EXAMPLE TRAIL C — synthetic inject captured profile (+200k c=, 2026-07-27 14:01)
+--------------------------------------------------------------------------------
+Invoke-BillInjectRouletteRemote.ps1 -PayloadProfile captured -Send
+After BZ 1 + 999: splice 821 18|821 19|822 98|823|821 17 (37 bytes, drained)
+ruleta log: RCM c= 0 → 200000 · notesAccepted.dat · metertype 7
+
+================================================================================
+PATH B — AFT CASHLESS IN (host → credit)
+================================================================================
+
+[SHAPE B1]
+TITLE: SAS Host
+BODY:
+IGT SAS tester (optional)
+OR WdPollInject pollaft sim
+Address 1 on COM5 MUX
+
+ARROW LABEL (→ serial):
+80/81 polls + 01 72 AFT transfer
+
+[SHAPE B2]
+TITLE: COM5 MUX Serial
+BODY:
+921600 baud
+CheckForMux → WakeUpPort
+NOT slot COM11
+
+[SHAPE B3]
+TITLE: CommCtrlSAS.exe
+BODY:
+Serial ↔ loopback TCP
+Adds 0x1B prefix per frame
+ClientsSet WakeUpPort=30550
+
+ARROW LABEL (→ TCP):
+1B80, 1B81, 1B017245...
+
+[SHAPE B4]
+TITLE: TCP :30550 (host leg)
+BODY:
+CommCtrlSAS:30550 → Aurum:ephemeral
+WinDivert inject point (roulette)
+NOT slot :31150
+
+[SHAPE B5 — OPTIONAL]
+TITLE: WinDivert pollaft
+BODY:
+Invoke-WinDivertAftRoulette.ps1
+WdPollInject.exe poll aft mode
+Simulates 1B81/1B80 + injects 0x72
+
+[SHAPE B6]
+TITLE: GoldClub.Aurum.Services
+BODY:
+sasmsgr qGMID1: hex ingest
+WAT2AFT request/authorize/commit
+Same engine as slot
+
+[SHAPE B7]
+TITLE: AFT state XML
+BODY:
+var\state\goldclub.aurum.services\
+GCMessenger\SASControler1\
+aftMostRecentTransaction_v*.xml
+
+[SHAPE B8]
+TITLE: ruleta.exe (AFT credit)
+BODY:
+Applies committed transfer
+NOT OneHand GM2AU
+EgmId GCC_RT_330106_01
+
+[SHAPE B9]
+TITLE: Verify logs
+BODY:
+sasmsgr: qGMID1:0172...
+Aurum: FULL_TRANSFER_SUCCESSFUL
+ruleta: credit state increased
+
+--------------------------------------------------------------------------------
+EXAMPLE TRAIL A — AFT pollaft inject ($1000 non-restricted, txn 37, 2026-07-23)
+--------------------------------------------------------------------------------
+Hop1: WdPollInject 81/80 on :30550
+Hop2: 1B017245 inject in-stream
+Hop3: qGMID1:0172... in sasmsgr
+Hop4: NonRestricted Com(100000) in XML
+Hop5: ruleta credit increased
+
+--------------------------------------------------------------------------------
+EXAMPLE TRAIL B — IGT SAS tester organic ($2000 non-restricted, 2026-07-27)
+--------------------------------------------------------------------------------
+Tester: 8C game selected → 72 AFT transfer → 69 AFT transfer complete
+72 poll: Status 00 · Receipt FF · Nonrestricted 0000200000
+Asset 09030000 · Txn esctTransaction62 · Date 07272026 Time 134514
+ruleta RCM: c= 0 → 200000 (matches Nonrestricted amount)
+Post: 88 reel stopped ×4
+Capture: aft/captures/20260727-134514-aft-tester-transcript.txt
+
+================================================================================
+PATH C — TITO VOUCHER IN / TICKET OUT
+================================================================================
+
+[SHAPE C1]
+TITLE: Ticket Printer / Reader
+BODY:
+COM4 UART
+FutureLogic TITO
+driverssetup tito index 0
+
+[SHAPE C2]
+TITLE: CommCtrl.exe :30400
+BODY:
+Must listen BEFORE HWSubsys start
+Run-FullStack ordered boot
+
+[SHAPE C3]
+TITLE: HWSubsys TITO driver
+BODY:
+GoldClub.HW.Subsys.Driver.*
+Connects 127.0.0.1:30400
+Ticket in / print out
+
+[SHAPE C4]
+TITLE: ruleta.exe (voucher)
+BODY:
+Voucher credit in
+Collect → ticket print out
+Wire code 249 = Collect TITO
+
+[SHAPE C5]
+TITLE: Verify
+BODY:
+HWSubsys log: device ready
+ruleta: ticket / voucher events
+
+================================================================================
+PATH D — COLLECT / CASH OUT (software)
+================================================================================
+
+[SHAPE D1]
+TITLE: Godot RouletteGUI2
+BODY:
+Player presses Collect
+HTTP client to middleware
+
+[SHAPE D2]
+TITLE: nginx → :8090
+BODY:
+PUT /api/action/{player}
+Type: Collect, Data: null
+EmbedIO middleware
+
+[SHAPE D3]
+TITLE: ruleta payout router
+BODY:
+Dispatches by collect type:
+241 hopper, 249 TITO, 254 handpay
+252 bonus, 402 WAT, etc.
+
+[SHAPE D4]
+TITLE: Physical out channel
+BODY:
+Ticket print (:30400)
+Handpay lock / attendant
+Hopper / dispenser if fitted
+
+================================================================================
+PATH E — DALLAS / KEYCTRL (admin, handpay clear)
+================================================================================
+
+[SHAPE E1]
+TITLE: iButton / keyboard
+BODY:
+Physical Dallas key
+Same COM3 / :30300 as bill
+
+[SHAPE E2]
+TITLE: CommCtrl :30300
+BODY:
+Shared with bill acceptor
+ASCII KeyCtrl framing
+
+[SHAPE E3]
+TITLE: Inject / log pattern
+BODY:
+700\r\n 701\r\n <16-hex-ROM>\r\n
+KEY=admin EVENT=IN|OUT
+Clears guest handpay when admin inserted
+
+[SHAPE E4]
+TITLE: Tooling
+BODY:
+Invoke-DallasSpliceRouletteRemote.ps1
+DallasSpliceRoulette.exe WinDivert splice
+
+================================================================================
+PATH F — HARDWARE GATES (handpay / door / lights)
+================================================================================
+
+[SHAPE F1]
+TITLE: Security switch COM6
+BODY:
+CommCtrl :30600
+HWSubsys SecuritySwitch driver
+Door open → game lock
+
+[SHAPE F2]
+TITLE: Light tower COM7
+BODY:
+CommCtrl :30700
+HWSubsys Light driver
+Attendant call indication
+
+[SHAPE F3]
+TITLE: HWSubsys hub :25071
+BODY:
+Internal HW aggregator
+Listens for client sessions
+
+================================================================================
+PATH G — GODOT BETS (non-cash, same stack)
+================================================================================
+
+[SHAPE G1]
+TITLE: Godot UI
+BODY:
+Bets, spin, chips, panels
+Not a cash-in path
+
+[SHAPE G2]
+TITLE: HTTP :8090
+BODY:
+PUT /api/action PlaceBet, StartGame
+GET /api/data credits/bets
+
+[SHAPE G3]
+TITLE: ruleta core
+BODY:
+Bet placement, spin, payout math
+PlayerDataBets middleware truth
+
+================================================================================
+SIX-LAYER SWIMLANE SUMMARY (all paths)
+================================================================================
+
+LAYER 1 PHYSICAL
+  COM3 bill · COM4 ticket · COM5 SAS MUX · COM6 switch · COM7 lights · IGT tester
+
+LAYER 2 GATEWAY
+  CommCtrl.exe (30300–30800) · CommCtrlSAS.exe (0x1B framing)
+
+LAYER 3 TCP LOOPBACK
+  30300 KeyCtrl/bill · 30400 TITO · 30550 SAS · 30600 · 30700 · 8090 HTTP
+
+LAYER 4 SERVICES
+  GoldClub.Aurum.Services (WAT2AFT) · HWSubsys.exe (drivers)
+
+LAYER 5 RULETA + GODOT
+  ruleta.exe core · Godot frontend via nginx
+
+LAYER 6 STATE + LOGS
+  AFT XML · gm2au note files · DeviceManagerData
+  ruleta log · sasmsgr · HWSubsys log · SlotLog (shared Aurum lines)
+
+================================================================================
+SLOT vs ROULETTE QUICK REFERENCE
+================================================================================
+
+                    SLOT                    ROULETTE
+SAS TCP bridge      :31150                  :30550
+SAS serial          COM11                   COM5 MUX
+Game EXE            OneHand.exe             ruleta.exe
+Dallas port         :30800                  :30300
+Bill port           (same COM3→30300)       :30300 (documented)
+AFT inject          Send-TestAft1000.ps1    Invoke-WinDivertAftRoulette.ps1
+Primary credit log  SlotLog Cashless In     ruleta RCM + sasmsgr
+
+================================================================================
+SNIFF / INJECT TOOLS BY PORT
+================================================================================
+
+:30300  Invoke-DallasSpliceRouletteRemote -Mode capture
+        Invoke-BillInjectRouletteRemote.ps1 -Credits 200000 -Send
+        Invoke-Stage0SasSniff -Ports 30300
+
+:30400  Invoke-HwSniffRemote -Ports 30400
+
+:30550  Invoke-Stage0SasSniff -Ports 30550,30500
+        Invoke-WinDivertAftRoulette.ps1 -Send
+
+:30600  Invoke-HwSniffRemote -Ports 30600,30700,25071
+:30700  (same)
+:8090   Invoke-RuletaGuiSniff.ps1
+
+Logs    \\10.0.0.90\c$\Goldclub\var\log\ruleta\
+        \\10.0.0.90\c$\Goldclub\var\log\HWSubsys\
+        \\10.0.0.90\c$\Goldclub\var\log\GoldClub.Aurum.Services sasmsgr of SASControler1\

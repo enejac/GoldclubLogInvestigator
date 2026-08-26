@@ -1,3 +1,41 @@
+Godot <-> middleware HTTP sniff + Layout1 board map
+===================================================
+
+Godot `RouletteGUI2` talks to ruleta EmbedIO on **localhost:8090**
+(`PUT /api/action/{player}`, `GET /api/data/{player}`). nginx proxies
+`/api/ruleta/gui/` -> `127.0.0.1:8090`.
+
+Read-only WinDivert capture (never injects/diverts):
+
+  .\Invoke-RuletaGuiSniff.ps1 -Seconds 40
+  .\lab\roulette\Invoke-RuletaGuiSniff.ps1 -IP 10.0.0.90 -Ports 8090
+
+Requires workstation WinDivert at `C:\Tools\WinDivert\x64`. Dump lands in
+`_tmp_logs\gui-sniff\gui8090-*.txt` (`HTTP ... method=PUT ... body=...`).
+
+Board mapping for **layout1** (square `futura_doublezero`). layout2
+(`futura_doublezeroCrycle`) is a separate calibration file stub only.
+
+**Proper 3-role session** (sniff || place+screenshot -> verify+calibrate):
+
+  python -m automation.roulette_map_session create --chip chip_1 --targets 1
+  # then in parallel:
+  python -m automation.roulette_map_session sniff  --session <id>
+  python -m automation.roulette_map_session place  --session <id>
+  python -m automation.roulette_map_session verify --session <id>
+
+Artifacts under `_tmp_logs/board_map_sessions/<id>/`:
+  `click_log.jsonl` (coords), `http_events.jsonl` + `godot_puts.jsonl` (middleware
+  codes), `click_traffic.jsonl` (joined), `screenshot.jpg`, `verdict.json`.
+
+Legacy single-process mapper:
+
+  python -m automation.roulette_board_mapper --ip 10.0.0.90 --layout layout1
+  python -m automation.roulette_gui_traffic --ip 10.0.0.90 --seconds 30
+
+GUI: Automation -> Roulette -> **Map board (layout1)**.
+
+--------------------------------------------------------------------
 Roulette Dallas inject (fork) vs slot
 ====================================
 
@@ -79,6 +117,18 @@ Proven WinDivert pollaft run (2026-07-23, .90 roulette — no IGT session):
 Proven tester flow (Aurum):
   TRANSFER REQUEST STARTED (cashable) -> ALL WAT FINISHED -> FULL_TRANSFER_SUCCESSFUL
   sasmsgr: qGMID1:0172... (addr 1) on the same GMID1 channel as 80/81.
+
+--------------------------------------------------------------------
+Roulette bill inject (KeyCtrl :30300) - proven 2026-07-27
+--------------------------------------------------------------------
+
+Physical bill capture + synthetic inject on the same ASCII bus as Dallas.
+
+  .\lab\roulette\Invoke-BillInjectRouletteRemote.ps1 -PayloadProfile captured -Credits 200000 -Send
+
+Proven: +200,000 credits on ruleta RCM c= (2026-07-27 14:01:43).
+Report: aft\diagrams\igt-ruleta-bill-flow-report.html
+Protocol: lab\roulette\BILL-ACCEPTOR-PROTOCOL.md
 
 If Gateway SAS only listens on :40000 (no 30550):
   COM5/MUX USB is missing or failed after a service restart.

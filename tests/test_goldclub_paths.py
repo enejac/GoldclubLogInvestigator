@@ -639,3 +639,63 @@ def test_prefer_var_root_keeps_log_when_no_state(tmp_path: Path) -> None:
     log_root.mkdir(parents=True)
     assert prefer_var_root_when_meters_under_state(str(log_root)) == str(log_root)
 
+
+def test_bare_goldclub_var_layout_finds_gcmessenger_meters(tmp_path: Path) -> None:
+    """prefer_var_root shrinks …\\var\\log → …\\var; layout must still resolve meters."""
+    from network.goldclub_paths import (
+        GoldclubLayoutKind,
+        prefer_var_root_when_meters_under_state,
+        resolve_goldclub_layout,
+    )
+
+    log_root = tmp_path / "Goldclub" / "var" / "log"
+    log_root.mkdir(parents=True)
+    (log_root / "SlotLog").mkdir()
+    gcm = (
+        tmp_path
+        / "Goldclub"
+        / "var"
+        / "state"
+        / "GoldClub.Aurum.Services"
+        / "GCMessenger"
+    )
+    (gcm / "gm2au").mkdir(parents=True)
+    (gcm / "gm2au" / "DeviceManagerData.xml_1").write_text("<x/>", encoding="utf-8")
+
+    var_root = prefer_var_root_when_meters_under_state(str(log_root))
+    assert var_root == str(tmp_path / "Goldclub" / "var")
+    layout = resolve_goldclub_layout(var_root)
+    assert layout is not None
+    assert layout.kind == GoldclubLayoutKind.LOCAL_CABINET
+    assert layout.state_gcmessenger == gcm
+
+
+def test_should_arm_share_recovery_only_when_unreachable(monkeypatch, tmp_path: Path) -> None:
+    from network.goldclub_paths import should_arm_share_recovery_after_empty_load
+
+    unreachable = r"\\10.0.0.90\c$\Goldclub\var"
+    monkeypatch.setattr(
+        "network.goldclub_paths.unc_share_scan_root_reachable",
+        lambda _sr, **kw: False,
+    )
+    assert should_arm_share_recovery_after_empty_load(unreachable) is True
+
+    reachable = str(tmp_path / "Goldclub" / "var")
+    (tmp_path / "Goldclub" / "var" / "state" / "GCMessenger" / "gm2au").mkdir(
+        parents=True
+    )
+    monkeypatch.setattr(
+        "network.goldclub_paths.unc_share_scan_root_reachable",
+        lambda _sr, **kw: True,
+    )
+    monkeypatch.setattr(
+        "network.goldclub_paths.resolve_goldclub_layout",
+        lambda _sr: type(
+            "L",
+            (),
+            {"state_gcmessenger": tmp_path / "Goldclub" / "var" / "state" / "GCMessenger"},
+        )(),
+    )
+    assert should_arm_share_recovery_after_empty_load(reachable) is False
+    assert should_arm_share_recovery_after_empty_load(r"C:\Goldclub\var") is False
+

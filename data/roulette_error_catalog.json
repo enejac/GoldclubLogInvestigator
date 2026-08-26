@@ -1,0 +1,407 @@
+{
+  "version": 1,
+  "description": "Classic Roulette (Alegro/Ruleta) ERROR N screens that interrupt the game: Godot UI closes and a dedicated error window opens. Primary log signature is <TRIAL error=\"N\" type=\"DISPLAYED\"> in ruleta* logs (not slot).",
+  "errors": {
+    "1": {
+      "code": 1,
+      "title": "The program was not shut down correctly (incorrect exit from the program).",
+      "details": [],
+      "possibleFaults": [
+        "PC block.",
+        "Power supply cable of the PC.",
+        "Power supply cable of the UPS.",
+        "Roulette switched off with the POWER key.",
+        "Program stopped with the PC keyboard."
+      ]
+    },
+    "2": {
+      "code": 2,
+      "title": "Fault on the main CPU.",
+      "details": [],
+      "possibleFaults": [
+        "CPU on main PC is not responding.",
+        "COM 2 on PC is not working.",
+        "Check PC power supply.",
+        "Check serial communication cable."
+      ]
+    },
+    "3": {
+      "code": 3,
+      "title": "During the check of the cylinder and sensors something was detected on the cylinder.",
+      "details": [],
+      "possibleFaults": [
+        "The sensor is not set correctly.",
+        "There is dirt or dust on the cylinder.",
+        "Transmitting IR LED is not working or it is dirty.",
+        "The zero location sensor is not set correctly."
+      ]
+    },
+    "4": {
+      "code": 4,
+      "title": "A mistake occurred during the sensor-reading period.",
+      "details": [],
+      "possibleFaults": [
+        "The cylinder sensor is not set correctly.",
+        "Check the sensor cable and connections.",
+        "Check COM 2 cable.",
+        "Check that the PC is not overloaded."
+      ]
+    },
+    "5": {
+      "code": 5,
+      "title": "During the blow period the sensor has not located the ball.",
+      "details": [],
+      "possibleFaults": [
+        "Check the ball is not blocked in the blowing tube.",
+        "If the ball is on the cylinder check that the cylinder sensor is set correctly."
+      ]
+    },
+    "6": {
+      "code": 6,
+      "title": "After the blow the status sensor has found the ball still on the start position.",
+      "details": [],
+      "possibleFaults": [
+        "Check if the blow compressor is working.",
+        "Check if the status sensor is working.",
+        "Check there is no dust on start position sensor."
+      ]
+    },
+    "7": {
+      "code": 7,
+      "title": "Power supply has failed.",
+      "details": [],
+      "possibleFaults": [
+        "Check for mains power.",
+        "Check the fuses and circuit breakers."
+      ]
+    },
+    "8": {
+      "code": 8,
+      "title": "The ball has not returned to the start position.",
+      "details": [],
+      "possibleFaults": [
+        "Check the lift motor and the mechanism for correct operation.",
+        "Check that the ball is not stuck in the drop system or under the cylinder.",
+        "Check if the status sensor is working."
+      ]
+    },
+    "10": {
+      "code": 10,
+      "title": "An error occurred during the writing of a database.",
+      "details": [],
+      "possibleFaults": [
+        "Check databases.",
+        "Check that there are no errors on the hard disk.",
+        "Delete lock files and restart."
+      ]
+    },
+    "12": {
+      "code": 12,
+      "title": "The cylinder has made the maximum number of turns and has failed to located the ball.",
+      "details": [],
+      "possibleFaults": [
+        "After the blow out the ball has not arrived on the cylinder.",
+        "On start-up the program has not located the ball.",
+        "Check if the sensors are working."
+      ]
+    },
+    "13": {
+      "code": 13,
+      "title": "The program automatically turns to safe start if the ball was not found for 2 rotations.",
+      "details": [],
+      "possibleFaults": [
+        "Check the location of the ball.",
+        "Check if the sensors are working properly."
+      ]
+    },
+    "15": {
+      "code": 15,
+      "title": "The program was not able to read from the database.",
+      "details": [],
+      "possibleFaults": [
+        "Check there are errors on hard disk."
+      ]
+    },
+    "16": {
+      "code": 16,
+      "title": "During the start the program was unable to open the databases.",
+      "details": [],
+      "possibleFaults": [
+        "Check for errors on hard disk.",
+        "Check if the databases for corruption."
+      ]
+    },
+    "19": {
+      "code": 19,
+      "title": "During initialization the program failed to open one or more communication ports.",
+      "details": [],
+      "possibleFaults": [
+        "Check communication cards and ports are working properly.",
+        "Check if any other program is using the ports."
+      ]
+    },
+    "20": {
+      "code": 20,
+      "title": "An error occurred on communication between the PC and COM 2.",
+      "details": [],
+      "possibleFaults": [
+        "Check if COM 2 is working properly.",
+        "Check if CPU is responding."
+      ]
+    },
+    "21": {
+      "code": 21,
+      "title": "Roulette hardware/communication fault (see possible faults).",
+      "details": [],
+      "possibleFaults": [
+        "Check communication cards and cables.",
+        "Check all programs which are using com ports (commcontroller)."
+      ]
+    },
+    "22": {
+      "code": 22,
+      "title": "A mistake occurred during data transfer to the windows register.",
+      "details": [],
+      "possibleFaults": [
+        "Check for errors on hard disk.",
+        "Check databases are not corrupt.",
+        "Delete playx.mdb databases using special tool."
+      ]
+    },
+    "23": {
+      "code": 23,
+      "title": "During data processing a negative value occurred in base.",
+      "details": [],
+      "possibleFaults": [
+        "Errors on hard disk.",
+        "Delete playx.mdb databases using special tool."
+      ]
+    },
+    "24": {
+      "code": 24,
+      "title": "The program was not able to initialize the register.",
+      "details": [],
+      "possibleFaults": [
+        "Errors on hard disk.",
+        "Check databases are not corrupt in folder.",
+        "Delete playx.mdb databases using special tool."
+      ]
+    },
+    "27": {
+      "code": 27,
+      "title": "During initialization the program was unable to load BMP screen saver",
+      "details": [],
+      "possibleFaults": [
+        "Errors on hard disk.",
+        "Reload BMP screen saver."
+      ]
+    },
+    "28": {
+      "code": 28,
+      "title": "The program during start unable to run all graphics cards.",
+      "details": [],
+      "possibleFaults": [
+        "Check if all the graphic cards are correctly located in the PCI slots.",
+        "Check if the correct drivers are loaded for graphic cards in use."
+      ]
+    },
+    "29": {
+      "code": 29,
+      "title": "A fault occurred on communication with the i/o board and the mechanical counters.",
+      "details": [],
+      "possibleFaults": [
+        "Check if COM1 works correctly.",
+        "Check if CPU on I/0 counter board is responding.",
+        "Check communication cable.",
+        "Check power supply to the I/O board."
+      ]
+    },
+    "30": {
+      "code": 30,
+      "title": "Program locks on a predefined date and hour.",
+      "details": [
+        "Program can be restarted with password.",
+        "Official RAM clear does not wipe ruleta/persistent (only ruleta/var).",
+        "A leftover RouletteActivate.dat from a prior SUCCEEDED enter keeps ERROR 30 after clock rollback."
+      ],
+      "possibleFaults": [
+        "Expired RouletteActivate.dat in C:\\goldclub\\ruleta\\persistent (survives RAM clear).",
+        "HeapDataFinanceStamps.dat still has the expire Unix time; a rolled-back clock looks like tamper.",
+        "Not leftover Aurum XML if WIBU serial is already logged and live 37A55022 licence exists."
+      ],
+      "solution": "Config Scanner More → Clear ERROR 30 / 99 trial leftovers (backs up then deletes persistent trial files). Keep live licence XML and licence.dll. After restart expect ERROR 99 with a NEW challenge and enter that id. Do not restore an expired RouletteActivate.dat."
+    },
+    "31": {
+      "code": 31,
+      "title": "Program stops with activation of certain security switches.",
+      "details": [],
+      "possibleFaults": []
+    },
+    "32": {
+      "code": 32,
+      "title": "A fault can happens during initialization any data for ticket printers or any other peripheral device.",
+      "details": [],
+      "possibleFaults": [
+        "Check if ticket printers are connected properly (to correct COM port on multiplexer)."
+      ]
+    },
+    "33": {
+      "code": 33,
+      "title": "The program has not received enough information from the sensors.",
+      "details": [],
+      "possibleFaults": [
+        "Check if the sensors are properly aligned.",
+        "Check sensor cables.",
+        "Check communication cable.",
+        "Check if the cylinder is spinning at the correct speed."
+      ]
+    },
+    "34": {
+      "code": 34,
+      "title": "Timing error on banknote impulse.",
+      "details": [],
+      "possibleFaults": [
+        "Control Banknote reader.",
+        "Control Cable on banknote reader.",
+        "Control Satellite I/O board under keyboard."
+      ]
+    },
+    "35": {
+      "code": 35,
+      "title": "Unable to initialize COM1",
+      "details": [],
+      "possibleFaults": []
+    },
+    "36": {
+      "code": 36,
+      "title": "Fault on status sensor.",
+      "details": [],
+      "possibleFaults": []
+    },
+    "37": {
+      "code": 37,
+      "title": "Online communication has connection errors.",
+      "details": [],
+      "possibleFaults": []
+    },
+    "38": {
+      "code": 38,
+      "title": "Timeout of online connection exceeded.",
+      "details": [],
+      "possibleFaults": [
+        "Check if on-line system is connected to correct COM port.",
+        "Check if the same COM port is selected in Roulette Game Setup."
+      ]
+    },
+    "39": {
+      "code": 39,
+      "title": "Speed variations detected on cylinder.",
+      "details": [],
+      "possibleFaults": [
+        "Sensor faulty.",
+        "FM motor controller.",
+        "Control zero position sensor."
+      ]
+    },
+    "61": {
+      "code": 61,
+      "title": "Sound error.",
+      "details": [],
+      "possibleFaults": [
+        "Check if the sound card is working properly."
+      ]
+    },
+    "63": {
+      "code": 63,
+      "title": "Error happens only when the main power is lost. If the error happens a lot of time please check the main fuse or the UPS.",
+      "details": [],
+      "possibleFaults": []
+    },
+    "64": {
+      "code": 64,
+      "title": "Same as ERROR 63 (main power lost / UPS or main fuse).",
+      "details": [],
+      "possibleFaults": [],
+      "aliasOf": 63
+    },
+    "65": {
+      "code": 65,
+      "title": "The last game (cycle) is longer or shorter than the average cycle time.",
+      "details": [
+        "Check the deviation in game setup (game settings/additional/ball read/max time diff)."
+      ],
+      "possibleFaults": []
+    },
+    "66": {
+      "code": 66,
+      "title": "Error initialization security switch system.",
+      "details": [
+        "Check if security switch PCB is connected to the computer (GC Terminal).",
+        "Check if HWSubsys service is starting (BiOS\\config\\Services)."
+      ],
+      "possibleFaults": []
+    },
+    "67": {
+      "code": 67,
+      "title": "Error initialization tokens.",
+      "details": [
+        "Check in game setup if the tokens and chips are set correctly."
+      ],
+      "possibleFaults": []
+    },
+    "68": {
+      "code": 68,
+      "title": "Finances mismatch.",
+      "details": [],
+      "possibleFaults": [],
+      "solution": "Perform RAM clear."
+    },
+    "69": {
+      "code": 69,
+      "title": "Communication between the electronic roulette and the UPS is missing.",
+      "details": [],
+      "possibleFaults": [
+        "Faulty COM cable.",
+        "Wrong COM setting (speed, mapping, etc.).",
+        "UPS not defined in configuration (HW drivers)."
+      ]
+    },
+    "70": {
+      "code": 70,
+      "title": "No defined language in configuration.",
+      "details": [
+        "Please call customer support."
+      ],
+      "possibleFaults": []
+    },
+    "71": {
+      "code": 71,
+      "title": "RAM error.",
+      "details": [
+        "Please call customer support."
+      ],
+      "possibleFaults": []
+    },
+    "72": {
+      "code": 72,
+      "title": "Communication problem with satellite (NEON).",
+      "details": [
+        "Check main power supply. Check communication with satellite."
+      ],
+      "possibleFaults": []
+    },
+    "99": {
+      "code": 99,
+      "title": "Dongle / trial bind required (fresh LLAVE).",
+      "details": [
+        "Logged as Dongle mismatch!!! then TRIAL error=\"99\" type=\"DISPLAYED\".",
+        "Empty RouletteActivate.dat (all zeros) after wiping an expired token."
+      ],
+      "possibleFaults": [
+        "Wrong keypad code for this challenge (old ERROR 30 codes fail).",
+        "Not a missing Aurum XML if WIBU serial is already logged."
+      ],
+      "solution": "Enter the password for the System ID on screen. Success is SUCCEEDED with no Trial expired within about 15 seconds, then Bets are open. Keep live licence XML and licence.dll."
+    }
+  }
+}

@@ -1,0 +1,159 @@
+{
+  "entries": [
+    {
+      "id": "roulette-main-payout-method",
+      "title": "Roulette main payout / ticket printer payout method",
+      "match_any": [
+        "ticket printer payout",
+        "ticket payout",
+        "main payout",
+        "payout method",
+        "payout type",
+        "outputtype",
+        "userpayout",
+        "pay system",
+        "cashout method",
+        "configure ticket printer",
+        "ticket as payout",
+        "tito payout"
+      ],
+      "match_all_any_groups": [
+        ["payout", "ticket"],
+        ["payout", "printer"],
+        ["payout", "tito"],
+        ["cashout", "ticket"],
+        ["cashout", "printer"]
+      ],
+      "answer": "Ticket payout needs TWO layers: (1) ruleta setup.xml pay system outputtype + userpayout type, AND (2) HW driverssetup alias tito @ tcp://127.0.0.1:30400 with CommCtrl listening on :30400. Setup alone is not enough.",
+      "file": "config\\etc\\application\\ruleta\\setup.xml",
+      "setting": "pay system → outputtype  and  pay system → userpayout → type  (software); plus HW driverssetup → aliasName tito → endpointaddress tcp://127.0.0.1:30400",
+      "excerpt_needles": ["outputtype", "userpayout", "pay system"],
+      "notes": [
+        "On disk this setup.xml is gcxml-encrypted; Helper decrypts in memory for search/excerpts (do not hand-edit the ciphertext).",
+        "BiOS / Setup2: Game settings → Pay system (output type / user payout type). Prefer the UI — values are numeric enums.",
+        "Also required: HW driver alias tito in config\\etc\\application\\HW\\driverssetup\\configuration.xml (tcp://127.0.0.1:30400). Without it, runtime falls back to handpay even when outputtype/userpayout type already say ticket.",
+        "If HWSetup shows :30400 grey and only switch (:30600) + lights (:30700) active, tito is missing from driverssetup — restore tito before Save in HWSetup (Save can drop disconnected endpoints).",
+        "Ignore xml-configs\\…\\setup.xml (schema/mirror) and serialport\\layout.json (COM name map only)."
+      ]
+    },
+    {
+      "id": "slot-cashout-button-mode",
+      "title": "Slot cashout button mode (Cashless vs Handpay)",
+      "match_any": [
+        "cashoutbuttonmode",
+        "cashout button",
+        "cashless vs handpay",
+        "handpay button"
+      ],
+      "match_all_any_groups": [
+        ["cashout", "handpay"],
+        ["cashout", "cashless"],
+        ["cashout", "button"]
+      ],
+      "answer": "Slot cashout button mode lives in mgconfig.xml (not roulette pay system).",
+      "file": "slot\\themes\\mgconfig.xml",
+      "setting": "Multigamer → TransferParameters → CashoutButtonMode (Cashless | Handpay)",
+      "excerpt_needles": ["CashoutButtonMode", "TransferParameters"],
+      "notes": [
+        "This controls the multigamer cashout button behavior, not roulette ticket/hopper payout type."
+      ]
+    },
+    {
+      "id": "ticket-printer-hw-driver",
+      "title": "Ticket printer hardware driver (tito)",
+      "match_any": [
+        "tito driver",
+        "driverssetup tito",
+        "ticket printer driver",
+        "futurelogic",
+        "psa66",
+        "ticket printer endpoint",
+        "tito0"
+      ],
+      "match_all_any_groups": [
+        ["ticket", "driver"],
+        ["ticket", "30400"],
+        ["tito", "driver"],
+        ["tito", "endpoint"]
+      ],
+      "answer": "Ticket printer channel is the HW driverssetup tito entry (not serialport layout).",
+      "file": "config\\etc\\application\\HW\\driverssetup\\configuration.xml",
+      "setting": "drivers → item aliasName=tito → options → endpointaddress (tcp://127.0.0.1:30400)",
+      "excerpt_needles": ["aliasName", "tito", "endpointaddress", "30400"],
+      "notes": [
+        "COM map for Ticket printer(s) is serialport\\layout.json / locations.json — do not hand-edit those for payout config.",
+        "Bill acceptor is KeyCtrl COM3→30300, not driverssetup."
+      ]
+    },
+    {
+      "id": "serialport-layout-warning",
+      "title": "Serialport layout is COM map only",
+      "match_any": [
+        "serialport layout",
+        "layout.json",
+        "locations.json",
+        "ticket printer com",
+        "which com ticket"
+      ],
+      "answer": "serialport layout.json is the board COM name map — not the payout method setting.",
+      "file": "config\\etc\\application\\system\\hardware\\serialport\\layout.json",
+      "setting": "Ticket printer(s) → ComNumber (typically COM4 → TCP 30400)",
+      "excerpt_needles": ["Ticket printer", "ComNumber"],
+      "notes": [
+        "For payout method use ruleta setup.xml pay system outputtype / userpayout type.",
+        "Do not rewrite layout.json / locations.json casually — can drop Leds/COM7 and break lights."
+      ]
+    },
+    {
+      "id": "mgconfig-inactivity",
+      "title": "Multigamer inactivity / game selector",
+      "match_any": [
+        "inactivitysecondstogameselector",
+        "inactivity",
+        "game selector timeout",
+        "mgconfig inactivity"
+      ],
+      "answer": "Multigamer inactivity timeout is in mgconfig.xml.",
+      "file": "slot\\themes\\mgconfig.xml",
+      "setting": "InactivitySecondsToGameSelector (0 disables)",
+      "excerpt_needles": ["InactivitySecondsToGameSelector"],
+      "notes": []
+    },
+    {
+      "id": "sas-com-port",
+      "title": "SAS serial COM port",
+      "match_any": [
+        "sas com",
+        "sas port",
+        "which com sas",
+        "commcontroler",
+        "commctrlsas"
+      ],
+      "match_all_any_groups": [
+        ["sas", "com"],
+        ["sas", "serial"]
+      ],
+      "answer": "SAS serial COM is configured in CommCtrlSAS CommControler.ini.",
+      "file": "config\\etc\\application\\CommCtrlSAS\\CommControler.ini",
+      "setting": "<N> <baud>  →  COM N (e.g. <5> <921600> = COM5 @ 921600)",
+      "excerpt_needles": ["921600", "<5>", "<11>"],
+      "notes": []
+    },
+    {
+      "id": "payout-autoconfirm",
+      "title": "Roulette payout auto-confirm",
+      "match_any": [
+        "payoutautoconfirm",
+        "payout auto confirm",
+        "auto confirm payout"
+      ],
+      "answer": "payoutAutoConfirm is a node in encrypted ruleta setup.xml.",
+      "file": "config\\etc\\application\\ruleta\\setup.xml",
+      "setting": "payoutAutoConfirm (0/1)",
+      "excerpt_needles": ["payoutAutoConfirm"],
+      "notes": [
+        "Helper decrypts setup.xml in memory for search; on-disk file stays encrypted."
+      ]
+    }
+  ]
+}

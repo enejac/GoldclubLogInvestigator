@@ -54,3 +54,38 @@ def schedule_path_resolve(
             target_ip, local_path, remote_mode, seq, emitter
         )
     )
+
+
+class StartupDiscoveryEmitter(QObject):
+    """Background ``discover_startup_scan_target`` (drive + UNC probes)."""
+
+    finished = Signal(object, int)
+
+
+class _StartupDiscoveryRunnable(QRunnable):
+    def __init__(
+        self,
+        remote_ip: str,
+        seq: int,
+        emitter: StartupDiscoveryEmitter,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._remote_ip = remote_ip
+        self._seq = seq
+        self._emitter = emitter
+
+    def run(self) -> None:
+        from network.goldclub_paths import discover_startup_scan_target
+
+        discovery = discover_startup_scan_target(remote_ip=self._remote_ip)
+        self._emitter.finished.emit(discovery, self._seq)
+
+
+def schedule_startup_discovery(
+    pool: QThreadPool,
+    remote_ip: str,
+    seq: int,
+    emitter: StartupDiscoveryEmitter,
+) -> None:
+    pool.start(_StartupDiscoveryRunnable(remote_ip, seq, emitter))

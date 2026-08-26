@@ -1,4 +1,4 @@
-﻿"""
+"""
 Example program — replace this file with your own code, then run Build-ProgramExe.ps1
 """
 import sys

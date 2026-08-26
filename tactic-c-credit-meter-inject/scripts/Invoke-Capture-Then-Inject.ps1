@@ -72,7 +72,7 @@ Write-Host ""
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $createCapture = Join-Path $scriptPath 'Create-Capture-Script.ps1'
 $runCapture = Join-Path $scriptPath 'Run-Capture-Script.ps1'
-$injectScript = Join-Path $repoRoot 'Send-TestAft1000.ps1'
+$injectScript = Join-Path $repoRoot 'lab\Send-TestAft1000.ps1'
 $parseScript = Join-Path $repoRoot 'tactic-c-credit-meter-inject\parser\SasMeterParser.py'
 
 # ------------------------------------------------------------------

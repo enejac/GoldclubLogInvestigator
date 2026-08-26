@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
@@ -27,6 +28,7 @@ class ConfigScannerEmitter(QObject):
     scan_target_failed = Signal(str)
     scan_finished = Signal(bool, object, str)
     compare_finished = Signal(bool, object, str)
+    stack_restart_finished = Signal(bool, str)
     baseline_finished = Signal(bool, object, str)
     delete_finished = Signal(bool, object, str)
     apply_finished = Signal(bool, object, str)
@@ -175,23 +177,36 @@ class _ScanRunnable(QRunnable):
         service: ConfigScannerService,
         game_drive: str,
         emitter: ConfigScannerEmitter,
+        *,
+        include_software: bool = False,
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._service = service
         self._game_drive = game_drive
         self._emitter = emitter
+        self._include_software = include_software
 
     def run(self) -> None:
         try:
-            self._emitter.progress.emit(f"Scanning config on {self._game_drive} …")
-            result = self._service.run_scan(self._game_drive)
+            self._emitter.progress.emit(
+                "Scanning config"
+                + (" + software" if self._include_software else "")
+                + f" on {self._game_drive} …"
+            )
+            result = self._service.run_scan(
+                self._game_drive, include_software=self._include_software
+            )
+            extra = ""
+            if result.software_captured:
+                extra = f" + {result.software_file_count} software files"
             self._emitter.scan_finished.emit(
                 True,
                 result,
                 (
                     f"Snapshot saved: {result.snapshot_name} "
                     f"({result.manifest_file_count} files in {result.elapsed_seconds}s)"
+                    + extra
                     + (
                         f" — {result.profile_label}: {result.version_summary}"
                         if result.profile_label and result.version_summary
@@ -227,20 +242,96 @@ class _CompareRunnable(QRunnable):
             self._emitter.progress.emit(
                 f"Comparing {self._baseline} vs {self._target} …"
             )
+            started = time.monotonic()
             result = self._service.run_compare(self._baseline, self._target)
+            elapsed = time.monotonic() - started
             warning_note = ""
             if result.warnings:
                 warning_note = f" warnings={len(result.warnings)}"
+            self._emitter.progress.emit(
+                f"Compare finished in {elapsed:.1f}s "
+                f"({result.summary.get('modified', 0)} modified, "
+                f"{result.summary.get('added', 0)} added, "
+                f"{result.summary.get('removed', 0)} removed)"
+            )
             self._emitter.compare_finished.emit(
                 True,
                 result,
                 (
-                    f"Report saved: {result.report_path.name}"
+                    f"Report saved: {result.report_path.name} ({elapsed:.1f}s)"
                     f"{warning_note}"
                 ),
             )
         except Exception as exc:  # noqa: BLE001
             self._emitter.compare_finished.emit(False, None, str(exc))
+
+
+class _StackRestartRunnable(QRunnable):
+    def __init__(
+        self,
+        plan: object,
+        emitter: ConfigScannerEmitter,
+        *,
+        phase: str = "restart",
+        service: ConfigScannerService | None = None,
+        scan_target: str = "",
+        snapshot_name: str = "",
+        trial_prep: bool = False,
+        ensure_llave: bool = False,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._plan = plan
+        self._emitter = emitter
+        self._phase = phase or "restart"
+        self._service = service
+        self._scan_target = scan_target.strip()
+        self._snapshot_name = snapshot_name.strip()
+        self._trial_prep = trial_prep
+        self._ensure_llave = ensure_llave
+
+    def run(self) -> None:
+        from config_scanner.stack_restart import (
+            run_full_stack_restart,
+            run_stack_kill,
+            run_stack_start,
+        )
+
+        try:
+            if self._phase == "kill":
+                if self._trial_prep and self._service and self._scan_target:
+                    self._emitter.progress.emit(
+                        "Preparing cabinet clock + trial tokens …"
+                    )
+                    ok_prep, prep_detail = self._service.prepare_seamless_trial_transfer(
+                        self._scan_target,
+                        snapshot_name=self._snapshot_name or None,
+                    )
+                    if ok_prep:
+                        self._emitter.progress.emit(f"Trial prep OK: {prep_detail}")
+                    else:
+                        self._emitter.progress.emit(
+                            f"Trial prep warning: {prep_detail}"
+                        )
+                self._emitter.progress.emit("Stopping GoldClub stack (Kill-All) …")
+                ok, detail = run_stack_kill(self._plan)
+            elif self._phase == "start":
+                self._emitter.progress.emit("Starting GoldClub stack (Run-FullStack) …")
+                ok, detail = run_stack_start(
+                    self._plan,
+                    scan_target=self._scan_target or None,
+                    ensure_llave=self._ensure_llave,
+                    machine_serial=None,
+                    tool_root=self._service.root if self._service else None,
+                )
+            else:
+                self._emitter.progress.emit(
+                    "Restarting GoldClub stack (Kill-All + Run-FullStack) …"
+                )
+                ok, detail = run_full_stack_restart(self._plan)
+            self._emitter.stack_restart_finished.emit(ok, detail)
+        except Exception as exc:  # noqa: BLE001
+            self._emitter.stack_restart_finished.emit(False, str(exc))
 
 
 class _DeleteSnapshotRunnable(QRunnable):
@@ -276,6 +367,10 @@ class _ApplySnapshotRunnable(QRunnable):
         snapshot_name: str,
         scan_target: str,
         emitter: ConfigScannerEmitter,
+        *,
+        write_scope: str = "full",
+        only_changed_relative_paths: list[str] | tuple[str, ...] | None = None,
+        is_revert: bool = False,
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
@@ -283,25 +378,50 @@ class _ApplySnapshotRunnable(QRunnable):
         self._snapshot_name = snapshot_name
         self._scan_target = scan_target
         self._emitter = emitter
+        self._write_scope = write_scope
+        self._only_changed = only_changed_relative_paths
+        self._is_revert = is_revert
 
     def run(self) -> None:
         try:
+            scope = self._write_scope or "full"
             self._emitter.progress.emit(
-                f"Writing snapshot {self._snapshot_name} to {self._scan_target} …"
+                f"Writing {scope} from {self._snapshot_name} to {self._scan_target} …"
             )
             result = self._service.apply_snapshot_to_target(
                 self._snapshot_name,
                 self._scan_target,
+                write_scope=scope,
+                only_changed_relative_paths=self._only_changed,
+                is_revert=self._is_revert,
             )
             note = ""
             if result.missing_count:
                 note = f" ({result.missing_count} archived paths missing, skipped)"
+            scope_note = ""
+            if result.write_scope and result.write_scope != "full":
+                scope_note = f" [{result.write_scope}]"
+            elif result.write_scope == "full":
+                scope_note = " [full HW+SW]"
+            skip_note = ""
+            if result.skipped_count:
+                skip_note = f"; skipped {result.skipped_count} out-of-scope"
+            verify_note = ""
+            if getattr(result, "verify_ok", False):
+                verify_note = (
+                    f"; verified {result.written_verified} written + "
+                    f"{result.protected_verified} protected unchanged"
+                )
+            extra_notes = ""
+            notes = getattr(result, "notes", ()) or ()
+            if notes:
+                extra_notes = "; " + "; ".join(notes)
             self._emitter.apply_finished.emit(
                 True,
                 result,
                 (
-                    f"Wrote {result.written_count} files to {result.target}"
-                    f"{note}"
+                    f"Wrote {result.written_count} files{scope_note} to {result.target}"
+                    f"{note}{skip_note}{verify_note}{extra_notes}"
                 ),
             )
         except Exception as exc:  # noqa: BLE001
@@ -430,8 +550,14 @@ def schedule_scan(
     service: ConfigScannerService,
     game_drive: str,
     emitter: ConfigScannerEmitter,
+    *,
+    include_software: bool = False,
 ) -> None:
-    pool.start(_ScanRunnable(service, game_drive, emitter))
+    pool.start(
+        _ScanRunnable(
+            service, game_drive, emitter, include_software=include_software
+        )
+    )
 
 
 def schedule_compare(
@@ -442,6 +568,32 @@ def schedule_compare(
     emitter: ConfigScannerEmitter,
 ) -> None:
     pool.start(_CompareRunnable(service, baseline, target, emitter))
+
+
+def schedule_stack_restart(
+    pool: QThreadPool,
+    plan: object,
+    emitter: ConfigScannerEmitter,
+    *,
+    phase: str = "restart",
+    service: ConfigScannerService | None = None,
+    scan_target: str = "",
+    snapshot_name: str = "",
+    trial_prep: bool = False,
+    ensure_llave: bool = False,
+) -> None:
+    pool.start(
+        _StackRestartRunnable(
+            plan,
+            emitter,
+            phase=phase,
+            service=service,
+            scan_target=scan_target,
+            snapshot_name=snapshot_name,
+            trial_prep=trial_prep,
+            ensure_llave=ensure_llave,
+        )
+    )
 
 
 def schedule_delete_snapshot(
@@ -494,8 +646,22 @@ def schedule_apply_snapshot(
     snapshot_name: str,
     scan_target: str,
     emitter: ConfigScannerEmitter,
+    *,
+    write_scope: str = "full",
+    only_changed_relative_paths: list[str] | tuple[str, ...] | None = None,
+    is_revert: bool = False,
 ) -> None:
-    pool.start(_ApplySnapshotRunnable(service, snapshot_name, scan_target, emitter))
+    pool.start(
+        _ApplySnapshotRunnable(
+            service,
+            snapshot_name,
+            scan_target,
+            emitter,
+            write_scope=write_scope,
+            only_changed_relative_paths=only_changed_relative_paths,
+            is_revert=is_revert,
+        )
+    )
 
 
 def schedule_apply_content_change(

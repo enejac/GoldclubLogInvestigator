@@ -1,0 +1,4 @@
+# Local GGUF weights for offline AI Helper (do not commit multi-GB files)
+models/*.gguf
+models/*.gguf.tmp
+models/*.tmp

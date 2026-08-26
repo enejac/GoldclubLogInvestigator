@@ -129,10 +129,27 @@ namespace GoldClub.InputAgent
         private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
 
         [DllImport("user32.dll")]
+        private static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
+
+        [DllImport("user32.dll")]
         private static extern bool SetCursorPos(int x, int y);
 
         [DllImport("user32.dll")]
         private static extern int GetSystemMetrics(int nIndex);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr WindowFromPoint(POINT pt);
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        private const uint WM_MOUSEMOVE = 0x0200;
+        private const uint WM_LBUTTONDOWN = 0x0201;
+        private const uint WM_LBUTTONUP = 0x0202;
+        private const int MK_LBUTTON = 0x0001;
 
         // ---- CLI -----------------------------------------------------------
         private static int Main(string[] args)
@@ -203,9 +220,15 @@ namespace GoldClub.InputAgent
         {
             try
             {
+                IntPtr hWnd = IntPtr.Zero;
                 var procs = Process.GetProcessesByName(processName);
-                if (procs.Length == 0) return;
-                IntPtr hWnd = procs[0].MainWindowHandle;
+                if (procs.Length > 0 && procs[0].MainWindowHandle != IntPtr.Zero)
+                    hWnd = procs[0].MainWindowHandle;
+                if (hWnd == IntPtr.Zero)
+                    hWnd = FindLargestVisibleWindowForProcess(processName);
+                // Alegro Godot window title when process name resolve fails.
+                if (hWnd == IntPtr.Zero && string.Equals(processName, "godot", StringComparison.OrdinalIgnoreCase))
+                    hWnd = FindWindowTitleContains("RouletteGUI");
                 TryFocusWindow(hWnd);
             }
             catch { }
@@ -230,6 +253,42 @@ namespace GoldClub.InputAgent
             return found;
         }
 
+        /// <summary>
+        /// Godot/ruleta often report MainWindowHandle=0; pick the largest visible top-level HWND for the PID.
+        /// </summary>
+        private static IntPtr FindLargestVisibleWindowForProcess(string processName)
+        {
+            if (string.IsNullOrWhiteSpace(processName)) return IntPtr.Zero;
+            var pids = new HashSet<uint>();
+            try
+            {
+                foreach (var p in Process.GetProcessesByName(processName))
+                    pids.Add((uint)p.Id);
+            }
+            catch { return IntPtr.Zero; }
+            if (pids.Count == 0) return IntPtr.Zero;
+
+            IntPtr best = IntPtr.Zero;
+            long bestArea = 0;
+            EnumWindows((hWnd, lParam) =>
+            {
+                if (!IsWindowVisible(hWnd)) return true;
+                uint pid;
+                GetWindowThreadProcessId(hWnd, out pid);
+                if (!pids.Contains(pid)) return true;
+                RECT rc;
+                if (!GetClientRect(hWnd, out rc)) return true;
+                long area = (long)(rc.Right - rc.Left) * (rc.Bottom - rc.Top);
+                if (area > bestArea)
+                {
+                    bestArea = area;
+                    best = hWnd;
+                }
+                return true;
+            }, IntPtr.Zero);
+            return best;
+        }
+
         private static bool TryFocusWindowTitleContains(string substring)
         {
             IntPtr found = ResolveWindowHandle(substring);
@@ -238,7 +297,8 @@ namespace GoldClub.InputAgent
         }
 
         /// <summary>
-        /// Prefer process main window for known game processes (OneHand); then title substring.
+        /// Prefer process main window for known game processes (OneHand); then title substring;
+        /// then largest visible HWND for the process name (Godot/ruleta).
         /// </summary>
         private static IntPtr ResolveWindowHandle(string titleOrProcess)
         {
@@ -262,13 +322,26 @@ namespace GoldClub.InputAgent
                     return procs[0].MainWindowHandle;
             }
             catch { }
+            found = FindLargestVisibleWindowForProcess(titleOrProcess);
+            if (found != IntPtr.Zero) return found;
+            // Alegro RouletteGUI2: process is "godot" but title is RouletteGUI* and MainWindowHandle is often 0.
+            if (string.Equals(titleOrProcess, "godot", StringComparison.OrdinalIgnoreCase))
+            {
+                found = FindWindowTitleContains("RouletteGUI");
+                if (found != IntPtr.Zero) return found;
+                found = FindWindowTitleContains("Roulette");
+                if (found != IntPtr.Zero) return found;
+            }
             return IntPtr.Zero;
         }
 
-        private static bool TryClickWindowClientPercent(string spec)
+        private static bool TryParseWindowPercent(string spec, out IntPtr hWnd, out POINT clientPt, out string title)
         {
+            hWnd = IntPtr.Zero;
+            clientPt = new POINT();
+            title = null;
             if (string.IsNullOrWhiteSpace(spec)) return false;
-            string title = null;
+
             string coords = spec;
             int at = spec.IndexOf('@');
             if (at >= 0)
@@ -277,12 +350,10 @@ namespace GoldClub.InputAgent
                 coords = spec.Substring(at + 1).Trim();
             }
 
-            IntPtr hWnd = string.IsNullOrEmpty(title)
+            hWnd = string.IsNullOrEmpty(title)
                 ? GetForegroundWindow()
                 : ResolveWindowHandle(title);
             if (hWnd == IntPtr.Zero) return false;
-
-            TryFocusWindow(hWnd);
 
             var parts = coords.Split(',');
             if (parts.Length != 2) return false;
@@ -295,26 +366,167 @@ namespace GoldClub.InputAgent
             int h = rc.Bottom - rc.Top;
             if (w <= 0 || h <= 0) return false;
 
-            var pt = new POINT
+            clientPt = new POINT
             {
                 X = (int)Math.Round(w * xp / 100.0),
                 Y = (int)Math.Round(h * yp / 100.0),
             };
+            return true;
+        }
 
-            // Fullscreen OneHand: use SendInput absolute screen coords (cursor injection).
+        private static bool TryClickWindowClientPercent(string spec)
+        {
+            IntPtr hWnd;
+            POINT pt;
+            string title;
+            if (!TryParseWindowPercent(spec, out hWnd, out pt, out title)) return false;
+
+            TryFocusWindow(hWnd);
+
+            if (!ClientToScreen(hWnd, ref pt)) return false;
+
+            // Prefer SetCursorPos + click for Godot: multi-monitor virtual desktops
+            // make MOUSEEVENTF_ABSOLUTE mapping easy to get wrong (CXVIRTUAL=5760 here).
             if (string.Equals(title, "OneHand", StringComparison.OrdinalIgnoreCase))
             {
-                if (!ClientToScreen(hWnd, ref pt)) return false;
                 SendInputScreenClick(pt.X, pt.Y);
                 return true;
             }
 
+            SetCursorPos(pt.X, pt.Y);
+            Thread.Sleep(60);
+            MouseLeftClick();
+            Thread.Sleep(40);
+            return true;
+        }
+
+        /// <summary>
+        /// Invisible click via PostMessage (cursor does not move). Used for Godot roulette UI.
+        /// Spec: "ProcessOrTitle@xPercent,yPercent" — same as click_window.
+        /// </summary>
+        /// <summary>
+        /// Parse "[ProcessOrTitle@]x,y" where x and y are client **pixels**.
+        /// </summary>
+        private static bool TryParseWindowPixel(string spec, out IntPtr hWnd, out POINT clientPt, out string title)
+        {
+            hWnd = IntPtr.Zero;
+            clientPt = new POINT();
+            title = null;
+            if (string.IsNullOrWhiteSpace(spec)) return false;
+
+            string coords = spec;
+            int at = spec.IndexOf('@');
+            if (at >= 0)
+            {
+                title = spec.Substring(0, at).Trim();
+                coords = spec.Substring(at + 1).Trim();
+            }
+
+            hWnd = string.IsNullOrEmpty(title) ? GetForegroundWindow() : ResolveWindowHandle(title);
+            if (hWnd == IntPtr.Zero) return false;
+
+            var parts = coords.Split(',');
+            if (parts.Length != 2) return false;
+            int px = int.Parse(parts[0].Trim(), CultureInfo.InvariantCulture);
+            int py = int.Parse(parts[1].Trim(), CultureInfo.InvariantCulture);
+
+            RECT rc;
+            if (!GetClientRect(hWnd, out rc)) return false;
+            int w = rc.Right - rc.Left;
+            int h = rc.Bottom - rc.Top;
+            if (w <= 0 || h <= 0) return false;
+            if (px < 0 || py < 0 || px >= w || py >= h) return false;
+
+            clientPt = new POINT { X = px, Y = py };
+            return true;
+        }
+
+        /// <summary>
+        /// Click an exact client pixel: "ProcessOrTitle@x,y".
+        ///
+        /// Percent coordinates are fine for hitting the middle of a control, but a
+        /// hitbox edge test asks whether pixel (x0,y0) and pixel (x1,y1) both land
+        /// inside the same control, and that question cannot survive a percentage
+        /// being rounded back into pixels.
+        /// </summary>
+        private static bool TryClickWindowClientPixel(string spec)
+        {
+            IntPtr hWnd;
+            POINT pt;
+            string title;
+            if (!TryParseWindowPixel(spec, out hWnd, out pt, out title)) return false;
+
+            TryFocusWindow(hWnd);
             if (!ClientToScreen(hWnd, ref pt)) return false;
 
             SetCursorPos(pt.X, pt.Y);
             Thread.Sleep(60);
             MouseLeftClick();
             Thread.Sleep(40);
+            return true;
+        }
+
+        /// <summary>
+        /// Click an absolute primary-monitor pixel: "x,y".
+        ///
+        /// Used when the agent runs on the operator's own machine and there is no
+        /// game window to measure against, so the primary monitor *is* the surface.
+        /// </summary>
+        private static bool TryClickPrimaryScreenPixel(string spec)
+        {
+            if (string.IsNullOrWhiteSpace(spec)) return false;
+            var parts = spec.Split(',');
+            if (parts.Length != 2) return false;
+            int px = int.Parse(parts[0].Trim(), CultureInfo.InvariantCulture);
+            int py = int.Parse(parts[1].Trim(), CultureInfo.InvariantCulture);
+            int w = GetSystemMetrics(0);
+            int h = GetSystemMetrics(1);
+            if (px < 0 || py < 0 || (w > 0 && px >= w) || (h > 0 && py >= h)) return false;
+
+            SetCursorPos(px, py);
+            Thread.Sleep(60);
+            MouseLeftClick();
+            Thread.Sleep(40);
+            return true;
+        }
+
+        private static bool TryClickWindowPostMessage(string spec, bool synchronous)
+        {
+            IntPtr hWnd;
+            POINT clientPt;
+            string title;
+            if (!TryParseWindowPercent(spec, out hWnd, out clientPt, out title)) return false;
+
+            // Prefer the child HWND under the click point (Godot often nests the real target).
+            var screenPt = clientPt;
+            if (!ClientToScreen(hWnd, ref screenPt)) return false;
+            IntPtr target = WindowFromPoint(screenPt);
+            if (target == IntPtr.Zero) target = hWnd;
+
+            var local = screenPt;
+            if (!ScreenToClient(target, ref local)) return false;
+
+            int lp = (local.Y << 16) | (local.X & 0xFFFF);
+            IntPtr lParam = (IntPtr)lp;
+            IntPtr wDown = (IntPtr)MK_LBUTTON;
+
+            if (synchronous)
+            {
+                SendMessage(target, WM_MOUSEMOVE, IntPtr.Zero, lParam);
+                Thread.Sleep(8);
+                SendMessage(target, WM_LBUTTONDOWN, wDown, lParam);
+                Thread.Sleep(40);
+                SendMessage(target, WM_LBUTTONUP, IntPtr.Zero, lParam);
+            }
+            else
+            {
+                PostMessage(target, WM_MOUSEMOVE, IntPtr.Zero, lParam);
+                Thread.Sleep(8);
+                PostMessage(target, WM_LBUTTONDOWN, wDown, lParam);
+                Thread.Sleep(40);
+                PostMessage(target, WM_LBUTTONUP, IntPtr.Zero, lParam);
+            }
+            Thread.Sleep(20);
             return true;
         }
 
@@ -346,27 +558,180 @@ namespace GoldClub.InputAgent
             Thread.Sleep(40);
         }
 
+        private static void MouseLeftButton(uint flag)
+        {
+            var evt = new INPUT
+            {
+                type = INPUT_MOUSE,
+                U = new InputUnion
+                {
+                    mi = new MOUSEINPUT { dwFlags = flag, dx = 0, dy = 0, mouseData = 0, time = 0, dwExtraInfo = IntPtr.Zero }
+                }
+            };
+            SendInput(1, new INPUT[] { evt }, Marshal.SizeOf(typeof(INPUT)));
+        }
+
+        private static void MouseLeftDown()
+        {
+            MouseLeftButton(MOUSEEVENTF_LEFTDOWN);
+        }
+
+        private static void MouseLeftUp()
+        {
+            MouseLeftButton(MOUSEEVENTF_LEFTUP);
+        }
+
         private static void MouseLeftClick()
         {
-            var down = new INPUT
-            {
-                type = INPUT_MOUSE,
-                U = new InputUnion
-                {
-                    mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTDOWN, dx = 0, dy = 0, mouseData = 0, time = 0, dwExtraInfo = IntPtr.Zero }
-                }
-            };
-            var up = new INPUT
-            {
-                type = INPUT_MOUSE,
-                U = new InputUnion
-                {
-                    mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTUP, dx = 0, dy = 0, mouseData = 0, time = 0, dwExtraInfo = IntPtr.Zero }
-                }
-            };
-            SendInput(1, new INPUT[] { down }, Marshal.SizeOf(typeof(INPUT)));
+            MouseLeftDown();
             Thread.Sleep(30);
-            SendInput(1, new INPUT[] { up }, Marshal.SizeOf(typeof(INPUT)));
+            MouseLeftUp();
+        }
+
+        /// <summary>
+        /// Press-move-release drag. Spec: "ProcessOrTitle@x1,y1&gt;x2,y2" (client percent).
+        /// Godot sliders and the history bar only react to real intermediate motion, so
+        /// the travel is emitted as many small SetCursorPos steps, not one jump.
+        /// <paramref name="totalMs"/> is the time spent travelling.
+        /// </summary>
+        private static bool TryDragWindowClientPercent(string spec, int totalMs)
+        {
+            if (string.IsNullOrWhiteSpace(spec)) return false;
+            int arrow = spec.IndexOf('>');
+            if (arrow < 0) return false;
+
+            string head = spec.Substring(0, arrow).Trim();
+            string tail = spec.Substring(arrow + 1).Trim();
+            if (head.Length == 0 || tail.Length == 0) return false;
+
+            // The window is named once, before '@'; reuse it for the end point.
+            string title = null;
+            int at = head.IndexOf('@');
+            if (at >= 0) title = head.Substring(0, at).Trim();
+            string tailSpec = string.IsNullOrEmpty(title) ? tail : title + "@" + tail;
+
+            IntPtr hFrom, hTo;
+            POINT from, to;
+            string t1, t2;
+            if (!TryParseWindowPercent(head, out hFrom, out from, out t1)) return false;
+            if (!TryParseWindowPercent(tailSpec, out hTo, out to, out t2)) return false;
+
+            TryFocusWindow(hFrom);
+            if (!ClientToScreen(hFrom, ref from)) return false;
+            if (!ClientToScreen(hTo, ref to)) return false;
+
+            const int steps = 24;
+            int travelMs = totalMs > 0 ? totalMs : 600;
+            int perStep = Math.Max(4, travelMs / steps);
+
+            SetCursorPos(from.X, from.Y);
+            Thread.Sleep(80);
+            MouseLeftDown();
+            Thread.Sleep(90);
+            for (int i = 1; i <= steps; i++)
+            {
+                int x = from.X + (int)Math.Round((to.X - from.X) * (double)i / steps);
+                int y = from.Y + (int)Math.Round((to.Y - from.Y) * (double)i / steps);
+                SetCursorPos(x, y);
+                Thread.Sleep(perStep);
+            }
+            Thread.Sleep(90);
+            MouseLeftUp();
+            Thread.Sleep(40);
+            return true;
+        }
+
+        /// <summary>
+        /// Press and hold without moving. Spec is the same as click_window. Needed for
+        /// Godot TouchScreenButton nodes that act on ButtonHeld rather than on release.
+        /// </summary>
+        private static bool TryHoldWindowClientPercent(string spec, int holdMs)
+        {
+            IntPtr hWnd;
+            POINT pt;
+            string title;
+            if (!TryParseWindowPercent(spec, out hWnd, out pt, out title)) return false;
+
+            TryFocusWindow(hWnd);
+            if (!ClientToScreen(hWnd, ref pt)) return false;
+
+            SetCursorPos(pt.X, pt.Y);
+            Thread.Sleep(80);
+            MouseLeftDown();
+            Thread.Sleep(Math.Max(120, holdMs));
+            MouseLeftUp();
+            Thread.Sleep(40);
+            return true;
+        }
+
+        /// <summary>
+        /// Save a screenshot to <paramref name="spec"/> = "[process@]path".
+        ///
+        /// With a process (or window title) the capture is that window's client
+        /// area, so the pixels line up 1:1 with the client-percent coordinates the
+        /// click steps use; without one it falls back to the primary screen. This
+        /// runs in the interactive session, which is why it can see the desktop at
+        /// all, and it is ~10x faster than driving a capture over PsExec.
+        /// </summary>
+        private static bool TryCaptureScreenshot(string spec)
+        {
+            string title = null;
+            string path = spec;
+            int at = spec.IndexOf('@');
+            if (at >= 0)
+            {
+                title = spec.Substring(0, at).Trim();
+                path = spec.Substring(at + 1).Trim();
+            }
+            if (string.IsNullOrWhiteSpace(path)) return false;
+
+            // "screen@path" / "primary@path" asks for the whole primary monitor even
+            // when a window happens to be in front, which is what a local mapping run
+            // on the operator's own machine needs.
+            bool forcePrimary = !string.IsNullOrEmpty(title)
+                && (string.Equals(title, "screen", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(title, "primary", StringComparison.OrdinalIgnoreCase));
+
+            IntPtr hWnd = forcePrimary
+                ? IntPtr.Zero
+                : (string.IsNullOrEmpty(title) ? GetForegroundWindow() : ResolveWindowHandle(title));
+            int x = 0, y = 0, w = 0, h = 0;
+            RECT rc;
+            if (hWnd != IntPtr.Zero && GetClientRect(hWnd, out rc) && rc.Right > rc.Left && rc.Bottom > rc.Top)
+            {
+                var origin = new POINT { X = rc.Left, Y = rc.Top };
+                if (ClientToScreen(hWnd, ref origin))
+                {
+                    x = origin.X;
+                    y = origin.Y;
+                    w = rc.Right - rc.Left;
+                    h = rc.Bottom - rc.Top;
+                }
+            }
+            if (w <= 0 || h <= 0)
+            {
+                w = GetSystemMetrics(0);
+                h = GetSystemMetrics(1);
+            }
+            if (w <= 0 || h <= 0) return false;
+
+            string dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            using (var bmp = new System.Drawing.Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+            {
+                using (var g = System.Drawing.Graphics.FromImage(bmp))
+                {
+                    g.CopyFromScreen(x, y, 0, 0, new System.Drawing.Size(w, h),
+                        System.Drawing.CopyPixelOperation.SourceCopy);
+                }
+                string ext = (Path.GetExtension(path) ?? "").ToLowerInvariant();
+                var format = (ext == ".jpg" || ext == ".jpeg")
+                    ? System.Drawing.Imaging.ImageFormat.Jpeg
+                    : System.Drawing.Imaging.ImageFormat.Png;
+                bmp.Save(path, format);
+            }
+            return File.Exists(path);
         }
 
         private static Script DeserializeScript(string json)
@@ -418,6 +783,18 @@ namespace GoldClub.InputAgent
                     continue;
                 }
 
+                // "screenshot" writes a PNG/JPEG on the cabinet; ms settles first.
+                if (t == "screenshot" || t == "shot")
+                {
+                    if (!string.IsNullOrWhiteSpace(st.value))
+                    {
+                        if (st.ms > 0) Thread.Sleep(st.ms);
+                        if (!TryCaptureScreenshot(st.value.Trim()))
+                            Console.Error.WriteLine("screenshot failed: " + st.value);
+                    }
+                    continue;
+                }
+
                 if (t == "focus_window" || t == "focus")
                 {
                     if (!string.IsNullOrWhiteSpace(st.value))
@@ -438,12 +815,82 @@ namespace GoldClub.InputAgent
                     continue;
                 }
 
+                if (t == "click_window_px")
+                {
+                    if (!string.IsNullOrWhiteSpace(st.value))
+                    {
+                        if (!TryClickWindowClientPixel(st.value.Trim()))
+                            Console.Error.WriteLine("click_window_px failed: " + st.value);
+                        Thread.Sleep(Math.Max(0, st.ms > 0 ? st.ms : 80));
+                    }
+                    continue;
+                }
+
+                if (t == "click_screen_px")
+                {
+                    if (!string.IsNullOrWhiteSpace(st.value))
+                    {
+                        if (!TryClickPrimaryScreenPixel(st.value.Trim()))
+                            Console.Error.WriteLine("click_screen_px failed: " + st.value);
+                        Thread.Sleep(Math.Max(0, st.ms > 0 ? st.ms : 80));
+                    }
+                    continue;
+                }
+
                 if (t == "click_window" || t == "click")
                 {
                     if (!string.IsNullOrWhiteSpace(st.value))
                     {
-                        TryClickWindowClientPercent(st.value.Trim());
+                        if (!TryClickWindowClientPercent(st.value.Trim()))
+                            Console.Error.WriteLine("click_window failed: " + st.value);
                         Thread.Sleep(Math.Max(0, st.ms > 0 ? st.ms : 80));
+                    }
+                    continue;
+                }
+
+                // Invisible Godot/roulette clicks (PostMessage; cursor stays put).
+                if (t == "click_post" || t == "click_pm")
+                {
+                    if (!string.IsNullOrWhiteSpace(st.value))
+                    {
+                        if (!TryClickWindowPostMessage(st.value.Trim(), synchronous: false))
+                            Console.Error.WriteLine("click_post failed: " + st.value);
+                        Thread.Sleep(Math.Max(0, st.ms > 0 ? st.ms : 80));
+                    }
+                    continue;
+                }
+
+                if (t == "click_post_sync" || t == "click_pm_sync")
+                {
+                    if (!string.IsNullOrWhiteSpace(st.value))
+                    {
+                        if (!TryClickWindowPostMessage(st.value.Trim(), synchronous: true))
+                            Console.Error.WriteLine("click_post_sync failed: " + st.value);
+                        Thread.Sleep(Math.Max(0, st.ms > 0 ? st.ms : 80));
+                    }
+                    continue;
+                }
+
+                // Sliders / scrollable strips: "godot@x1,y1>x2,y2", ms = travel time.
+                if (t == "drag_window" || t == "drag")
+                {
+                    if (!string.IsNullOrWhiteSpace(st.value))
+                    {
+                        if (!TryDragWindowClientPercent(st.value.Trim(), st.ms))
+                            Console.Error.WriteLine("drag_window failed: " + st.value);
+                        Thread.Sleep(60);
+                    }
+                    continue;
+                }
+
+                // ButtonHeld targets: same spec as click_window, ms = hold duration.
+                if (t == "hold_window" || t == "hold")
+                {
+                    if (!string.IsNullOrWhiteSpace(st.value))
+                    {
+                        if (!TryHoldWindowClientPercent(st.value.Trim(), st.ms))
+                            Console.Error.WriteLine("hold_window failed: " + st.value);
+                        Thread.Sleep(60);
                     }
                     continue;
                 }

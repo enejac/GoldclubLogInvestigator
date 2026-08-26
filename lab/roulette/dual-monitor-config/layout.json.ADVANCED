@@ -1,0 +1,18 @@
+{
+    "simple":  {
+                   "MonitorTemplate":  "Player01"
+               },
+    "advanced":  {
+                     "PCIROOT(0)#PCI(0100)#PCI(0000)#PCI(0400)#PCI(0000):1396739":  "Player05",
+                     "PCIROOT(0)#PCI(0100)#PCI(0000)#PCI(0400)#PCI(0000):1396737":  "Player06",
+                     "PCIROOT(0)#PCI(0101)#PCI(0000):17125377":  "Player10",
+                     "PCIROOT(0)#PCI(0100)#PCI(0000)#PCI(0800)#PCI(0000):348161":  "Player03",
+                     "PCIROOT(0)#PCI(0100)#PCI(0000)#PCI(0800)#PCI(0000):348162":  "Player04",
+                     "PCIROOT(0)#PCI(0101)#PCI(0000):17125376":  "Player09",
+                     "PCIROOT(0)#PCI(0100)#PCI(0000)#PCI(0800)#PCI(0000):348160":  "Player01",
+                     "PCIROOT(0)#PCI(0100)#PCI(0000)#PCI(0400)#PCI(0000):1396738":  "Player07",
+                     "PCIROOT(0)#PCI(0100)#PCI(0000)#PCI(0800)#PCI(0000):348163":  "Player02",
+                     "PCIROOT(0)#PCI(0100)#PCI(0000)#PCI(0400)#PCI(0000):1396736":  "Player08"
+                 },
+    "mode":  "ADVANCED"
+}

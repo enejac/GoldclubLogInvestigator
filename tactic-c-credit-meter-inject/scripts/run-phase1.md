@@ -3,7 +3,7 @@
 ## STEP 1: BUILD WDSNIFF.EXE
 ```powershell
 cd C:\Users\Ezbogar\GoldclubLogInvestigator
-csc /platform:x64 /optimize+ /out:tactic-c-credit-meter-inject/WdSniff.exe WdSniff.cs
+csc /platform:x64 /optimize+ /out:probes/WdSniff.exe probes/WdSniff.cs
 ```
 
 ## STEP 2: RUN CAPTURE
@@ -28,7 +28,7 @@ cd C:\Users\Ezbogar\GoldclubLogInvestigator
 cmdkey /generic:10.0.0.90 /user:GOLD-CLUB\test /pass:test
 
 # Trigger AFT transfer:
-.\Send-TestAft1000.ps1 -Send -IP 10.0.0.90 -Amount 100000 -nr
+.\lab\Send-TestAft1000.ps1 -Send -IP 10.0.0.90 -Amount 100000 -nr
 ```
 
 ## STEP 4: COMPLETE CAPTURE

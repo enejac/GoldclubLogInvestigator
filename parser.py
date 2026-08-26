@@ -41,6 +41,9 @@ from timeline_engine import (
 
 logger = logging.getLogger(__name__)
 
+# Consecutive lines past the scan end bound before a file is abandoned.
+_PAST_SCAN_END_STREAK_LIMIT = 50
+
 # YYYY-MM-DD T or space HH:MM:SS, optional fractional seconds, optional Z or ±offset.
 _TIMESTAMP_REGEX = re.compile(
     r"(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)"
@@ -188,6 +191,26 @@ def _maybe_append_classified_incident(
                 lineno=lineno,
                 line=line,
                 buffer=buffer,
+            )
+        )
+        return
+    # Roulette-only: ERROR N window closes Godot UI (never slot / OneHand).
+    from roulette_errors import match_roulette_error_screen
+
+    roulette_err = match_roulette_error_screen(line, path_str)
+    if roulette_err is not None:
+        incidents.append(
+            _incident_for_classified_line(
+                timestamp=timestamp,
+                game=current_game,
+                last_known_game=last_known_game,
+                severity="CRITICAL",
+                error_type=roulette_err.error_type,
+                path_str=path_str,
+                lineno=lineno,
+                line=line,
+                buffer=buffer,
+                probable_cause_override=roulette_err.probable_cause,
             )
         )
         return
@@ -689,6 +712,7 @@ def _incident_for_classified_line(
     lineno: int,
     line: str,
     buffer: deque[tuple[int, str]],
+    probable_cause_override: str | None = None,
 ) -> Incident:
     """
     Build one incident row. ``timestamp`` must be the **effective** time for this
@@ -700,8 +724,11 @@ def _incident_for_classified_line(
     fc_line, fc_snip = (fc[0], fc[1]) if fc else (None, None)
     snippet = line.strip()[:500]
     display_game = _display_game_for_incident(game, last_known_game, severity)
-    triaged = apply_triage_rules(snippet, severity)
-    probable = triaged if triaged is not None else resolve_probable_cause(line)
+    if probable_cause_override:
+        probable = probable_cause_override
+    else:
+        triaged = apply_triage_rules(snippet, severity)
+        probable = triaged if triaged is not None else resolve_probable_cause(line)
     return Incident(
         timestamp=timestamp,
         game=display_game,
@@ -815,20 +842,65 @@ def create_live_state_at_eof(path: Path) -> LiveFileParseState | None:
 
     Returns ``None`` if the file cannot be stat'd.
     """
+    return _create_live_state_at_offset(path, None)
+
+
+def create_live_state_after_rewind(
+    path: Path,
+    *,
+    max_backfill_bytes: int = config.LIVE_WATCH_REWIND_MAX_BYTES,
+) -> LiveFileParseState | None:
+    """
+    Resume tailing a log that shrank (truncate-in-place or same-name replacement).
+
+    Starting at EOF would drop everything already written to the new file, so the
+    tail restarts at byte 0. Very large replacements are capped at
+    ``max_backfill_bytes`` (measured back from EOF, aligned to a line start) to
+    keep one poll from emitting a whole file as a live batch.
+    """
     try:
         size = path.stat().st_size
     except OSError:
         return None
-    lines = count_newlines_in_prefix(path, size)
+    start = 0
+    if max_backfill_bytes > 0 and size > max_backfill_bytes:
+        start = _next_line_start_at_or_after(path, size - max_backfill_bytes)
+    return _create_live_state_at_offset(path, start)
+
+
+def _create_live_state_at_offset(path: Path, offset: int | None) -> LiveFileParseState | None:
+    """Build tail state at ``offset`` (``None`` means end-of-file)."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    start = size if offset is None else max(0, min(int(offset), size))
+    lines = count_newlines_in_prefix(path, start)
     return LiveFileParseState(
         path_str=str(path),
-        byte_offset=size,
+        byte_offset=start,
         pending_fragment="",
         next_line_number=lines + 1,
         current_game=subsystem_label_from_log_path(path),
         last_known_game=None,
         buffer=deque(maxlen=FIRST_CAUSE_LOOKBACK_LINES),
     )
+
+
+def _next_line_start_at_or_after(path: Path, offset: int) -> int:
+    """Offset of the first line start at/after ``offset`` so no partial line is parsed."""
+    if offset <= 0:
+        return 0
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(offset)
+            window = handle.read(MAX_LINE_LENGTH + 1)
+    except OSError:
+        return offset
+    idx = window.find(b"\n")
+    if idx < 0:
+        return offset
+    return offset + idx + 1
 
 
 def feed_live_byte_chunk(
@@ -1018,6 +1090,7 @@ def parse_log_file(
     scan_lo = _utc_scan_bound(scan_start_time)
     scan_hi = _utc_scan_bound(scan_end_time)
     current_file_timestamp: datetime | None = None
+    past_end_streak = 0
 
     try:
         line_iter = enumerate(_read_text_lines(path), start=1)
@@ -1042,7 +1115,15 @@ def parse_log_file(
             if scan_lo is not None and effective_ts < scan_lo:
                 continue
             if scan_hi is not None and effective_ts > scan_hi:
-                break
+                # Logs are usually chronological, so stopping here saves a lot of
+                # work — but a single clock-skewed or future-dated line must not
+                # discard the rest of the file. Only give up once several lines
+                # in a row are past the bound.
+                past_end_streak += 1
+                if past_end_streak >= _PAST_SCAN_END_STREAK_LIMIT:
+                    break
+                continue
+            past_end_streak = 0
 
         if (
             prefer_machine_id_path

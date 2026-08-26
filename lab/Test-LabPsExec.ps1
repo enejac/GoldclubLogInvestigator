@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Quick PsExec smoke test for a lab cabinet (especially slow 10.0.0.171).
 #>
@@ -9,7 +9,7 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
-. "$PSScriptRoot\LabAccess.ps1"
+. (Join-Path (Split-Path $PSScriptRoot -Parent) 'LabAccess.ps1')
 $auth = @(Get-LabPsExecArgs)
 $smb = Test-LabSmbAccess -Ip $Computer
 Write-Host "[SMB] $($smb.Status): $($smb.Detail)"

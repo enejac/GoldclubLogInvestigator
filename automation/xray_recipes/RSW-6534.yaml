@@ -1,0 +1,78 @@
+{
+  "key": "RSW-6534",
+  "summary": "Unable to bet and cashout until you select a chip",
+  "jira_bug": "RSW-6452",
+  "jira_browse": "https://winsytemsintl.atlassian.net/browse/RSW-6534",
+  "layout": "layout1",
+  "regression": true,
+  "notes": "Linked bug RSW-6452 (Done): Colombia — cannot bet until another chip is selected; chip position on GUI must be higher than number of enabled denominations (video: chip 50 / position 4 with only 2 denoms). Bill inject is credit setup only. Xray Test body was empty in Jira REST — this local recipe is the executable source of truth.",
+  "preconditions": [
+    "Cabinet showing layout1 (futura_doublezero).",
+    "Few denominations enabled (e.g. 2) while a high chip index is selected (e.g. chip_50).",
+    "Godot Ruleta focused; middleware :8090 reachable."
+  ],
+  "steps": [
+    {
+      "op": "bill_inject",
+      "credits": 200000,
+      "profile": "captured",
+      "clear_lock_first": true
+    },
+    {
+      "op": "assert_credits",
+      "min": 1
+    },
+    {
+      "op": "cancel_bets"
+    },
+    {
+      "op": "wait_open",
+      "timeout_sec": 90
+    },
+    {
+      "op": "click_bet",
+      "id": "17",
+      "note": "Do not select a chip first — reproduce stuck-chip state"
+    },
+    {
+      "op": "assert_bets",
+      "expect": "nonempty",
+      "on_fail": "bug_reproduced",
+      "label": "bet_without_chip_change"
+    },
+    {
+      "op": "cancel_bets"
+    },
+    {
+      "op": "wait_open",
+      "timeout_sec": 90
+    },
+    {
+      "op": "click_ui",
+      "id": "chip_10",
+      "note": "Select a different chip (Colombia workaround)"
+    },
+    {
+      "op": "click_bet",
+      "id": "17"
+    },
+    {
+      "op": "assert_bets",
+      "expect": "nonempty",
+      "label": "bet_after_chip_change"
+    },
+    {
+      "op": "cancel_bets"
+    },
+    {
+      "op": "click_ui",
+      "id": "COBRAR",
+      "allow_forbidden": true,
+      "note": "Cashout / Collect — recipe may leave residual credits"
+    },
+    {
+      "op": "snapshot_state",
+      "label": "after_cashout_click"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<DeviceManagerData xmlns:d4p1="http://schemas.datacontract.org/2004/07/GoldClub.Aurum.Services">
+  <themeData>
+    <d4p1:perfMeter d4p1:meterName="MagicWheel_TimesTriggered" d4p1:themeId="Roulette Game" d4p1:paytableId="return_97_0" d4p1:denomId="1" d4p1:meterValue="1" d4p1:valid="true" />
+    <d4p1:perfMeter d4p1:meterName="MagicWheel_NumberOfSpins" d4p1:themeId="Roulette Game" d4p1:paytableId="return_97_0" d4p1:denomId="1" d4p1:meterValue="8" d4p1:valid="true" />
+    <d4p1:perfMeter d4p1:meterName="MagicWheel_TotalWon" d4p1:themeId="Roulette Game" d4p1:paytableId="return_97_0" d4p1:denomId="1" d4p1:meterValue="3960" d4p1:valid="true" />
+    <d4p1:perfMeter d4p1:meterName="coinIn" d4p1:themeId="Roulette Game" d4p1:paytableId="return_97_0" d4p1:denomId="1" d4p1:meterValue="4508" d4p1:valid="true" />
+  </themeData>
+</DeviceManagerData>

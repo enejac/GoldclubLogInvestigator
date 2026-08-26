@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from automation.gamedata_parser import parse_gamedata_line, sum_reported_win_credits
 

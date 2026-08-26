@@ -325,7 +325,7 @@ requires decompiling `OneHand.exe` or capturing binary remoting on
   `../investigations/hop3-spoof-probe-20260617.md` §1–§6
 - Working method (Hop 2 in-stream WinDivert injection):
   `hop2-commctrlsas-bridge-to-aurum.md` §4–§5, `../RUNBOOK.md`,
-  `../../Invoke-WinDivertAft.ps1`, `../../WdInject.cs`
+  `../../lab/Invoke-WinDivertAft.ps1`, `../../probes/WdInject.cs`
 - Remoting endpoint `:50011` / `POST /SASControler1` and `qGMID1:` byte logging
   cross-reference: `../protocol-raw-traffic.md` §1, §4
 - Unregistered-but-commits trust finding + monitoring check:

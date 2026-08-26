@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 from network.lab_access import safe_join_under
@@ -23,6 +22,7 @@ from config_scanner.build_version import (
     scan_target_path,
     snapshot_folder_name,
 )
+from config_scanner.snapshot_clock import resolve_snapshot_datetime
 from config_scanner.paths import (
     baseline_path,
     load_tool_config,
@@ -88,6 +88,27 @@ class SnapshotInfo:
     is_baseline: bool
     profile_label: str | None = None
     profile_id: str | None = None
+    has_software: bool = False
+    has_archive: bool = False
+
+
+def order_snapshots_newest_first(
+    rows: list[SnapshotInfo],
+    *,
+    pin_name: str | None = None,
+) -> list[SnapshotInfo]:
+    """Newest scan first. ``pin_name`` stays on top (just-created, even if the clock is rolled back)."""
+    ordered = sorted(
+        rows,
+        key=lambda row: (row.scan_timestamp or "", row.name),
+        reverse=True,
+    )
+    pin = (pin_name or "").strip()
+    if not pin:
+        return ordered
+    pinned = [row for row in ordered if row.name == pin]
+    rest = [row for row in ordered if row.name != pin]
+    return pinned + rest
 
 
 def scan_scope_zero_diff_hint(
@@ -123,6 +144,8 @@ class ScanResult:
     version_summary: str = ""
     profile_label: str = ""
     warnings: tuple[str, ...] = ()
+    software_file_count: int = 0
+    software_captured: bool = False
 
 
 @dataclass(frozen=True)
@@ -143,6 +166,14 @@ class ApplySnapshotResult:
     written_count: int
     missing_count: int
     errors: tuple[str, ...]
+    write_scope: str = "full"
+    skipped_count: int = 0
+    scoped_file_count: int = 0
+    verify_ok: bool = True
+    protected_verified: int = 0
+    written_verified: int = 0
+    verify_errors: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -242,6 +273,53 @@ class ConfigScannerService:
     def set_baseline_name(self, snapshot_name: str) -> None:
         path = baseline_path(self.root)
         save_json(path, {"snapshotName": snapshot_name})
+
+    def get_rollback_info(self):
+        from config_scanner.rollback import load_rollback
+
+        return load_rollback(self.root)
+
+    def rollback_is_available(self) -> bool:
+        from config_scanner.rollback import load_rollback, rollback_is_available
+
+        info = load_rollback(self.root)
+        return rollback_is_available(self.root, info)
+
+    def get_rollback_details(self):
+        """Version and completeness of the current undo point, or None."""
+        from config_scanner.rollback import describe_rollback, load_rollback
+
+        return describe_rollback(load_rollback(self.root), self.root)
+
+    def record_rollback_snapshot(
+        self,
+        *,
+        snapshot_name: str,
+        restored_from: str,
+        write_scope: str,
+        scan_target: str,
+    ) -> None:
+        from config_scanner.rollback import make_rollback_info, save_rollback
+
+        save_rollback(
+            make_rollback_info(
+                snapshot_name=snapshot_name,
+                restored_from=restored_from,
+                write_scope=write_scope,
+                scan_target=scan_target,
+            ),
+            self.root,
+        )
+
+    def clear_rollback_snapshot(self) -> None:
+        from config_scanner.rollback import clear_rollback
+
+        clear_rollback(self.root)
+
+    def refresh_rollback_if_stale(self) -> None:
+        """Drop rollback metadata when the snapshot folder is gone."""
+        if not self.rollback_is_available() and self.get_rollback_info() is not None:
+            self.clear_rollback_snapshot()
 
     def set_baseline_snapshot(self, snapshot_name: str) -> str:
         """Rename snapshot to a friendly baseline folder and register it."""
@@ -351,6 +429,8 @@ class ConfigScannerService:
             if build_no and not build_info_version_fields_missing(info):
                 donors[build_no] = info
 
+        from config_scanner.software_compat import snapshot_has_embedded_software
+
         for entry, build_info, manifest in loaded:
             build_no = (build_info.build_number or "").strip()
             if build_no and build_info_version_fields_missing(build_info) and build_no in donors:
@@ -372,14 +452,20 @@ class ConfigScannerService:
                     or (baseline is not None and entry.name == baseline),
                     profile_label=build_info.profile_label,
                     profile_id=build_info.profile_id,
+                    has_software=snapshot_has_embedded_software(entry),
+                    has_archive=snapshot_content_root(entry) is not None,
                 )
             )
-        rows.sort(key=lambda row: row.scan_timestamp)
-        return rows
+        return order_snapshots_newest_first(rows)
 
-    def run_scan(self, scan_target: str | None = None) -> ScanResult:
+    def run_scan(
+        self,
+        scan_target: str | None = None,
+        *,
+        include_software: bool = False,
+    ) -> ScanResult:
         resolved_target = self.prepare_for_target(scan_target)
-        scan_timestamp = datetime.now().astimezone()
+        scan_timestamp = resolve_snapshot_datetime()
         build_info = resolve_build_info(
             self.profile,
             resolved_target,
@@ -392,6 +478,9 @@ class ConfigScannerService:
             build_info.build_number,
             scan_timestamp,
             profile_id=self.profile.id,
+            product_version=build_info.product_version,
+            exe_product_version=build_info.exe_product_version,
+            machine_serial=build_info.machine_serial,
         )
         snapshot_name, snapshot_dir = allocate_snapshot_dir(
             snapshots_path(self.root),
@@ -406,6 +495,31 @@ class ConfigScannerService:
         )
         save_json(snapshot_dir / "build-info.json", build_info_to_dict(build_info))
         save_json(snapshot_dir / "manifest.json", manifest_to_dict(manifest))
+        from config_scanner.build_version import scan_target_path
+        from roulette_trial import capture_trial_state_for_rollback
+
+        try:
+            capture_trial_state_for_rollback(
+                scan_target_path(resolved_target),
+                snapshot_dir,
+            )
+        except OSError:
+            pass
+        warnings = list(manifest.warnings)
+        software_count = 0
+        software_ok = False
+        if include_software:
+            from config_scanner.software_compat import (
+                capture_ruleta_software_into_snapshot,
+            )
+
+            captured = capture_ruleta_software_into_snapshot(
+                resolved_target, snapshot_dir
+            )
+            software_count = captured.file_count
+            software_ok = captured.captured
+            if captured.note and not captured.captured:
+                warnings.append(captured.note)
         return ScanResult(
             snapshot_name=snapshot_name,
             snapshot_path=snapshot_dir,
@@ -413,7 +527,9 @@ class ConfigScannerService:
             elapsed_seconds=manifest.elapsed_seconds,
             version_summary=format_build_info_log_line(build_info),
             profile_label=self.profile.label,
-            warnings=manifest.warnings,
+            warnings=tuple(warnings),
+            software_file_count=software_count,
+            software_captured=software_ok,
         )
 
     def compare_warnings(self, baseline_snapshot: str, target_snapshot: str) -> list[str]:
@@ -494,7 +610,12 @@ class ConfigScannerService:
                 )
         return warnings
 
-    def snapshot_apply_warnings(self, snapshot_name: str, scan_target: str) -> list[str]:
+    def snapshot_apply_warnings(
+        self,
+        snapshot_name: str,
+        scan_target: str,
+        write_scope: str = "full",
+    ) -> list[str]:
         """Advisory messages before writing a snapshot back to the live machine."""
         snap_root = snapshots_path(self.root)
         snapshot_dir = snap_root / snapshot_name
@@ -546,14 +667,345 @@ class ConfigScannerService:
             warnings.append(
                 f"Scan target ({resolved}) differs from snapshot source ({recorded})."
             )
+        from config_scanner.build_version import read_machine_serial_from_target, scan_target_path
+        from config_scanner.machine_identity import (
+            egm_serials_match,
+            is_licence_path,
+            is_protected_machine_identity_path,
+            licensee_id_from_licence_bytes,
+            licensee_ids_match,
+            live_has_licence,
+            live_licence_licensee_id,
+        )
+
+        identity_files = [
+            e.relative_path
+            for e in manifest.files
+            if is_protected_machine_identity_path(e.relative_path)
+        ]
+        licence_files = [p for p in identity_files if is_licence_path(p)]
+        other_identity = [p for p in identity_files if not is_licence_path(p)]
+        if other_identity:
+            warnings.append(
+                f"{len(other_identity)} machine-identity file(s) in this snapshot "
+                "(ProductSerialNumber, Aurum ids) are never written — "
+                "live EGM serial and EgmId stay unchanged."
+            )
+        if licence_files:
+            dest_root = scan_target_path(resolved)
+            live_serial = read_machine_serial_from_target(resolved)
+            snap_serial = (build_info.machine_serial or "").strip() or None
+            live_wibu = live_licence_licensee_id(dest_root)
+            snap_wibu = None
+            if content_root is not None:
+                for rel in licence_files:
+                    archived = content_root / Path(rel.replace("\\", "/"))
+                    try:
+                        if archived.is_file():
+                            snap_wibu = licensee_id_from_licence_bytes(
+                                archived.read_bytes()
+                            )
+                            if snap_wibu:
+                                break
+                    except OSError:
+                        continue
+            if not egm_serials_match(live_serial, snap_serial):
+                warnings.append(
+                    f"{len(licence_files)} licence file(s) skipped — restore only "
+                    "when the snapshot serial matches this EGM "
+                    f"(live {live_serial!r} vs snapshot {snap_serial!r})."
+                )
+            elif live_wibu and snap_wibu and not licensee_ids_match(
+                live_wibu, snap_wibu
+            ):
+                warnings.append(
+                    f"{len(licence_files)} licence file(s) skipped — snapshot "
+                    f"LicenseeId {snap_wibu} is not the WIBU on this EGM "
+                    f"({live_wibu})."
+                )
+            elif live_has_licence(dest_root):
+                warnings.append(
+                    f"{len(licence_files)} licence file(s) will not be written — "
+                    "the live licence stays unchanged so 10.1 ↔ 10.2 restore "
+                    "cannot corrupt it."
+                )
+            else:
+                warnings.append(
+                    f"{len(licence_files)} licence file(s) will be restored because "
+                    "none exist on this EGM and the snapshot serial matches."
+                )
+        from config_scanner.software_compat import software_version_mismatch_warning
+
+        mismatch = software_version_mismatch_warning(build_info, resolved)
+        if mismatch:
+            warnings.append(mismatch)
+        try:
+            from config_scanner.software_compat import (
+                live_ruleta_major_minor_for_target,
+                resolve_software_pack_for_snapshot,
+            )
+            from config_scanner.transition_preflight import (
+                analyze_transition,
+                warning_messages,
+            )
+
+            pack = resolve_software_pack_for_snapshot(
+                build_info,
+                resolved,
+                snapshot_dir=snapshot_dir,
+                tool_root=self.root,
+            )
+            dest_ruleta = scan_target_path(resolved) / "ruleta"
+            live_mm = live_ruleta_major_minor_for_target(resolved)
+            findings = analyze_transition(
+                snapshot_info=build_info,
+                dest_major_minor=live_mm,
+                content_root=content_root,
+                pack=pack,
+                dest_ruleta=dest_ruleta if dest_ruleta.is_dir() else None,
+                write_scope=write_scope,
+            )
+            warnings.extend(warning_messages(findings))
+        except (OSError, ValueError, TypeError):
+            pass
+        if write_scope in {"full_software", "binaries_only"}:
+            try:
+                from config_scanner.software_compat import cabinet_host_for_scan_target
+                from config_scanner.stack_restart import plan_stack_restart
+                from network.ruleta_stack_probe import dest_ruleta_file_locked
+
+                host = cabinet_host_for_scan_target(resolved)
+                dest_ruleta = scan_target_path(resolved) / "ruleta"
+                if (
+                    plan_stack_restart(resolved) is not None
+                    and dest_ruleta.is_dir()
+                    and dest_ruleta_file_locked(dest_ruleta)
+                ):
+                    warnings.append(
+                        "Ruleta middleware DLL is in use now — Kill-All runs "
+                        "immediately after you confirm, before any files are written."
+                    )
+            except (OSError, ValueError, TypeError):
+                pass
+        try:
+            from config_scanner.ruleta_compat import plan_ruleta_compat
+
+            dest_for_plan = scan_target_path(resolved)
+            plan = plan_ruleta_compat(dest_for_plan)
+            if plan.hold_start:
+                warnings.append(plan.reason)
+                if plan.bypass:
+                    warnings.append(plan.bypass)
+        except (OSError, ValueError, TypeError):
+            pass
         return warnings
+
+    def snapshot_apply_refuses(
+        self,
+        snapshot_name: str,
+        scan_target: str,
+        write_scope: str = "full",
+        *,
+        defer_lock_check: bool = False,
+    ) -> list[str]:
+        """Hard stops — restore must not continue.
+
+        ``defer_lock_check``: Kill-All runs right after confirm, so a locked
+        middleware DLL is not a hard stop here (it is rechecked after stop).
+        """
+        from config_scanner.transition_preflight import refuse_messages
+        from config_scanner.write_scope import WriteScope
+
+        snap_root = snapshots_path(self.root)
+        snapshot_dir = snap_root / snapshot_name
+        if not snapshot_dir.is_dir():
+            return []
+        try:
+            from config_scanner.build_version import (
+                read_machine_serial_from_target,
+                scan_target_path,
+            )
+            from config_scanner.dest_preflight import (
+                goldclub_dest_writable,
+                restore_target_hint,
+            )
+            from config_scanner.machine_identity import egm_serials_match
+            from config_scanner.software_compat import (
+                live_ruleta_major_minor_for_target,
+                resolve_software_pack_for_snapshot,
+            )
+            from config_scanner.transition_preflight import analyze_transition
+
+            build_info = load_build_info(snapshot_dir)
+            pack = resolve_software_pack_for_snapshot(
+                build_info,
+                scan_target,
+                snapshot_dir=snapshot_dir,
+                tool_root=self.root,
+            )
+            dest_root = scan_target_path(scan_target)
+            dest_ruleta = dest_root / "ruleta"
+            findings = analyze_transition(
+                snapshot_info=build_info,
+                dest_major_minor=live_ruleta_major_minor_for_target(scan_target),
+                content_root=snapshot_content_root(snapshot_dir),
+                pack=pack,
+                dest_ruleta=dest_ruleta if dest_ruleta.is_dir() else None,
+                write_scope=write_scope,
+            )
+            refuses = list(refuse_messages(findings))
+
+            ok, writable_msg = goldclub_dest_writable(dest_root)
+            if not ok and writable_msg:
+                refuses.append(writable_msg)
+
+            snap_serial = (build_info.machine_serial or "").strip() or None
+            live_serial = read_machine_serial_from_target(scan_target)
+            scope = WriteScope(write_scope)
+            serial_sensitive = scope in {
+                WriteScope.FULL,
+                WriteScope.FULL_SOFTWARE,
+                WriteScope.BINARIES_ONLY,
+            }
+            if (
+                serial_sensitive
+                and snap_serial
+                and live_serial
+                and not egm_serials_match(live_serial, snap_serial)
+            ):
+                hint = restore_target_hint(
+                    snapshot_game_drive=build_info.game_drive,
+                    live_serial=live_serial,
+                    snapshot_serial=snap_serial,
+                )
+                body = (
+                    f"EGM serial mismatch: live {live_serial!r} vs snapshot "
+                    f"{snap_serial!r}. Restore to machine requires the same "
+                    "cabinet or the correct mounted disk."
+                )
+                if hint:
+                    body += f" {hint}"
+                refuses.append(body)
+
+            if scope in {WriteScope.FULL_SOFTWARE, WriteScope.BINARIES_ONLY}:
+                from config_scanner.software_compat import cabinet_host_for_scan_target
+                from network.ruleta_stack_probe import preflight_remote_software_swap
+
+                host = cabinet_host_for_scan_target(scan_target)
+                if host and host != "local":
+                    refuses.extend(
+                        preflight_remote_software_swap(
+                            host,
+                            dest_ruleta,
+                            defer_lock_check=True,
+                        )
+                    )
+                elif dest_ruleta.is_dir():
+                    from network.ruleta_stack_probe import dest_ruleta_swap_writable
+
+                    swap_ok, swap_msg = dest_ruleta_swap_writable(
+                        dest_ruleta, check_dll_lock=not defer_lock_check
+                    )
+                    if not swap_ok and swap_msg:
+                        refuses.append(swap_msg)
+
+            return refuses
+        except (OSError, ValueError, TypeError):
+            return []
+
+    def resolve_restore_scan_target(
+        self,
+        snapshot_name: str,
+        scan_target: str,
+    ) -> tuple[str, str | None]:
+        """Pick a writable cabinet path when the UI still points at the wrong disk."""
+        from config_scanner.dest_preflight import resolve_restore_scan_target
+        from config_scanner.scanner import load_build_info
+
+        snap_dir = snapshots_path(self.root) / snapshot_name
+        if not snap_dir.is_dir():
+            return scan_target, None
+        try:
+            build_info = load_build_info(snap_dir)
+        except (OSError, ValueError, TypeError):
+            return scan_target, None
+        return resolve_restore_scan_target(
+            scan_target,
+            snapshot_game_drive=build_info.game_drive,
+            snapshot_serial=build_info.machine_serial,
+        )
+
+    def count_scoped_snapshot_files(
+        self,
+        snapshot_name: str,
+        write_scope: str = "full",
+    ) -> int:
+        """How many restorable archived files match the write scope.
+
+        Counts only paths that exist under the snapshot ``files/`` tree (not
+        bare manifest entries whose archive copy was skipped).
+        """
+        from config_scanner.write_scope import filter_relative_paths
+
+        snapshot_dir = snapshots_path(self.root) / snapshot_name
+        if not snapshot_dir.is_dir():
+            return 0
+        content_root = snapshot_content_root(snapshot_dir)
+        if content_root is None:
+            return 0
+        manifest = load_manifest(snapshot_dir)
+        paths = filter_relative_paths(
+            [entry.relative_path for entry in manifest.files],
+            write_scope,
+        )
+        present = 0
+        for rel in paths:
+            if (content_root / Path(rel.replace("\\", "/"))).is_file():
+                present += 1
+        return present
+
+    def capture_rollback_trial_bind(
+        self,
+        snapshot_name: str,
+        scan_target: str | None = None,
+    ) -> list[str]:
+        """Save live LLAVE trial files into a presave / rollback snapshot."""
+        from config_scanner.build_version import scan_target_path
+        from roulette_trial import capture_trial_state_for_rollback
+
+        resolved = self.prepare_for_target(scan_target)
+        dest = scan_target_path(resolved)
+        snap_dir = snapshots_path(self.root) / snapshot_name
+        if not snap_dir.is_dir():
+            raise FileNotFoundError(f"Snapshot not found: {snapshot_name}")
+        return capture_trial_state_for_rollback(dest, snap_dir)
 
     def apply_snapshot_to_target(
         self,
         snapshot_name: str,
         scan_target: str | None = None,
+        *,
+        write_scope: str = "full",
+        only_changed_relative_paths: list[str] | tuple[str, ...] | None = None,
+        is_revert: bool = False,
     ) -> ApplySnapshotResult:
-        """Write archived snapshot files back to the live scan target."""
+        """Write archived snapshot files back to the live scan target.
+
+        ``write_scope``: ``full`` | ``hardware`` | ``software`` |
+        ``no_paytable`` | ``full_software`` | ``binaries_only`` — filters
+        which archived paths are restored. Serialport layout/locations are
+        never written. Licence XML is never overwritten when a live licence
+        exists. A different dongle is never written. ``full_software``
+        pushes the matching Ruleta pack from ``software_versions`` first
+        (hard fail if that copy fails), then restores config so paytables
+        land on the matching exe. ``binaries_only`` pushes that pack and
+        keeps this cabinet's setup / switches / SAS / licence.
+
+        When ``only_changed_relative_paths`` is set (compare diffs), further
+        narrows to that set (still scope-filtered).
+        """
+        from config_scanner.write_scope import WriteScope, filter_relative_paths
+
         snap_root = snapshots_path(self.root)
         snapshot_dir = snap_root / snapshot_name
         if not snapshot_dir.is_dir():
@@ -580,13 +1032,219 @@ class ConfigScannerService:
                 f"Cannot write snapshot: profile mismatch ({left!r} snapshot vs {right!r} target)."
             )
 
-        restore = restore_manifest_files(snapshot_dir, manifest, resolved_target)
+        try:
+            scope = WriteScope(write_scope)
+        except ValueError as exc:
+            raise ValueError(
+                f"Unknown write scope {write_scope!r}; use full, hardware, "
+                "software, no_paytable, full_software, or binaries_only."
+            ) from exc
+
+        if scope in {WriteScope.FULL_SOFTWARE, WriteScope.BINARIES_ONLY}:
+            from config_scanner.software_compat import SoftwarePushError
+
+            refuses = self.snapshot_apply_refuses(
+                snapshot_name, resolved_target, write_scope=scope.value
+            )
+            if refuses:
+                raise SoftwarePushError("\n".join(refuses))
+
+        candidates = [entry.relative_path for entry in manifest.files]
+        changed_norm: set[str] | None = None
+        if only_changed_relative_paths is not None:
+            changed_norm = {
+                p.replace("\\", "/").strip("/") for p in only_changed_relative_paths
+            }
+            candidates = [
+                p for p in candidates if p.replace("\\", "/").strip("/") in changed_norm
+            ]
+        allowed = filter_relative_paths(candidates, scope)
+
+        from config_scanner.build_version import (
+            read_machine_serial_from_target,
+            scan_target_path,
+        )
+        from config_scanner.machine_identity import (
+            egm_serials_match,
+            is_licence_path,
+        )
+        from config_scanner.write_verify import (
+            capture_pre_write_state,
+            verify_snapshot_restore,
+        )
+
+        from config_scanner.paytable_compat import (
+            filter_incompatible_paytable_restore_paths,
+            live_ruleta_major_minor,
+        )
+
+        dest_root = scan_target_path(resolved_target)
+        previous_live_mm = live_ruleta_major_minor(dest_root)
+        cleared_trial_during_push = False
+
+        extra_notes: list[str] = []
+        if scope is WriteScope.BINARIES_ONLY:
+            return self._apply_binaries_only_to_target(
+                snapshot_name=snapshot_name,
+                snapshot_dir=snapshot_dir,
+                manifest=manifest,
+                build_info=build_info,
+                dest_profile=dest_profile,
+                resolved_target=resolved_target,
+                dest_root=dest_root,
+                candidates=candidates,
+                is_revert=is_revert,
+            )
+        if scope is WriteScope.FULL_SOFTWARE:
+            from config_scanner.software_compat import push_matching_ruleta_software
+
+            cleared_trial_during_push = not is_revert
+            extra_notes.append(
+                push_matching_ruleta_software(
+                    build_info,
+                    resolved_target,
+                    snapshot_dir=snapshot_dir,
+                    tool_root=self.root,
+                    clear_trial_tokens=cleared_trial_during_push,
+                )
+            )
+            snap_mm_early = None
+            try:
+                from config_scanner.software_compat import snapshot_ruleta_major_minor
+
+                snap_mm_early = snapshot_ruleta_major_minor(build_info)
+            except OSError:
+                pass
+            if (
+                cleared_trial_during_push
+                and previous_live_mm
+                and snap_mm_early
+                and previous_live_mm.strip() != snap_mm_early.strip()
+            ):
+                from roulette_trial import clear_ruleta_var_arhiv
+
+                wiped = clear_ruleta_var_arhiv(dest_root)
+                if wiped:
+                    extra_notes.append(
+                        "Cleared stale ruleta/var + arhiv after version transfer "
+                        f"({len(wiped)} path(s); Play1/PaytableId schema rebuilds on next start)."
+                    )
+
+        paytable_skip_notes: list[str] = []
+        if scope is not WriteScope.FULL_SOFTWARE:
+            allowed, paytable_skip_notes = filter_incompatible_paytable_restore_paths(
+                allowed, dest_root
+            )
+        full_like = scope in (
+            WriteScope.FULL,
+            WriteScope.FULL_SOFTWARE,
+            WriteScope.NO_PAYTABLE,
+        )
+        if full_like:
+            live_serial = read_machine_serial_from_target(resolved_target)
+            snap_serial = (build_info.machine_serial or "").strip() or None
+            if egm_serials_match(live_serial, snap_serial):
+                licence_extra: list[str] = []
+                content_root = snapshot_content_root(snapshot_dir)
+                for entry in manifest.files:
+                    rel = entry.relative_path.replace("\\", "/").strip("/")
+                    if not is_licence_path(rel):
+                        continue
+                    if changed_norm is not None and rel not in changed_norm:
+                        continue
+                    archived = content_root / Path(rel) if content_root else None
+                    if archived is None or not archived.is_file():
+                        continue
+                    licence_extra.append(entry.relative_path)
+                if licence_extra:
+                    allowed = list(dict.fromkeys([*allowed, *licence_extra]))
+
+        if not allowed:
+            raise ValueError(
+                f"No files match write scope {scope.value!r} in snapshot {snapshot_name}."
+                + (
+                    " Narrowed to compare changes only."
+                    if only_changed_relative_paths is not None
+                    else ""
+                )
+            )
+
+        pre_write = capture_pre_write_state(
+            dest_root,
+            manifest,
+            allowed_paths=set(allowed),
+        )
+
+        restore = restore_manifest_files(
+            snapshot_dir,
+            manifest,
+            resolved_target,
+            relative_path_allow=set(allowed),
+        )
         if restore.errors:
             sample = "; ".join(restore.errors[:3])
             extra = f" (+{len(restore.errors) - 3} more)" if len(restore.errors) > 3 else ""
             raise OSError(
                 f"Wrote {restore.written_count} files but {len(restore.errors)} failed: {sample}{extra}"
             )
+        if restore.written_count <= 0:
+            missing = restore.missing_count
+            raise OSError(
+                f"Wrote 0 files for write scope {scope.value!r} in snapshot {snapshot_name}"
+                + (f" ({missing} scoped path(s) missing from archive)." if missing else ".")
+            )
+
+        verify = verify_snapshot_restore(
+            snapshot_dir,
+            manifest,
+            dest_root,
+            written_paths=restore.written_paths,
+            pre_write=pre_write,
+        )
+        if not verify.ok:
+            sample = "; ".join(verify.errors[:3])
+            extra = f" (+{len(verify.errors) - 3} more)" if len(verify.errors) > 3 else ""
+            raise OSError(
+                "Post-write verification failed after restore: "
+                f"{sample}{extra}"
+            )
+
+        from config_scanner.ruleta_compat import apply_ruleta_compat_after_restore
+        from config_scanner.software_compat import snapshot_ruleta_major_minor
+        from roulette_trial import restore_trial_bind_for_snapshot
+
+        snap_mm = snapshot_ruleta_major_minor(build_info)
+        trial_notes, trial_restored = restore_trial_bind_for_snapshot(
+            dest_root,
+            snapshot_dir,
+            allow_gci_backup=not is_revert and not cleared_trial_during_push,
+            snapshot_major_minor=snap_mm,
+            previous_live_major_minor=previous_live_mm,
+        )
+        compat_notes = apply_ruleta_compat_after_restore(
+            dest_root,
+            snapshot_major_minor=snap_mm,
+            previous_live_major_minor=previous_live_mm,
+            skip_trial_reset=is_revert or trial_restored,
+        )
+
+        transfer_note: list[str] = []
+        if (
+            cleared_trial_during_push
+            and previous_live_mm
+            and snap_mm
+            and previous_live_mm.strip() != snap_mm.strip()
+            and not trial_restored
+        ):
+            transfer_note.append(
+                "Trial bind cleared for Ruleta "
+                f"{previous_live_mm} -> {snap_mm}. After stack start expect ERROR 99 "
+                "once — enter the trial password for the displayed System ID (LLAVE)."
+            )
+
+        notes = tuple(
+            paytable_skip_notes + extra_notes + compat_notes + trial_notes + transfer_note
+        )
 
         return ApplySnapshotResult(
             snapshot_name=snapshot_name,
@@ -595,6 +1253,180 @@ class ConfigScannerService:
             written_count=restore.written_count,
             missing_count=restore.missing_count,
             errors=restore.errors,
+            write_scope=scope.value,
+            skipped_count=restore.skipped_count + len(paytable_skip_notes),
+            scoped_file_count=len(allowed),
+            verify_ok=verify.ok,
+            protected_verified=verify.protected_checked,
+            written_verified=verify.written_checked,
+            verify_errors=verify.errors,
+            notes=notes,
+        )
+
+    def _apply_binaries_only_to_target(
+        self,
+        *,
+        snapshot_name: str,
+        snapshot_dir: Path,
+        manifest: object,
+        build_info: object,
+        dest_profile: object,
+        resolved_target: str,
+        dest_root: Path,
+        candidates: list[str],
+        is_revert: bool = False,
+    ) -> ApplySnapshotResult:
+        """Push Ruleta binaries; keep this cabinet's setup/SAS/wheel/licence."""
+        from config_scanner.paytable_compat import (
+            is_10_2_only_paytable_json,
+            live_exe_is_ruleta_10_2,
+            live_ruleta_major_minor,
+        )
+        from config_scanner.ruleta_compat import apply_ruleta_compat_after_restore
+        from config_scanner.software_compat import import_ruleta_binaries_keep_profile
+        from config_scanner.write_scope import WriteScope
+
+        previous_live_mm = live_ruleta_major_minor(dest_root)
+        cleared_trial_during_push = not is_revert
+        extra_notes = import_ruleta_binaries_keep_profile(
+            build_info,
+            resolved_target,
+            snapshot_dir=snapshot_dir,
+            tool_root=self.root,
+            clear_trial_tokens=cleared_trial_during_push,
+        )
+        json_written = 0
+        json_errors: tuple[str, ...] = ()
+        if live_exe_is_ruleta_10_2(live_ruleta_major_minor(dest_root)):
+            json_allow = [path for path in candidates if is_10_2_only_paytable_json(path)]
+            if json_allow:
+                restore = restore_manifest_files(
+                    snapshot_dir,
+                    manifest,
+                    resolved_target,
+                    relative_path_allow=set(json_allow),
+                )
+                json_written = restore.written_count
+                json_errors = restore.errors
+                extra_notes.append(
+                    f"copied {json_written} 10.2 paytable JSON file(s) for the live exe"
+                )
+        from config_scanner.software_compat import snapshot_ruleta_major_minor
+        from roulette_trial import restore_trial_bind_for_snapshot
+
+        snap_mm = snapshot_ruleta_major_minor(build_info)
+        trial_notes, trial_restored = restore_trial_bind_for_snapshot(
+            dest_root,
+            snapshot_dir,
+            allow_gci_backup=not is_revert and not cleared_trial_during_push,
+            snapshot_major_minor=snap_mm,
+            previous_live_major_minor=previous_live_mm,
+        )
+        compat_notes = apply_ruleta_compat_after_restore(
+            dest_root,
+            snapshot_major_minor=snap_mm,
+            previous_live_major_minor=previous_live_mm,
+            skip_trial_reset=is_revert or trial_restored,
+        )
+
+        notes = tuple(extra_notes + compat_notes + trial_notes)
+        profile_label = ""
+        snap_label = getattr(build_info, "profile_label", None)
+        dest_label = getattr(dest_profile, "label", None)
+        if snap_label:
+            profile_label = str(snap_label)
+        elif dest_label:
+            profile_label = str(dest_label)
+        return ApplySnapshotResult(
+            snapshot_name=snapshot_name,
+            target=resolved_target,
+            profile_label=profile_label,
+            written_count=max(1, json_written),
+            missing_count=0,
+            errors=json_errors,
+            write_scope=WriteScope.BINARIES_ONLY.value,
+            skipped_count=0,
+            scoped_file_count=0,
+            verify_ok=not json_errors,
+            notes=notes,
+        )
+
+    def clear_error30_leftovers(self, scan_target: str | None = None) -> list[str]:
+        """Remove foreign XML plus persistent trial tokens; keep live WIBU."""
+        from config_scanner.build_version import scan_target_path
+        from config_scanner.machine_identity import clear_error30_licence_leftovers
+        from roulette_trial import clear_trial_persistent
+
+        resolved = self.prepare_for_target(scan_target)
+        dest = scan_target_path(resolved)
+        removed = clear_error30_licence_leftovers(dest)
+        removed.extend(clear_trial_persistent(dest))
+        return removed
+
+    def read_llave_challenge(self, scan_target: str | None = None):
+        from config_scanner.llave_bind import read_llave_challenge
+
+        return read_llave_challenge(self.prepare_for_target(scan_target))
+
+    def save_trial_password(self, scan_target: str | None, password: str) -> str:
+        from config_scanner.llave_bind import save_trial_password
+
+        path = save_trial_password(self.prepare_for_target(scan_target), password)
+        return str(path)
+
+    def run_llave_auto_enter(self, scan_target: str | None = None) -> tuple[bool, str]:
+        from config_scanner.llave_bind import run_llave_auto_enter
+
+        return run_llave_auto_enter(self.prepare_for_target(scan_target))
+
+    def prepare_seamless_trial_transfer(
+        self,
+        scan_target: str | None,
+        *,
+        snapshot_name: str | None = None,
+    ) -> tuple[bool, str]:
+        from config_scanner.build_version import scan_target_path
+        from config_scanner.scanner import load_build_info
+        from config_scanner.cabinet_trial_prep import prepare_cabinet_for_seamless_transfer
+        from config_scanner.paths import snapshots_path
+
+        resolved = self.prepare_for_target(scan_target)
+        build_info = None
+        if snapshot_name:
+            snap_dir = snapshots_path(self.root) / snapshot_name
+            if snap_dir.is_dir():
+                build_info = load_build_info(snap_dir)
+        serial = (build_info.machine_serial if build_info else None) or None
+        snap_dir = snapshots_path(self.root) / snapshot_name if snapshot_name else None
+        from roulette_trial import snapshot_should_auto_enter_llave
+
+        return prepare_cabinet_for_seamless_transfer(
+            resolved,
+            machine_serial=serial,
+            tool_root=self.root,
+            sync_password=snapshot_should_auto_enter_llave(snap_dir),
+        )
+
+    def ensure_llave_after_stack_start(
+        self,
+        scan_target: str | None,
+        *,
+        snapshot_name: str | None = None,
+    ) -> tuple[bool, str]:
+        from config_scanner.scanner import load_build_info
+        from config_scanner.cabinet_trial_prep import ensure_llave_bound_after_start
+        from config_scanner.paths import snapshots_path
+
+        resolved = self.prepare_for_target(scan_target)
+        serial = None
+        if snapshot_name:
+            snap_dir = snapshots_path(self.root) / snapshot_name
+            if snap_dir.is_dir():
+                serial = load_build_info(snap_dir).machine_serial
+        return ensure_llave_bound_after_start(
+            resolved,
+            machine_serial=serial,
+            tool_root=self.root,
         )
 
     def apply_archived_file_to_target(
@@ -604,6 +1436,17 @@ class ConfigScannerService:
         relative_path: str,
     ) -> ApplyFileResult:
         """Write one archived snapshot file onto the live scan target (create if missing)."""
+        from config_scanner.machine_identity import is_licence_path
+        from config_scanner.write_scope import is_protected_write_path
+
+        if is_protected_write_path(relative_path) and not is_licence_path(relative_path):
+            from config_scanner.write_scope import protected_write_block_reason
+
+            reason = protected_write_block_reason(relative_path) or (
+                "Refusing to write protected path from Config Scanner."
+            )
+            raise ValueError(reason)
+
         resolved_target = self.prepare_for_target(scan_target)
         snapshot_dir = snapshots_path(self.root) / snapshot_name
         if not snapshot_dir.is_dir():
@@ -619,7 +1462,25 @@ class ConfigScannerService:
                 f"Cannot write file: profile mismatch ({left!r} snapshot vs {right!r} target)."
             )
 
+        from config_scanner.build_version import scan_target_path as _scan_target_path
+        from config_scanner.paytable_compat import (
+            is_10_2_only_paytable_json,
+            live_exe_is_ruleta_10_2,
+            live_ruleta_major_minor,
+        )
+        from config_scanner.ruleta_compat import apply_ruleta_compat_after_restore
+
+        dest_root = _scan_target_path(resolved_target)
+        if is_10_2_only_paytable_json(relative_path) and not live_exe_is_ruleta_10_2(
+            live_ruleta_major_minor(dest_root)
+        ):
+            raise ValueError(
+                "Cannot restore 10.2-only paytable JSON onto this Ruleta.exe; "
+                "Config Scanner remaps that name after a full restore instead."
+            )
+
         restore_single_archived_file(snapshot_dir, relative_path, resolved_target)
+        apply_ruleta_compat_after_restore(dest_root)
         return ApplyFileResult(
             relative_path=relative_path,
             snapshot_name=snapshot_name,
@@ -658,6 +1519,23 @@ class ConfigScannerService:
             raise ValueError(
                 "Per-field apply is not supported for line-based text diffs"
             )
+
+        from config_scanner.write_scope import is_protected_write_path
+        from config_scanner.machine_identity import (
+            is_protected_identity_field,
+            protected_identity_field_reason,
+        )
+
+        if is_protected_write_path(relative_path):
+            from config_scanner.write_scope import protected_write_block_reason
+
+            reason = protected_write_block_reason(relative_path) or (
+                "Blocked from Config Scanner write."
+            )
+            raise ValueError(reason)
+
+        if is_protected_identity_field(change.path, relative_path):
+            raise ValueError(protected_identity_field_reason(change.path))
 
         value = resolve_apply_value(change, side)
         if value is None:

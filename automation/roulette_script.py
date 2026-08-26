@@ -58,14 +58,24 @@ def _click(
     }
 
 
-def _append_spin(steps: list[dict[str, Any]], *, click_mode: str) -> None:
+def _append_spin(
+    steps: list[dict[str, Any]],
+    *,
+    click_mode: str,
+    settle_ms: int = 200,
+    clicks: int = 1,
+    click_ms: int = 130,
+    gap_ms: int = 160,
+) -> None:
     # Brief pause so START finishes enabling after the open-window settle
-    # (countdown disc / bottom-right button stay grey for ~1s after the log).
-    steps.append({"type": "sleep", "ms": 200})
+    # (countdown disc / bottom-right button stay grey briefly after the log).
+    if settle_ms > 0:
+        steps.append({"type": "sleep", "ms": int(settle_ms)})
     mode = click_mode if click_mode != "post_sync" else "post"
-    for _ in range(2):
-        steps.append(_click(SPIN_BUTTON, ms=130, mode=mode))
-        steps.append({"type": "sleep", "ms": 160})
+    for _ in range(max(1, int(clicks))):
+        steps.append(_click(SPIN_BUTTON, ms=int(click_ms), mode=mode))
+        if gap_ms > 0:
+            steps.append({"type": "sleep", "ms": int(gap_ms)})
 
 
 def script_for_random_bets_and_spin(
@@ -76,22 +86,25 @@ def script_for_random_bets_and_spin(
     press_spin: bool = True,
     seed: int | None = None,
     click_mode: str = "window",
+    aggressive: bool = False,
 ) -> dict[str, Any]:
     """
-    One betting-phase script: select a chip, place random bets, press START.
+    One betting-phase script: select a chip, place random bets, press START once.
 
     Default ``click_mode=window`` uses SendInput absolute coords (works on Alegro
     ``godot`` when MainWindowHandle is 0). Use ``post`` for invisible PostMessage.
+    ``aggressive=True`` packs more bets with shorter gaps and a single START tap.
     """
     rng = random.Random(seed)
+    focus_ms = 80 if aggressive else 250
     steps: list[dict[str, Any]] = [
-        {"type": "focus_process", "value": ROULETTE_FOCUS_PROCESS, "ms": 250},
+        {"type": "focus_process", "value": ROULETTE_FOCUS_PROCESS, "ms": focus_ms},
     ]
 
     chip = DEFAULT_CHIP
     chip_mode = "post_sync" if click_mode.startswith("post") else "window"
-    steps.append(_click(chip, ms=140, mode=chip_mode))
-    steps.append({"type": "sleep", "ms": 120})
+    steps.append(_click(chip, ms=90 if aggressive else 140, mode=chip_mode))
+    steps.append({"type": "sleep", "ms": 35 if aggressive else 120})
 
     pool: list[ClickTarget] = [NUMBER_SPOTS[n] for n in range(37)]
     if include_outside:
@@ -101,14 +114,22 @@ def script_for_random_bets_and_spin(
     picks = [rng.choice(pool) for _ in range(n_bets)]
     mode = click_mode if click_mode != "post_sync" else "post"
     for spot in picks:
-        steps.append(_click(spot, ms=90, mode=mode))
-        steps.append({"type": "sleep", "ms": int(rng.uniform(60, 140))})
+        steps.append(_click(spot, ms=45 if aggressive else 90, mode=mode))
+        gap = int(rng.uniform(20, 45)) if aggressive else int(rng.uniform(60, 140))
+        steps.append({"type": "sleep", "ms": gap})
 
     if press_spin:
-        _append_spin(steps, click_mode=click_mode)
+        _append_spin(
+            steps,
+            click_mode=click_mode,
+            settle_ms=40 if aggressive else 200,
+            clicks=1,
+            click_ms=90 if aggressive else 130,
+            gap_ms=0,
+        )
 
     return {
-        "defaultKeyDelayMs": 35,
+        "defaultKeyDelayMs": 20 if aggressive else 35,
         "steps": steps,
         "meta": {
             "chip": chip.name,
@@ -117,6 +138,7 @@ def script_for_random_bets_and_spin(
             "click_mode": click_mode,
             "strategy": "random",
             "stake_units": n_bets,
+            "aggressive": aggressive,
         },
     }
 
@@ -178,7 +200,7 @@ def script_for_board_scan(
     steps.append({"type": "sleep", "ms": 100})
 
     if press_spin:
-        _append_spin(steps, click_mode=click_mode)
+        _append_spin(steps, click_mode=click_mode, clicks=1)
 
     return {
         "defaultKeyDelayMs": 35,
@@ -200,19 +222,25 @@ def script_for_strategy_plan(
     *,
     press_spin: bool = True,
     click_mode: str = "window",
+    fast: bool = False,
 ) -> dict[str, Any]:
     """
     Build a click script that places *plan* placements (multi-chip capable) then START.
+
+    ``fast=True`` (strategy loops): single cancel, single chip arm, short gaps,
+    START mashed immediately after the last cloth click so the open window ends
+    as soon as the game allows.
     """
+    focus_ms = 80 if fast else 250
     steps: list[dict[str, Any]] = [
-        {"type": "focus_process", "value": ROULETTE_FOCUS_PROCESS, "ms": 250},
+        {"type": "focus_process", "value": ROULETTE_FOCUS_PROCESS, "ms": focus_ms},
     ]
     chip_mode = "post_sync" if click_mode.startswith("post") else "window"
     click_m = click_mode if click_mode != "post_sync" else "post"
-    # Clear leftover cloth bets (click twice — first may only focus).
-    for _ in range(2):
-        steps.append(_click(CANCEL_ALL_BUTTON, ms=100, mode=click_m))
-        steps.append({"type": "sleep", "ms": 120})
+    cancel_n = 1 if fast else 2
+    for _ in range(cancel_n):
+        steps.append(_click(CANCEL_ALL_BUTTON, ms=70 if fast else 100, mode=click_m))
+        steps.append({"type": "sleep", "ms": 40 if fast else 120})
     bet_labels: list[str] = []
     last_chip_name: str | None = None
 
@@ -221,22 +249,32 @@ def script_for_strategy_plan(
             continue
         for chip, count in decompose_units(placement.units):
             if chip.name != last_chip_name:
-                # Double-select chip so a missed first click cannot leave prior denom.
-                steps.append(_click(chip, ms=120, mode=chip_mode))
-                steps.append({"type": "sleep", "ms": 80})
-                steps.append(_click(chip, ms=100, mode=chip_mode))
-                steps.append({"type": "sleep", "ms": 100})
+                steps.append(_click(chip, ms=90 if fast else 120, mode=chip_mode))
+                steps.append({"type": "sleep", "ms": 35 if fast else 80})
+                if not fast:
+                    steps.append(_click(chip, ms=100, mode=chip_mode))
+                    steps.append({"type": "sleep", "ms": 100})
                 last_chip_name = chip.name
             for _ in range(count):
-                steps.append(_click(placement.spot, ms=70, mode=click_m))
-                steps.append({"type": "sleep", "ms": 70})
+                steps.append(_click(placement.spot, ms=45 if fast else 70, mode=click_m))
+                steps.append({"type": "sleep", "ms": 25 if fast else 70})
                 bet_labels.append(f"{placement.spot.name}x{chip.name}")
 
     if press_spin:
-        _append_spin(steps, click_mode=click_mode)
+        if fast:
+            _append_spin(
+                steps,
+                click_mode=click_mode,
+                settle_ms=40,
+                clicks=1,
+                click_ms=90,
+                gap_ms=0,
+            )
+        else:
+            _append_spin(steps, click_mode=click_mode, clicks=1)
 
     return {
-        "defaultKeyDelayMs": 35,
+        "defaultKeyDelayMs": 20 if fast else 35,
         "steps": steps,
         "meta": {
             "chip": last_chip_name or DEFAULT_CHIP.name,
@@ -246,6 +284,7 @@ def script_for_strategy_plan(
             "strategy": plan.label,
             "stake_units": plan.stake_units,
             "notes": plan.notes,
+            "fast": fast,
         },
     }
 
@@ -316,3 +355,4 @@ def script_for_slider_set(
             "gesture": "drag" if use_drag else "tap",
         },
     }
+

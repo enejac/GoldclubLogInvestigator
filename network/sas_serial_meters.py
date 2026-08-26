@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 # Verify-table meter ids polled by the IGT SAS tester accounting fetch (lab default set).
 DEFAULT_6F_VERIFY_POLL_CODES: tuple[str, ...] = (
@@ -41,14 +44,40 @@ _IGT_COM_BLOCKER_EXE_NAMES: tuple[str, ...] = (
     "SASHost.exe",
     "SASComm.exe",
     "IGTSASTest.exe",
+    "igtSASTester.exe",
+    "SASTester.exe",
     "SlotSAS.exe",
+    # IGT "SAS Test Program" (lab build observed as sastestx_cwh.exe).
+    "sastestx_cwh.exe",
+)
+# Prefix match (casefolded) for IGT SAS Test Program variants — never a
+# mid-string match (lsass.exe must not count).
+_IGT_COM_BLOCKER_PREFIXES: tuple[str, ...] = (
+    "sastest",
 )
 # sastest.ini [SAS Protocols] Wakeup Delay = 2, Poll Rate = 200 (ms)
 DEFAULT_WAKEUP_DELAY_S = 2.0
 # IGT SAS tester (sastest.ini Poll Rate = 200 ms): steady GP cadence, not long sync floods.
 DEFAULT_IGT_POLL_INTERVAL_S = 0.2
-DEFAULT_IGT_LINK_SYNC_POLLS = 10
-DEFAULT_IGT_INTER_BATCH_POLLS = 3
+# Door-open / locked EGMs often need many GP clicks before the first real RX
+# (IGT "Quick Commands" persistence). 10 polls (~2 s) was too short on lab .90.
+DEFAULT_IGT_LINK_SYNC_POLLS = 40  # ~8 s @ 200 ms
+DEFAULT_IGT_LINK_SYNC_POLLS_QUICK = 25  # prefetch first pass (~5 s)
+DEFAULT_IGT_LINK_SYNC_POLLS_PERSISTENT = 100  # full / Refresh (~20 s)
+# Re-capture on a link a previous fetch already answered $6F on. The wakeup
+# flood is only needed to bring a sleeping/locked EGM up; repeating it makes
+# every Auto-fetch round pay ~3 s for nothing (lab .90 never reaches a stable
+# GP, so the whole allowance is always spent).
+DEFAULT_IGT_LINK_SYNC_POLLS_WARM = 3  # ~0.6 s
+DEFAULT_IGT_LINK_SYNC_POLLS_PREFETCH = 15  # ~3 s, cold prefetch
+# GP polls in the gap between two 6F batches. This gap is pure link cadence and
+# it dominated the capture: 5 batches at 3 polls spent ~4.8 s idling the wire.
+# Swept live on .90 (GST20664) with identical meter payloads each time:
+#   3 polls -> 7.3 s, clean      2 polls -> 5.9 s, clean
+#   1 poll  -> 8.5 s, and *slower*, because the link missed a batch and the
+#              retry cost more than the two polls saved.
+# So 2 is the floor that still holds the link between batches.
+DEFAULT_IGT_INTER_BATCH_POLLS = 2
 DEFAULT_IGT_PORT_SETTLE_S = 0.5
 DEFAULT_6F_BATCH_READ_S = 3.0
 DEFAULT_6F_BATCH_RETRIES = 4
@@ -63,6 +92,52 @@ AUTO_WIRE_BAUD_RTS_COMBOS: tuple[tuple[str, int, bool], ...] = (
     ("mux", 921600, True),
     ("mux", 921600, False),
 )
+# Roulette CommCtrlSAS path: MUX @ 921600 on cabinet COM5 (host cable often COM4).
+ROULETTE_WIRE_BAUD_RTS_COMBOS: tuple[tuple[str, int, bool], ...] = (
+    ("mux", 921600, False),
+    ("mux", 921600, True),
+    ("raw", 19200, False),
+    ("raw", 19200, True),
+)
+
+
+def wire_baud_combos_for_game_kind(
+    game_kind: str | None = None,
+    *,
+    on_cabinet: bool = False,
+) -> tuple[tuple[str, int, bool], ...]:
+    """Wire/baud probe order for SAS meter fetch.
+
+    * Slot (and roulette **host** cable into the MUX upstream): IGT raw @19200 first.
+      Same path AFT documents for the tester COM into the MUX — do not flip this
+      or slot + workstation roulette capture break (prefetch only tries 2 combos).
+    * Roulette **on the EGM**: CommCtrl MUX @921600 first (cabinet COM5).
+    """
+    kind = (game_kind or "slot").strip().lower()
+    if kind == "roulette" and on_cabinet:
+        return ROULETTE_WIRE_BAUD_RTS_COMBOS
+    return AUTO_WIRE_BAUD_RTS_COMBOS
+
+
+def link_sync_polls_for_capture(
+    *,
+    quick: bool,
+    warm: bool,
+) -> int:
+    """GP wakeup budget for one capture, in 200 ms polls.
+
+    ``warm`` means a previous capture on this port already got $6F replies, so
+    the EGM is awake and the wakeup flood is dead time. Auto fetch re-captures
+    every time the cabinet writes meters, and paying the cold budget on each
+    round is what made a round take tens of seconds.
+    """
+    if warm:
+        return DEFAULT_IGT_LINK_SYNC_POLLS_WARM
+    if quick:
+        return DEFAULT_IGT_LINK_SYNC_POLLS_PREFETCH
+    return DEFAULT_IGT_LINK_SYNC_POLLS_PERSISTENT
+
+
 # Legacy 2-tuple view for callers/tests.
 AUTO_WIRE_BAUD_COMBOS: tuple[tuple[str, int], ...] = tuple(
     (mode, baud) for mode, baud, _rts in AUTO_WIRE_BAUD_RTS_COMBOS
@@ -142,7 +217,32 @@ def _com_sort_key(device: str) -> tuple[int, int]:
     return (0, int(m.group(1))) if m else (1, 0)
 
 
-def enumerate_serial_ports() -> list[SerialPortInfo]:
+_PORTS_CACHE_TTL_S = 2.0
+_ports_cache_at: float = 0.0
+_ports_cache_value: list[SerialPortInfo] = []
+_ports_cache_valid: bool = False
+
+
+def enumerate_serial_ports(
+    *, force_refresh: bool = False, cached_only: bool = False
+) -> list[SerialPortInfo]:
+    """List COM devices; short TTL cache so the UI thread does not re-enter list_ports.
+
+    ``cached_only`` never calls ``list_ports.comports()`` — empty when the cache
+    has not been filled yet. Startup prefetch uses it so a hung USB/Bluetooth
+    enumerator cannot freeze the first paint.
+    """
+    global _ports_cache_at, _ports_cache_value, _ports_cache_valid
+    now = time.monotonic()
+    if cached_only:
+        return list(_ports_cache_value) if _ports_cache_valid else []
+    if (
+        not force_refresh
+        and _ports_cache_valid
+        and (now - _ports_cache_at) < _PORTS_CACHE_TTL_S
+    ):
+        return list(_ports_cache_value)
+
     serial = _require_pyserial()
     from serial.tools import list_ports  # type: ignore
 
@@ -159,7 +259,10 @@ def enumerate_serial_ports() -> list[SerialPortInfo]:
             )
         )
     out.sort(key=lambda info: _com_sort_key(info.device))
-    return out
+    _ports_cache_at = now
+    _ports_cache_value = list(out)
+    _ports_cache_valid = True
+    return list(out)
 
 
 def _serial_port_score(info: SerialPortInfo) -> int:
@@ -175,8 +278,15 @@ def _serial_port_score(info: SerialPortInfo) -> int:
 def pick_sas_com_port(
     requested: str | None,
     available: list[SerialPortInfo] | None = None,
+    *,
+    game_kind: str | None = None,
+    on_cabinet: bool = False,
 ) -> str | None:
-    """Pick the best available COM device for SAS meter fetch."""
+    """Pick the best available COM device for SAS meter fetch.
+
+    On a roulette EGM prefer the Online MUX (typically COM5). Host / slot keep
+    preferring the IGT host cable (COM4) and still skip ticket printers.
+    """
     ports = available if available is not None else enumerate_serial_ports()
     if not ports:
         return None
@@ -186,6 +296,29 @@ def pick_sas_com_port(
         req_info = next(p for p in ports if p.device.upper() == req)
         if _serial_port_score(req_info) >= 0 or len(ports) == 1:
             return by_name[req]
+
+    kind = (game_kind or "").strip().lower()
+    if kind == "roulette" and on_cabinet:
+        mux_pref = normalize_com_port("COM5")
+        if mux_pref in by_name:
+            mux_info = next(p for p in ports if p.device.upper() == mux_pref)
+            if _serial_port_score(mux_info) >= 0:
+                return by_name[mux_pref]
+        scored_mux: list[tuple[int, str]] = []
+        for info in ports:
+            blob = f"{info.description} {info.hwid}".lower()
+            if "ticket" in blob or "printer" in blob:
+                continue
+            bonus = 0
+            if "mux" in blob or "online" in blob:
+                bonus += 5
+            if info.device.upper() == mux_pref:
+                bonus += 3
+            scored_mux.append((_serial_port_score(info) + bonus, info.device))
+        scored_mux.sort(key=lambda item: (-item[0], _com_sort_key(item[1])))
+        if scored_mux and scored_mux[0][0] > 0:
+            return scored_mux[0][1]
+
     default = normalize_com_port(DEFAULT_SAS_COM_PORT)
     if default in by_name:
         default_info = next(p for p in ports if p.device.upper() == default)
@@ -197,10 +330,17 @@ def pick_sas_com_port(
     for info in ports:
         scored.append((_serial_port_score(info), info.device))
     scored.sort(key=lambda item: (-item[0], _com_sort_key(item[1])))
-    if scored and scored[0][0] > 0:
+    if not scored:
+        return None
+    if scored[0][0] >= 0:
         return scored[0][1]
-    if scored:
-        return scored[0][1]
+    # Everything left scored negative — those are ticket printers and other known
+    # non-SAS devices. Opening one yields no RX at best and disturbs the printer
+    # at worst, so report "no SAS port" instead of guessing.
+    logger.debug(
+        "no SAS-capable COM port among %s",
+        ", ".join(f"{dev}({score})" for score, dev in scored),
+    )
     return None
 
 
@@ -216,25 +356,105 @@ def sas_com_blocker_process_names() -> tuple[str, ...]:
     return _IGT_COM_BLOCKER_EXE_NAMES
 
 
-def find_running_sas_com_blockers() -> list[str]:
-    """Return IGT SAS tester process image names currently running (best effort)."""
+_BLOCKER_CACHE_TTL_S = 3.0
+_blocker_cache_at: float = 0.0
+_blocker_cache_value: list[str] = []
+_blocker_cache_valid: bool = False
+
+
+def sas_com_blocker_cache_ready() -> bool:
+    """True when ``find_running_sas_com_blockers`` has a real (possibly empty) verdict."""
+    return bool(_blocker_cache_valid)
+
+
+def _win_hidden_run(cmd: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    """Run a console helper without flashing a cmd window (windowed Qt apps)."""
+    run_kw: dict = {
+        "capture_output": True,
+        "text": True,
+        "errors": "replace",
+        "timeout": timeout,
+        "check": False,
+    }
+    if sys.platform == "win32":
+        run_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.run(cmd, **run_kw)
+
+
+def _tasklist_image_names(stdout: str) -> set[str]:
+    """Parse ``tasklist /FO CSV /NH`` image names (exact, casefolded)."""
+    names: set[str] = set()
+    for raw in (stdout or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        # CSV: "name.exe","1234","Session","0","1,234 K"
+        if line.startswith('"'):
+            name = line.split('"', 2)[1].strip()
+        else:
+            name = line.split()[0].strip() if line.split() else ""
+        if name:
+            names.add(name.casefold())
+    return names
+
+
+def find_running_sas_com_blockers(
+    *,
+    force_refresh: bool = False,
+    cached_only: bool = False,
+) -> list[str]:
+    """Return IGT SAS tester process image names currently running (best effort).
+
+    Uses a single hidden ``tasklist /FO CSV`` and exact image-name match (never a
+    substring scan — ``lsass.exe`` must not look like a SAS blocker). Short TTL
+    cache so the UI thread never flashes a console per name.
+
+    ``cached_only`` never spawns ``tasklist``: it answers from the cache however
+    old that is, and reports nothing when the cache is empty. Auto fetch uses it
+    so a background round does not stall the UI on a process enumeration — the
+    capture worker refreshes the real answer a moment later anyway.
+    """
+    global _blocker_cache_at, _blocker_cache_value, _blocker_cache_valid
     if sys.platform != "win32":
         return []
+    now = time.monotonic()
+    if (
+        not force_refresh
+        and _blocker_cache_valid
+        and (now - _blocker_cache_at) < _BLOCKER_CACHE_TTL_S
+    ):
+        return list(_blocker_cache_value)
+    if cached_only:
+        return list(_blocker_cache_value) if _blocker_cache_valid else []
+
     found: list[str] = []
-    for exe in _IGT_COM_BLOCKER_EXE_NAMES:
-        try:
-            proc = subprocess.run(
-                ["tasklist", "/FI", f"IMAGENAME eq {exe}", "/NH"],
-                capture_output=True,
-                text=True,
-                timeout=8,
-                check=False,
-            )
-            if exe.lower() in (proc.stdout or "").lower():
-                found.append(exe)
-        except Exception:
-            continue
-    return found
+    try:
+        proc = _win_hidden_run(
+            ["tasklist", "/NH", "/FO", "CSV"], timeout=5.0
+        )
+        running = _tasklist_image_names(proc.stdout or "")
+        exact = {exe.casefold(): exe for exe in _IGT_COM_BLOCKER_EXE_NAMES}
+        seen: set[str] = set()
+        for name in sorted(running):
+            hit = exact.get(name)
+            if hit is None and name.endswith(".exe"):
+                if any(name.startswith(p) for p in _IGT_COM_BLOCKER_PREFIXES):
+                    hit = name
+            if hit and hit.casefold() not in seen:
+                found.append(hit)
+                seen.add(hit.casefold())
+    except Exception:
+        # tasklist itself failed — never cache "no blockers" from a broken
+        # probe. Report the last known result so a transient failure cannot
+        # flip an armed recovery into a false "No IGT SAS tester" verdict.
+        if _blocker_cache_valid:
+            return list(_blocker_cache_value)
+        return []
+
+    _blocker_cache_at = now
+    _blocker_cache_value = found
+    _blocker_cache_valid = True
+    return list(found)
 
 
 def probe_com_port_available(
@@ -252,7 +472,6 @@ def probe_com_port_available(
         if mode == "mux"
         else serial_module.PARITY_SPACE
     )
-    blockers = find_running_sas_com_blockers()
     try:
         ser = serial_module.Serial(
             **_serial_open_kwargs(
@@ -266,11 +485,13 @@ def probe_com_port_available(
         ser.close()
         return True, f"{port_name} is available for SAS host polling"
     except Exception as exc:
+        # Only pay for tasklist after open fails — keeps the UI path light.
+        blockers = find_running_sas_com_blockers()
         if blockers:
             who = ", ".join(blockers)
             return False, (
                 f"{port_name} is in use ({who}). "
-                "Leave the IGT SAS tester running or close it so auto-poll can open the port."
+                "Close the IGT SAS tester so auto-poll can open the port."
             )
         if _is_retryable_serial_error(exc):
             return False, f"{port_name} is in use or unavailable ({exc})"
@@ -673,7 +894,11 @@ def _sync_sas_link_igt(
     poll_interval_s: float = DEFAULT_IGT_POLL_INTERVAL_S,
     min_stable_gps: int = 2,
 ) -> tuple[bool, bytes]:
-    """IGT SAS tester cadence: alternating GP @ ~200 ms until the link answers."""
+    """IGT SAS tester cadence: alternating GP @ ~200 ms until the link answers.
+
+    Keep polling for the full budget — locked / door-open cabinets often answer
+    only after many Quick-Command-style GPs (idle ``0x00`` first, then real RX).
+    """
     polls = _general_poll_alternation(address)
     saw_rx = False
     last_rx = b""
@@ -691,6 +916,7 @@ def _sync_sas_link_igt(
                 if stable >= need_stable:
                     return True, last_rx
             else:
+                # Idle 0x00 or incomplete: keep the budget running (IGT persistence).
                 stable = max(0, stable - 1)
     if saw_rx and last_rx and any(b != 0 for b in last_rx):
         return True, last_rx
@@ -828,22 +1054,20 @@ def _wakeup_serial(
 
 def force_release_com_port_blockers(*, wait_s: float = 2.0) -> list[str]:
     """Best-effort: stop IGT SAS tester apps that keep the host COM port open."""
+    global _blocker_cache_at, _blocker_cache_value, _blocker_cache_valid
     notes: list[str] = []
     if sys.platform != "win32":
         return notes
     for exe in _IGT_COM_BLOCKER_EXE_NAMES:
         try:
-            proc = subprocess.run(
-                ["taskkill", "/F", "/IM", exe],
-                capture_output=True,
-                text=True,
-                timeout=12,
-                check=False,
-            )
+            proc = _win_hidden_run(["taskkill", "/F", "/IM", exe], timeout=12.0)
             if proc.returncode == 0:
                 notes.append(f"Stopped {exe}")
         except Exception:
             continue
+    _blocker_cache_at = 0.0
+    _blocker_cache_value = []
+    _blocker_cache_valid = False
     time.sleep(max(0.5, float(wait_s)))
     return notes
 
@@ -1014,6 +1238,9 @@ def fetch_meters_over_serial(
     skip_bill_polls: bool = True,
     cached_profile: tuple[str, int, bool] | None = None,
     max_combos: int | None = None,
+    game_kind: str | None = None,
+    on_cabinet: bool = False,
+    link_sync_polls: int | None = None,
 ) -> SasMeterFetchResult:
     if force_capture:
         port_wait_s = max(float(port_wait_s), DEFAULT_FORCE_CAPTURE_WAIT_S)
@@ -1023,10 +1250,14 @@ def fetch_meters_over_serial(
             ((mode_key or DEFAULT_WIRE_MODE).strip().lower(), int(baud_try), bool(rts_try)),
         )
         combos += tuple(
-            c for c in AUTO_WIRE_BAUD_RTS_COMBOS if c not in combos
+            c
+            for c in wire_baud_combos_for_game_kind(
+                game_kind, on_cabinet=on_cabinet
+            )
+            if c not in combos
         )
     elif auto_baud and auto_wire:
-        combos = AUTO_WIRE_BAUD_RTS_COMBOS
+        combos = wire_baud_combos_for_game_kind(game_kind, on_cabinet=on_cabinet)
     elif auto_baud:
         mode_key = (wire_mode or DEFAULT_WIRE_MODE).strip().lower()
         combos = tuple((mode_key, b, False) for b in DEFAULT_SAS_BAUD_CANDIDATES)
@@ -1061,6 +1292,7 @@ def fetch_meters_over_serial(
                 rts=rts_try,
                 force_capture=force_capture,
                 skip_bill_polls=skip_bill_polls,
+                link_sync_polls=link_sync_polls,
             )
         except RuntimeError as exc:
             last_err = exc
@@ -1103,6 +1335,7 @@ def _fetch_meters_once(
     rts: bool = False,
     force_capture: bool = False,
     skip_bill_polls: bool = True,
+    link_sync_polls: int | None = None,
 ) -> SasMeterFetchResult:
     serial = _require_pyserial()
     mode_key = (wire_mode or DEFAULT_WIRE_MODE).strip().lower()
@@ -1133,6 +1366,11 @@ def _fetch_meters_once(
     last_rx = b""
     bill_rows: tuple = ()
     bill_out_rows = catalog_bill_out_rows()
+    sync_polls = (
+        int(link_sync_polls)
+        if link_sync_polls is not None and int(link_sync_polls) > 0
+        else DEFAULT_IGT_LINK_SYNC_POLLS
+    )
     try:
         if not force_capture:
             _wakeup_serial(ser, delay_s=wakeup_delay_s, reset_buffers=False)
@@ -1140,21 +1378,22 @@ def _fetch_meters_once(
             ser,
             wire=wire,
             address=address,
-            poll_count=DEFAULT_IGT_LINK_SYNC_POLLS,
+            poll_count=sync_polls,
             min_stable_gps=2,
         )
+        # IGT "Quick Commands" send $6F even when the link only returns idle
+        # 0x00 / no stable GP. Do not abort before the meter polls — that was
+        # why SasVerifyMeters showed empty SAS while the tester still worked.
         if not link_ok:
-            raise RuntimeError(
-                _format_link_silent_error(
-                    port_used,
-                    baud=baud,
-                    wire_mode=mode_key,
-                    sync_s=DEFAULT_IGT_LINK_SYNC_POLLS * DEFAULT_IGT_POLL_INTERVAL_S,
-                    rts=rts,
-                    last_rx=sync_rx,
-                )
+            paste_lines.append(
+                f"; GP sync incomplete after {sync_polls} polls "
+                f"(~{sync_polls * DEFAULT_IGT_POLL_INTERVAL_S:.1f}s) — "
+                "continuing with $6F Quick-Command polls anyway"
             )
+            if sync_rx:
+                last_rx = sync_rx
         batch_read_s = min(float(timeout_s), DEFAULT_6F_BATCH_READ_S)
+        got_any_6f = False
         for batch_index, batch in enumerate(batches):
             tx = build_igt_tester_6f_poll_frame(batch, address=address)
             if not first_tx:
@@ -1180,6 +1419,24 @@ def _fetch_meters_once(
                 if rx:
                     break
             if not rx:
+                if got_any_6f:
+                    # Partial capture is still usable (IGT often gets first batches
+                    # before later ones time out on a sticky link).
+                    paste_lines.append(
+                        f"; batch {batch_index + 1}/{len(batches)}: no 6F reply — stopping"
+                    )
+                    break
+                if not link_ok:
+                    raise RuntimeError(
+                        _format_link_silent_error(
+                            port_used,
+                            baud=baud,
+                            wire_mode=mode_key,
+                            sync_s=sync_polls * DEFAULT_IGT_POLL_INTERVAL_S,
+                            rts=rts,
+                            last_rx=sync_rx or rx_raw,
+                        )
+                    )
                 raise RuntimeError(
                     _format_no_response_error(
                         port_used,
@@ -1192,11 +1449,23 @@ def _fetch_meters_once(
                         batch_index=batch_index,
                     )
                 )
+            got_any_6f = True
             last_rx = rx
             paste_lines.append(format_sas_traffic_line("TX>=", tx))
             paste_lines.append(format_sas_traffic_line("RX<=", rx))
             if batch_index + 1 < len(batches):
                 _inter_poll_between_6f_batches(ser, wire=wire, address=address)
+        if not got_any_6f:
+            raise RuntimeError(
+                _format_link_silent_error(
+                    port_used,
+                    baud=baud,
+                    wire_mode=mode_key,
+                    sync_s=sync_polls * DEFAULT_IGT_POLL_INTERVAL_S,
+                    rts=rts,
+                    last_rx=sync_rx or last_rx,
+                )
+            )
         if not skip_bill_polls:
             time.sleep(DEFAULT_POST_6F_BILL_DELAY_S)
             bill_result = fetch_bill_meters_in_session(
@@ -1555,6 +1824,31 @@ def catalog_bill_out_rows(
     return merge_bill_rows_with_catalog((), catalog, direction="out")
 
 
+def bill_in_catalog_for_cabinet(
+    machine_state: dict[str, object] | None,
+) -> tuple[tuple[int, str, int], ...]:
+    """Standard $1–$100 catalog, plus any larger faces the cabinet actually publishes.
+
+    Lab .90 carries ``notecurin*100000`` ($1,000) which is outside the default
+    seven-denom acceptor table; dropping it made BILL IN TOTAL disagree with
+    ``notesInStackerAmt``.
+    """
+    from network.accounting_state_loader import extract_cabinet_bill_note_meters
+
+    by_face = extract_cabinet_bill_note_meters(machine_state or {})
+    if not by_face:
+        return SAS_BILL_STANDARD_DENOMINATIONS
+    standard_faces = {face for _cmd, _label, face in SAS_BILL_STANDARD_DENOMINATIONS}
+    extra = tuple(
+        entry
+        for entry in SAS_BILL_IN_DENOMINATIONS
+        if entry[2] not in standard_faces and entry[2] in by_face
+    )
+    if not extra:
+        return SAS_BILL_STANDARD_DENOMINATIONS
+    return SAS_BILL_STANDARD_DENOMINATIONS + extra
+
+
 def build_bill_rows_from_cabinet_note_meters(
     machine_state: dict[str, object] | None,
 ) -> tuple[SasBillDenomRow, ...]:
@@ -1565,7 +1859,7 @@ def build_bill_rows_from_cabinet_note_meters(
     if not by_face:
         return ()
     rows: list[SasBillDenomRow] = []
-    for cmd, label, face_cents in SAS_BILL_STANDARD_DENOMINATIONS:
+    for cmd, label, face_cents in bill_in_catalog_for_cabinet(machine_state):
         data = by_face.get(face_cents)
         if not data:
             continue
@@ -1592,6 +1886,27 @@ def build_bill_rows_from_cabinet_note_meters(
     return tuple(rows)
 
 
+def _bill_rows_are_live_capture(
+    rows: tuple[SasBillDenomRow, ...] | list[SasBillDenomRow],
+) -> bool:
+    """True when rows come from a real LP/paste/cabinet read, not empty placeholders.
+
+    ``merge_bill_rows_with_catalog`` always returns one row per denom with
+    ``source=\"missing\"`` zeros. Feeding that catalog back into
+    :func:`build_bill_display_rows` used to look like a capture and blocked the
+    DeviceManagerData note meters — Bills stayed at 0 on local Auto fetch.
+    """
+    for row in rows:
+        src = (row.source or "").strip().lower()
+        if src == "missing" or not src:
+            continue
+        if src in {"lp", "paste", "cabinet", "aggregate"}:
+            return True
+        if int(row.count or 0) > 0 or int(row.amount_cents or 0) > 0:
+            return True
+    return False
+
+
 def build_bill_display_rows(
     *,
     bill_rows: tuple[SasBillDenomRow, ...] | list[SasBillDenomRow] | None = None,
@@ -1601,11 +1916,17 @@ def build_bill_display_rows(
     """Bill-in table rows: SAS LP/paste, else cabinet curMeter notes, else 000B aggregate."""
     from_paste = parse_sas_bill_paste(paste_text)
     responded = tuple(bill_rows or ()) + from_paste
-    if responded or paste_has_bill_lp_attempts(paste_text):
-        return merge_bill_rows_with_catalog(responded, direction="in")
+    if _bill_rows_are_live_capture(responded) or paste_has_bill_lp_attempts(paste_text):
+        live = tuple(
+            r
+            for r in responded
+            if (r.source or "").strip().lower() not in {"", "missing"}
+        )
+        return merge_bill_rows_with_catalog(live or responded, direction="in")
     cabinet_rows = build_bill_rows_from_cabinet_note_meters(machine_state)
     if cabinet_rows:
-        return merge_bill_rows_with_catalog(cabinet_rows, direction="in")
+        catalog = bill_in_catalog_for_cabinet(machine_state)
+        return merge_bill_rows_with_catalog(cabinet_rows, catalog, direction="in")
     agg = build_aggregate_bill_rows(paste_text=paste_text, machine_state=machine_state)
     if agg:
         return agg
@@ -1633,11 +1954,36 @@ SAS_COIN_CATALOG: tuple[tuple[str, int], ...] = (
     ("$1.00", 100),
 )
 
+# Physical coin acceptor / hopper panels only.
+#
+# Do **not** wire SAS 0000/0001 or cabinet ``coinin``/``coinout`` here — those are
+# electronic credit wager meters ("Total Coin In/Out" in SAS naming) and light up
+# on cashless cabinets that have no coin acceptor or hopper.
+#
+# Do **not** use ``curtodrop*`` / ``curincnt`` either — those are cash-to-drop /
+# generic currency-in counters (bills + coins). Coin drop/hopper must use the
+# coin-specific keys below; missing keys leave every denom and TOTAL at zero.
 COIN_PANEL_SPECS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...]]] = {
-    "in": ("0000", ("coinin", "gamecoinin", "totalcoinin"), ("curincnt", "coinincnt")),
-    "out": ("0001", ("coinout", "totalcoinout", "gamecoinout"), ("coinoutcnt", "curoutcnt")),
-    "drop": ("0002", ("curtodropamt", "cointodropboxamt", "totaltodrop"), ("curtodropcnt", "cointodropboxcnt")),
-    "hopper": ("", ("cointohopperamt", "hoppercoinoutamt", "hopperoutamt"), ("cointohoppercnt", "hoppercoinoutcnt")),
+    "in": (
+        "",
+        ("physicalcoininamt", "coinacceptorinamt", "hardcoininamt", "cointoinamt"),
+        ("coinincnt", "physicalcoinincnt", "coinacceptorincnt", "hardcoinincnt"),
+    ),
+    "out": (
+        "",
+        ("physicalcoinoutamt", "hardcoinoutamt", "coinacceptoroutamt"),
+        ("coinoutcnt", "physicalcoinoutcnt", "hardcoinoutcnt"),
+    ),
+    "drop": (
+        "",
+        ("cointodropboxamt", "physicalcointodropamt", "hardcointodropamt"),
+        ("cointodropboxcnt", "physicalcointodropcnt", "hardcointodropcnt"),
+    ),
+    "hopper": (
+        "",
+        ("cointohopperamt", "hoppercoinoutamt", "hopperoutamt"),
+        ("cointohoppercnt", "hoppercoinoutcnt"),
+    ),
 }
 
 
@@ -1697,8 +2043,10 @@ def build_coin_panel_display_rows(
     """
     Coin panel body rows (full denomination catalog) plus optional aggregate TOTAL.
 
-    Per-denom coin LPs are not wired on all EGMs; when only cabinet/SAS totals exist,
-    the table shows the catalog with zeros and TOTAL from the aggregate meter.
+    Totals come only from physical coin acceptor / hopper / coin-drop meters.
+    Electronic ``coinin``/``coinout`` (SAS 0000/0001) and cash-to-drop counters
+    are ignored — cashless cabinets without a hopper or coin acceptor therefore
+    show a zero catalog and a zero TOTAL.
     """
     rows = catalog_coin_panel_rows(panel)
     spec = COIN_PANEL_SPECS.get(panel)
@@ -1707,8 +2055,12 @@ def build_coin_panel_display_rows(
     sas_code, amount_keys, count_keys = spec
     raw_amt = _norm_map_lookup(machine_state or {}, amount_keys)
     if not raw_amt and sas_raw_for_code:
+        # Optional SAS long-poll raw for a *coin-specific* code if one is wired.
+        # Electronic credit meters (0000/0001) are intentionally not in the specs.
         raw_amt = str(sas_raw_for_code).strip()
-    if not raw_amt or raw_amt == "0":
+    # Only a missing value hides the aggregate TOTAL override; denomination
+    # rows stay at zero and the UI TOTAL row sums them (also zero).
+    if not raw_amt:
         return rows, None
     amount_cents = coin_credits_raw_to_amount_cents(raw_amt)
     count_raw = _norm_map_lookup(machine_state or {}, count_keys)
@@ -1788,8 +2140,11 @@ def fetch_bill_meters_in_session(
                     overall_timeout_s=per_poll_timeout,
                 )
 
-        if rx:
-            count = parse_bill_in_response_frame(rx, address=address, cmd=cmd) or 0
+        parsed_count = (
+            parse_bill_in_response_frame(rx, address=address, cmd=cmd) if rx else None
+        )
+        if rx and parsed_count is not None:
+            count = parsed_count
             rows.append(
                 SasBillDenomRow(
                     sas_cmd=cmd,
@@ -1803,6 +2158,14 @@ def fetch_bill_meters_in_session(
             )
             paste_lines.append(format_sas_traffic_line("TX>=", tx))
             paste_lines.append(format_sas_traffic_line("RX<=", rx))
+        elif rx:
+            # Frame arrived but the payload did not parse. Recording it as a zero
+            # count would read as "no bills of this denom" instead of "no reading".
+            paste_lines.append(format_sas_traffic_line("TX>=", tx))
+            paste_lines.append(
+                f"RX<= (unparsed bill {label} LP {cmd:02X}) "
+                + format_sas_traffic_line("RX<=", rx).split(" ", 1)[-1]
+            )
         else:
             paste_lines.append(format_sas_traffic_line("TX>=", tx))
             hint = f"RX<= (no response - bill {label} LP {cmd:02X})"

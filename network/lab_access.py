@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import socket
 import sys
 from pathlib import Path
 
@@ -13,12 +14,22 @@ LAB_FLEET_IPS: frozenset[str] = frozenset(
         "10.0.0.90",
         "10.0.0.100",
         "10.0.0.110",
+        "10.0.0.111",
         "10.0.0.112",
         "10.0.0.171",
     }
 )
 
+# Roulette-only lab cabinets (no ``ruleta`` in a generic ``…\\var`` scan path).
+LAB_ROULETTE_IPS: frozenset[str] = frozenset({"10.0.0.111"})
+
 LAB_USERNAME_HINT = r"GOLD-CLUB\test"
+
+# Workgroup cabinets have no GOLD-CLUB domain account. WinRM/SMB must use
+# the local ``test`` user (IP\test or machine\test), not GOLD-CLUB\test.
+LAB_WORKGROUP_USERS: dict[str, tuple[str, ...]] = {
+    "10.0.0.111": (r"10.0.0.111\test", r"GRT330106\test"),
+}
 
 # Lab-only fallback credential. The fleet uses a single throwaway login
 # (GOLD-CLUB\test / test — see .cursor/rules/lab-cabinet-access.mdc). Windows
@@ -119,22 +130,61 @@ def _lab_credential_from_manager(ip: str | None) -> tuple[str, str] | None:
     return None
 
 
+def lab_username_for_host(ip: str | None) -> str:
+    """Default WinRM/SMB user for a fleet host (domain vs workgroup)."""
+    host = (ip or "").strip()
+    aliases = LAB_WORKGROUP_USERS.get(host)
+    if aliases:
+        return aliases[0]
+    return LAB_USERNAME_HINT
+
+
+def lab_winrm_authentication(ip: str | None) -> str:
+    """``Invoke-Command -Authentication`` value for a fleet cabinet.
+
+    Fleet hosts are always reached by IP. ``Negotiate`` tries Kerberos first and
+    often fails with ``0x8009030e`` ("logon session does not exist") when the
+    app runs on a local EGM or other non-interactive logon context. ``Default``
+    picks NTLM for workgroup hosts and is safe for IP-based domain cabinets too
+    (TrustedHosts + explicit ``PSCredential``).
+    """
+    host = (ip or "").strip()
+    if host in LAB_FLEET_IPS:
+        return "Default"
+    return "Negotiate"
+
+
+def _username_ok_for_host(user: str, ip: str | None) -> bool:
+    host = (ip or "").strip()
+    aliases = LAB_WORKGROUP_USERS.get(host)
+    if not aliases:
+        return True
+    folded = (user or "").replace("/", "\\").casefold()
+    return any(folded == alias.casefold() for alias in aliases)
+
+
 def get_lab_credential(ip: str | None = None) -> tuple[str, str]:
-    """Return the lab fleet credential (``GOLD-CLUB\\test``) for WinRM/PsExec/SMB.
+    """Return the lab fleet credential for WinRM/PsExec/SMB.
 
     Resolution order: ``GOLDCLUB_LAB_PASSWORD`` env override, then a readable
-    Credential Manager entry, then the documented lab default. Never raises on
-    Windows — remote probes must not be blocked just because Windows hides a
-    ``cmdkey`` password from ``CredRead``.
+    Credential Manager entry (must match the host's workgroup user when set),
+    then the documented lab default. Never raises on Windows — remote probes
+    must not be blocked just because Windows hides a ``cmdkey`` password from
+    ``CredRead``.
     """
+    default_user = lab_username_for_host(ip)
     from_manager = _lab_credential_from_manager(ip)
 
     env_pw = (os.environ.get(_LAB_PASSWORD_ENV) or "").strip()
     if env_pw:
-        user = from_manager[0] if from_manager else LAB_USERNAME_HINT
+        user = (
+            from_manager[0]
+            if from_manager and _username_ok_for_host(from_manager[0], ip)
+            else default_user
+        )
         return user, env_pw
 
-    if from_manager is not None:
+    if from_manager is not None and _username_ok_for_host(from_manager[0], ip):
         return from_manager
 
     if sys.platform != "win32":
@@ -142,7 +192,55 @@ def get_lab_credential(ip: str | None = None) -> tuple[str, str]:
             "Lab credentials are only available on Windows (or set "
             f"{_LAB_PASSWORD_ENV})."
         )
-    return LAB_USERNAME_HINT, _LAB_DEFAULT_PASSWORD
+    return default_user, _LAB_DEFAULT_PASSWORD
+
+
+def probe_tcp_port(host: str, port: int, *, timeout_sec: float = 2.0) -> bool:
+    """True when ``host:port`` accepts a TCP connection (lab LAN probe, not internet)."""
+    ip = (host or "").strip()
+    if not ip:
+        return False
+    try:
+        with socket.create_connection((ip, int(port)), timeout=timeout_sec):
+            return True
+    except OSError:
+        return False
+
+
+def format_lab_lan_unreachable(ip: str, *, winrm_open: bool, smb_open: bool, ping_ok: bool) -> str:
+    """User-facing hint when a fleet cabinet cannot be reached on the lab subnet."""
+    lines = [
+        f"Cannot sync time — {ip} is not reachable on the lab LAN.",
+        "",
+        "Sync Time uses WinRM on the local subnet (10.0.0.x). It does not need internet.",
+    ]
+    if not ping_ok and not smb_open and not winrm_open:
+        lines.extend(
+            [
+                "",
+                "This PC may be off the lab network (e.g. home/office Wi‑Fi).",
+                "Connect to the lab subnet, or run Log Investigator from the lab workstation.",
+                "Fleet → Refresh known hosts to confirm the cabinet is online.",
+            ]
+        )
+    elif ping_ok or smb_open:
+        if not winrm_open:
+            lines.extend(
+                [
+                    "",
+                    f"{ip} responds on the network but WinRM (port 5985) is closed.",
+                    "Enable WinRM on the cabinet: cabinet_tools\\shared\\Enable-WinRM.ps1",
+                    "(or the USB Enable-WinRM script), then retry.",
+                ]
+            )
+    lines.extend(
+        [
+            "",
+            "First time from this PC? Run elevated:",
+            "  .\\Initialize-LabAccess.ps1 -Verify",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def ensure_lab_smb_credential(ip: str) -> bool:
@@ -212,16 +310,29 @@ def safe_join_under(root: Path, relative_path: str) -> Path:
     return dest
 
 
-def assert_ruleta_dest_unc(ip: str, dest: Path | str) -> Path:
-    """Require remote Software Version dest under ``\\\\{ip}\\c$\\goldclub\\ruleta``."""
+def allowed_ruleta_dest_uncs(ip: str) -> tuple[Path, ...]:
+    """Remote Ruleta dests: admin share, or the ``slot`` share (GoldClub root)."""
     host = require_lab_fleet_ip(ip)
+    return (
+        Path(rf"\\{host}\c$\goldclub\ruleta"),
+        Path(rf"\\{host}\slot\ruleta"),
+    )
+
+
+def _unc_key(path: Path | str) -> str:
+    return str(path).replace("/", "\\").casefold().rstrip("\\")
+
+
+def assert_ruleta_dest_unc(ip: str, dest: Path | str) -> Path:
+    """Require dest under ``c$\\goldclub\\ruleta`` or ``slot\\ruleta`` on a fleet IP."""
     dest_path = Path(dest)
-    allowed = Path(rf"\\{host}\c$\goldclub\ruleta")
-    # Case-insensitive UNC compare via as_posix lower.
-    dest_key = str(dest_path).replace("/", "\\").casefold().rstrip("\\")
-    allowed_key = str(allowed).replace("/", "\\").casefold().rstrip("\\")
-    if dest_key != allowed_key and not dest_key.startswith(allowed_key + "\\"):
-        raise ValueError(
-            f"Software Version destination must be under {allowed} (got {dest_path})"
-        )
-    return dest_path
+    dest_key = _unc_key(dest_path)
+    allowed = allowed_ruleta_dest_uncs(ip)
+    for root in allowed:
+        root_key = _unc_key(root)
+        if dest_key == root_key or dest_key.startswith(root_key + "\\"):
+            return dest_path
+    shown = " or ".join(str(p) for p in allowed)
+    raise ValueError(
+        f"Software Version destination must be under {shown} (got {dest_path})"
+    )

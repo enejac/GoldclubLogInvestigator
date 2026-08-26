@@ -7,6 +7,7 @@ Rate-limited parallel execution to avoid overwhelming switches.
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import os
 import platform
@@ -24,6 +25,8 @@ import config
 from config import format_unc_log_root
 
 logger = logging.getLogger(__name__)
+
+_CABINET_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,63}$")
 
 # Concurrent probes — keep modest for shared access switches / Wi‑Fi APs
 DEFAULT_MAX_CONCURRENT_PINGS = 12
@@ -43,6 +46,48 @@ class HostProbeResult:
     c_dollar_log_ok: bool = False
     """Investigator UTC minus cabinet log timestamp (s); ``None`` if unknown."""
     clock_drift_seconds: float | None = None
+    """Live cabinet hostname / MachineName when resolved during probe; else None."""
+    resolved_name: str | None = None
+
+
+def _normalize_cabinet_name(raw: str | None) -> str | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    first = s.split(".", 1)[0].strip()
+    if not first or not _CABINET_NAME_RE.fullmatch(first):
+        return None
+    return first.upper()
+
+
+def read_cabinet_machine_name_from_state(ip: str) -> str | None:
+    """
+    Read ``MachineName`` from GoldClub ``ProductSerialNumber.json`` over SMB.
+
+    This is the authoritative post-rebuild identity (e.g. ``GRT330106``) and
+    must win over stale reverse-DNS or fleet-DB labels from a previous product.
+    """
+    ip = (ip or "").strip()
+    if not ip or not _IPV4_RE.match(ip):
+        return None
+    candidates = (
+        Path(rf"\\{ip}\c$\Goldclub\var\state\maintenance\ProductSerialNumber.json"),
+        Path(rf"\\{ip}\g$\var\state\maintenance\ProductSerialNumber.json"),
+    )
+    for path in candidates:
+        try:
+            if not path.is_file():
+                continue
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as e:
+            logger.debug("ProductSerialNumber read %s: %s", path, e)
+            continue
+        if not isinstance(data, dict):
+            continue
+        name = _normalize_cabinet_name(str(data.get("MachineName") or ""))
+        if name:
+            return name
+    return None
 
 
 def _timestamp_regex() -> re.Pattern[str]:
@@ -146,14 +191,30 @@ def is_ipv4_address(s: str) -> bool:
         return False
 
 
-def resolve_cabinet_name(ip: str) -> str:
+def resolve_cabinet_name(ip: str, *, smb_timeout_sec: float = 2.0) -> str:
     """
-    Reverse-DNS lookup for ``ip``; return the first hostname label uppercased (e.g. ``GST20664``),
-    stripping domain suffixes such as ``.lan`` / ``.local``. On failure, ``Cabinet (<ip>)``.
+    Live cabinet identity for ``ip``.
+
+    Order:
+    1. GoldClub ``ProductSerialNumber.json`` ``MachineName`` (SMB) — preferred
+    2. Reverse-DNS first label (e.g. ``GRT330106``), domain suffix stripped
+    3. ``Cabinet (<ip>)`` when both fail
+
+    SMB identity is bounded by ``smb_timeout_sec`` so UI threads do not hang.
     """
     ip = (ip or "").strip()
     if not ip:
         return "Cabinet (?)"
+    from_state: str | None = None
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(read_cabinet_machine_name_from_state, ip)
+            from_state = fut.result(timeout=max(0.2, float(smb_timeout_sec)))
+    except Exception as e:  # noqa: BLE001 — timeout / SMB / pool
+        logger.debug("ProductSerialNumber resolve timeout/fail for %s: %s", ip, e)
+        from_state = None
+    if from_state:
+        return from_state
     try:
         primary, _aliases, _ip_list = socket.gethostbyaddr(ip)
     except socket.herror:
@@ -161,13 +222,20 @@ def resolve_cabinet_name(ip: str) -> str:
     except OSError as e:
         logger.debug("gethostbyaddr(%s): %s", ip, e)
         return f"Cabinet ({ip})"
-    hostname = (primary or "").strip()
-    if not hostname:
-        return f"Cabinet ({ip})"
-    first_label = hostname.split(".", 1)[0].strip()
-    if not first_label:
-        return f"Cabinet ({ip})"
-    return first_label.upper()
+    name = _normalize_cabinet_name(primary)
+    if name:
+        return name
+    return f"Cabinet ({ip})"
+
+
+def is_resolved_cabinet_name(name: str | None) -> bool:
+    """True when ``name`` is a real cabinet label (not the DNS-failure placeholder)."""
+    s = (name or "").strip()
+    if not s:
+        return False
+    if s.casefold().startswith("cabinet ("):
+        return False
+    return _normalize_cabinet_name(s) is not None
 
 
 def parse_ip_targets(spec: str) -> list[str]:
@@ -230,6 +298,7 @@ def ping_host(ip: str, *, timeout_ms: int = 750) -> bool:
             args,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout_sec,
             **run_kw,
         )
@@ -247,12 +316,15 @@ def probe_c_dollar_log_path(ip: str) -> bool:
     """
     True if ``\\\\ip\\c$\\Goldclub\\var\\log`` exists and is a directory (same as scan root).
 
-    May block on slow or unreachable hosts; call from a worker thread.
+    A host that pings but has SMB down would otherwise hold a heartbeat worker for
+    up to a minute, so the admin-share port is checked first.
     """
+    if not probe_smb_port(ip):
+        return False
     try:
         p = Path(format_unc_log_root(ip))
         return p.is_dir()
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
@@ -361,12 +433,29 @@ class NetworkScanner:
                         except Exception:  # noqa: BLE001
                             drift_map[ip] = None
 
+        name_map: dict[str, str | None] = {ip: None for ip in ips}
+        if probe_c_dollar_log:
+            name_ips = [ip for ip in ips if log_map.get(ip, False)]
+            if name_ips:
+                with ThreadPoolExecutor(max_workers=self._max_smb) as ex:
+                    futs = {ex.submit(resolve_cabinet_name, ip): ip for ip in name_ips}
+                    for fut in as_completed(futs):
+                        ip = futs[fut]
+                        try:
+                            resolved = fut.result()
+                        except Exception:  # noqa: BLE001
+                            resolved = None
+                        name_map[ip] = (
+                            resolved if is_resolved_cabinet_name(resolved) else None
+                        )
+
         out: list[HostProbeResult] = []
         for ip in ips:
             p = results_ping.get(ip, False)
             smb_ok = smb_map.get(ip, False) if p else False
             log_ok = log_map.get(ip, False) if p else False
             drift = drift_map.get(ip) if probe_c_dollar_log else None
+            resolved_name = name_map.get(ip) if probe_c_dollar_log else None
             out.append(
                 HostProbeResult(
                     ip=ip,
@@ -374,6 +463,7 @@ class NetworkScanner:
                     smb_open=smb_ok,
                     c_dollar_log_ok=log_ok,
                     clock_drift_seconds=drift,
+                    resolved_name=resolved_name,
                 )
             )
         return out

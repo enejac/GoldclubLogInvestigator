@@ -6,9 +6,10 @@
     reboots and new sessions.
 
 .DESCRIPTION
-    The lab cabinets authenticate with the local/AD account GOLD-CLUB\test
-    (password "test"). The interactive workstation user is NOT an admin on every
-    cabinet (e.g. 10.0.0.171), so without a stored credential, SMB and PsExec to
+    Domain cabinets authenticate as GOLD-CLUB\test (password "test").
+    Workgroup cabinet 10.0.0.111 (GRT330106) uses 10.0.0.111\test.
+    The interactive workstation user is NOT an admin on every cabinet
+    (e.g. 10.0.0.171), so without a stored credential, SMB and PsExec to
     those cabinets get "Access is denied".
 
     `cmdkey /add:<ip>` stores the credential for the SMB redirector. This persists
@@ -40,11 +41,12 @@ param(
         '10.0.0.90',
         '10.0.0.100',
         '10.0.0.110',
+        '10.0.0.111',
         '10.0.0.112',
         '10.0.0.171'
     ),
     [string[]] $ExtraIp = @(),
-    [string]   $User = 'GOLD-CLUB\test',
+    [string]   $User = '',
     [string]   $Pass = 'test',
     [switch]   $Verify
 )
@@ -54,20 +56,28 @@ $ErrorActionPreference = 'Stop'
 
 $targets = @($Ip + $ExtraIp | Select-Object -Unique)
 
-Write-Host "[*] Registering SMB credentials for $($targets.Count) lab cabinet(s) as $User ..." -ForegroundColor Cyan
+$labAccess = Join-Path $PSScriptRoot 'LabAccess.ps1'
+if (Test-Path -LiteralPath $labAccess) {
+    . $labAccess
+}
+
+Write-Host "[*] Registering SMB credentials for $($targets.Count) lab cabinet(s) ..." -ForegroundColor Cyan
 foreach ($t in $targets) {
-    $out = cmdkey /add:$t /user:$User /pass:$Pass 2>&1 | Out-String
+    $acct = if ($User) { $User } elseif (Get-Command Get-LabUserForHost -ErrorAction SilentlyContinue) {
+        Get-LabUserForHost -ComputerName $t
+    } else {
+        'GOLD-CLUB\test'
+    }
+    $out = cmdkey /add:$t /user:$acct /pass:$Pass 2>&1 | Out-String
     if ($out -match 'successfully') {
-        Write-Host "    [+] $t" -ForegroundColor Green
+        Write-Host "    [+] $t as $acct" -ForegroundColor Green
     }
     else {
         Write-Host "    [!] $t -> $($out.Trim())" -ForegroundColor Yellow
     }
 }
 
-$labAccess = Join-Path $PSScriptRoot 'LabAccess.ps1'
 if (Test-Path -LiteralPath $labAccess) {
-    . $labAccess
     if ($Verify) {
         $null = Write-LabSmbAccessReport -Ip $targets
     }

@@ -74,3 +74,40 @@ def test_collapse_groups_same_signature_different_timestamps() -> None:
     rows = collapse_consecutive_incidents_to_rows([a, b], collapse=True)
     assert len(rows) == 1
     assert rows[0].count == 2
+
+
+def test_live_append_announces_insert_before_rows_appear() -> None:
+    """Qt requires rowCount() to still report the old total inside beginInsertRows."""
+    def _distinct(n: int) -> Incident:
+        base = _sample(f"{n}.log", n)
+        return Incident(
+            timestamp=datetime(2026, 3, 24, 7, 47, n, tzinfo=timezone.utc),
+            game=base.game,
+            severity=base.severity,
+            error_type=base.error_type,
+            probable_cause=base.probable_cause,
+            log_file_path=base.log_file_path,
+            line_number=n,
+            line_snippet=f"{base.line_snippet} #{n}",
+        )
+
+    vm = IncidentViewModel()
+    vm.set_collapse_duplicates(False)
+    vm.append_live_incidents([_distinct(1)])
+
+    seen: list[tuple[str, int, int, int]] = []
+    vm.rows_about_to_be_inserted.connect(
+        lambda first, last: seen.append(("about", first, last, vm.filtered_row_count()))
+    )
+    vm.rows_inserted.connect(
+        lambda first, last: seen.append(("done", first, last, vm.filtered_row_count()))
+    )
+
+    vm.append_live_incidents([_distinct(2), _distinct(3)])
+
+    assert [entry[0] for entry in seen] == ["about", "done"]
+    about, done = seen
+    assert about[1] == 1 and about[2] == 2
+    assert about[3] == 1  # row count unchanged while the insert is announced
+    assert done[1:3] == about[1:3]
+    assert done[3] == 3  # rows are present by the time the insert completes

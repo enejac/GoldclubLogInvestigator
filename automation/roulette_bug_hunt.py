@@ -12,7 +12,6 @@ import argparse
 import json
 import re
 import shutil
-import subprocess
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -32,6 +31,7 @@ from automation.roulette_runner import _latest_file
 from network.bug_session_classify import classify_line
 
 ROOT = Path(__file__).resolve().parents[1]
+# Kept for callers/docs; live inject routes via egm_credit_inject (slot vs roulette).
 AFT_SCRIPT = ROOT / "Invoke-WinDivertAftRoulette.ps1"
 
 _CRITICAL_RE = re.compile(
@@ -53,50 +53,30 @@ def _utc_stamp() -> str:
 
 
 def _credits(ip: str) -> int | None:
-    st = fetch_player_state(ip)
-    if not st.get("ok"):
-        return None
-    try:
-        return int(st.get("credits"))
-    except (TypeError, ValueError):
-        return None
+    """Credits from middleware (:8090) or DeviceManager/SlotLog when slot is up."""
+    from automation.egm_credit_inject import read_credits
+
+    return read_credits(ip).credits
 
 
 def _aft_topup(ip: str, amount_cents: int, log: Path) -> bool:
-    if not AFT_SCRIPT.is_file():
-        print(f"[{_utc()}] AFT script missing: {AFT_SCRIPT}", flush=True)
-        return False
-    cmd = [
-        "powershell",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(AFT_SCRIPT),
-        "-ComputerName",
+    """Top up via product-aware AFT/BillInject (slot :30800 vs roulette :30300/:8090)."""
+    from automation.egm_credit_inject import ensure_credits
+
+    print(f"[{_utc()}] credit top-up {amount_cents} cents on {ip} ...", flush=True)
+    ok, msg, after = ensure_credits(
         ip,
-        "-AmountCents",
-        str(amount_cents),
-        "-Send",
-    ]
-    print(f"[{_utc()}] AFT top-up {amount_cents} cents on {ip} ...", flush=True)
-    with log.open("a", encoding="utf-8") as fh:
-        fh.write(f"\n=== AFT {_utc()} amount={amount_cents} ===\n")
-        fh.flush()
-        proc = subprocess.run(
-            cmd,
-            cwd=str(ROOT),
-            stdout=fh,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=900,
-        )
-    time.sleep(3.0)
-    c = _credits(ip)
-    print(f"[{_utc()}] AFT exit={proc.returncode} credits_now={c}", flush=True)
-    return proc.returncode == 0 and c is not None and c >= MIN_CREDITS_TO_RUN
+        min_credits=MIN_CREDITS_TO_RUN,
+        aft_cents=int(amount_cents),
+        log=log,
+        try_dallas=False,
+    )
+    print(
+        f"[{_utc()}] credit top-up ok={ok} kind={after.kind} "
+        f"credits={after.credits} {msg}",
+        flush=True,
+    )
+    return ok
 
 
 def _godot_log(ip: str) -> Path | None:
@@ -351,14 +331,16 @@ def run_bug_hunt(
     hours: float = 0.0,
     mode: str = "random",
     layouts: tuple[str, ...] = ("layout1", "layout2"),
-    max_clicks_per_cycle: int = 80,
-    batch_size: int = 5,
+    max_clicks_per_cycle: int = 200,
+    batch_size: int | None = None,
     aft_cents: int = 2_000_000,
     no_aft: bool = False,
     stop_on_first: bool = False,
     cooldown_sec: float = 45.0,
     out_root: Path | str | None = None,
     progress: Any = print,
+    bot_profile: str | None = "fast",
+    bot_config_path: Path | str | None = None,
 ) -> Path:
     stamp = _utc_stamp()
     root = Path(out_root) if out_root else Path("automation_runs") / f"{stamp}_{ip.replace(':', '_')}_bug_hunt"
@@ -381,6 +363,7 @@ def run_bug_hunt(
         "hours": hours,
         "mode": mode,
         "max_clicks_per_cycle": max_clicks_per_cycle,
+        "bot_profile": bot_profile,
         "aft_cents": aft_cents,
         "no_aft": no_aft,
         "stop_on_first": stop_on_first,
@@ -487,6 +470,8 @@ def run_bug_hunt(
                 resume=False,
                 progress=lambda m: progress(f"[{_utc()}] {m}"),
                 on_batch_done=on_batch,
+                bot_profile=bot_profile,
+                bot_config_path=bot_config_path,
             )
             # End-of-cycle sweep in case fault landed after last batch settle.
             late = scan_godot_critical(ip, start_offset=state.godot_offset)
@@ -563,8 +548,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--hours", type=float, default=0.0, help="0 = forever")
     p.add_argument("--mode", choices=("random", "systematic"), default="random")
     p.add_argument("--layouts", default="layout1,layout2")
-    p.add_argument("--max-clicks-per-cycle", type=int, default=80)
-    p.add_argument("--batch-size", type=int, default=5)
+    p.add_argument("--max-clicks-per-cycle", type=int, default=200)
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="0 = use bot_config profile batch_size",
+    )
+    p.add_argument("--profile", default="fast", help="Bot timing profile name")
+    p.add_argument("--config", default="", help="Path to bot_config.json")
     p.add_argument("--aft-cents", type=int, default=2_000_000)
     p.add_argument("--no-aft", action="store_true")
     p.add_argument("--stop-on-first", action="store_true")
@@ -579,13 +571,15 @@ def main(argv: list[str] | None = None) -> int:
         mode=args.mode,
         layouts=layouts,
         max_clicks_per_cycle=args.max_clicks_per_cycle,
-        batch_size=args.batch_size,
+        batch_size=args.batch_size or None,
         aft_cents=args.aft_cents,
         no_aft=bool(args.no_aft),
         stop_on_first=bool(args.stop_on_first),
         cooldown_sec=args.cooldown_sec,
         out_root=out,
         progress=print,
+        bot_profile=args.profile or None,
+        bot_config_path=args.config or None,
     )
     print(json.dumps({"ok": True, "out": str(root)}))
     return 0

@@ -1,4 +1,4 @@
-﻿"""Minimal SAS 80/81 poll keeper for AFT WinDivert inject (no repo dependencies)."""
+"""Minimal SAS 80/81 poll keeper for AFT WinDivert inject (no repo dependencies)."""
 
 from __future__ import annotations
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QRunnable, QThreadPool
 
 from database.manager import (
     DatabaseManager,
@@ -12,12 +12,8 @@ from database.manager import (
     format_machine_label,
     run_sqlite_write_with_retry,
 )
+from gui.db_emitters import DbCountEmitter, DbPersistEmitter, DbQueryEmitter
 from timeline_engine import EnvFingerprint
-
-
-class DbPersistEmitter(QObject):
-    finished = Signal(bool, str)
-    """``success``, human-readable summary or error."""
 
 
 class _DbPersistRunnable(QRunnable):
@@ -97,11 +93,6 @@ def schedule_db_persist(
     )
 
 
-class DbQueryEmitter(QObject):
-    finished = Signal(object)
-    """``list[dict]`` of flat incident rows (or empty list on failure)."""
-
-
 class _DbQueryRunnable(QRunnable):
     def __init__(
         self,
@@ -155,10 +146,6 @@ def schedule_db_query(
     emitter: DbQueryEmitter,
 ) -> None:
     pool.start(_DbQueryRunnable(manager, filters, emitter))
-
-
-class DbCountEmitter(QObject):
-    finished = Signal(int)
 
 
 class _DbCountRunnable(QRunnable):

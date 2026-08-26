@@ -1,0 +1,41 @@
+{
+  "layout_id": "layout1",
+  "skin": "futura_doublezero",
+  "description": "Square American double-zero cloth (Alegro default on .90).",
+  "global_offset": {
+    "dx_pct": 0.0,
+    "dy_pct": 0.0
+  },
+  "targets": {
+    "RED": {
+      "x_pct": 50.0,
+      "y_pct": 72.5,
+      "verified": false,
+      "hits": 0,
+      "misses": 7,
+      "credit_delta": 0,
+      "http_actions": [],
+      "note": "no_credit_drop"
+    },
+    "chip_1": {
+      "x_pct": 39.0,
+      "y_pct": 91.0,
+      "verified": true,
+      "hits": 2,
+      "misses": 0,
+      "credit_delta": 0,
+      "http_actions": [],
+      "note": "map_session_chip"
+    },
+    "1": {
+      "x_pct": 17.292,
+      "y_pct": 57.0,
+      "verified": false,
+      "hits": 1,
+      "misses": 2,
+      "credit_delta": 170000,
+      "http_actions": [],
+      "note": "REJECTED_no_middleware_bets"
+    }
+  }
+}

@@ -42,8 +42,10 @@ class TimeRangeScanDialog(QDialog):
             ed.setCalendarPopup(True)
             ed.setTimeZone(tz)
 
+        # Always open with Enable checked so OK applies a time window by default
+        # (uncheck to clear / scan full files).
+        self._enable.setChecked(True)
         if current_start is not None and current_end is not None:
-            self._enable.setChecked(True)
             self._start_edit.setDateTime(
                 self._utc_datetime_to_qdatetime(current_start, tz)
             )
@@ -51,12 +53,11 @@ class TimeRangeScanDialog(QDialog):
                 self._utc_datetime_to_qdatetime(current_end, tz)
             )
         else:
-            self._enable.setChecked(False)
             self._start_edit.setDateTime(now.addSecs(-3600))
             self._end_edit.setDateTime(now)
 
-        self._start_edit.setEnabled(self._enable.isChecked())
-        self._end_edit.setEnabled(self._enable.isChecked())
+        self._start_edit.setEnabled(True)
+        self._end_edit.setEnabled(True)
         self._enable.toggled.connect(self._start_edit.setEnabled)
         self._enable.toggled.connect(self._end_edit.setEnabled)
 

@@ -32,3 +32,45 @@ def test_logdaemon_folder_daily_file_spawning_deep(tmp_path) -> None:
     vm = IncidentViewModel()
     core, prod = vm._extract_full_version_from_logs(log_root)
     assert core == "v3.2.1"
+
+
+def test_ruleta_roulette_log_native_version(tmp_path) -> None:
+    log_root = tmp_path / "log_bundle"
+    rr = log_root / "ruleta Roulette"
+    rr.mkdir(parents=True)
+    text = (
+        "2025-11-24T09:15:19.764+00:00 INFO [:] Roulette Initialized\n"
+        "2025-11-24T09:15:19.764+00:00 INFO [:] < name > LUMINA330106 < / name >\n"
+        "2025-11-24T09:15:19.764+00:00 INFO [:] < version > 10.1.0.0 clone: LuxuriousIII64 beta < /version >\n"
+    )
+    (rr / "2025-11-24.log").write_text(text, encoding="utf-8")
+
+    vm = IncidentViewModel()
+    assert vm._looks_like_roulette_logs(log_root)
+    core, product = vm._extract_version_from_ruleta_roulette_log(log_root)
+    assert core == "v10.1.0.0"
+    assert product == "LuxuriousIII64"
+
+    vm.refresh_current_software_version(log_root)
+    assert vm.software_version_for_ai() == "LuxuriousIII64_v10.1.0.0"
+
+
+def test_roulette_log_beats_logdaemon(tmp_path) -> None:
+    log_root = tmp_path / "log_bundle"
+    rr = log_root / "ruleta Roulette"
+    rr.mkdir(parents=True)
+    (rr / "2025-11-24.log").write_text(
+        "INFO < version > 10.1.0.0 clone: LuxuriousIII64 beta < /version >\n",
+        encoding="utf-8",
+    )
+    daemon = log_root / "GoldClub.Logging.LogDaemon"
+    daemon.mkdir(parents=True)
+    (daemon / "2025-11-24.log").write_text(
+        "Logging::Log() Spawning v2.9.9454.21067, clr=4.0\n",
+        encoding="utf-8",
+    )
+
+    vm = IncidentViewModel()
+    vm.refresh_current_software_version(log_root)
+    assert "10.1.0.0" in vm.software_version_for_ai()
+    assert "9454" not in vm.software_version_for_ai()

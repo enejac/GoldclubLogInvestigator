@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from automation.remote_input_agent import (
     build_input_agent_local,
@@ -21,6 +22,7 @@ from automation.remote_input_agent import (
     stage_input_agent,
 )
 from automation.roulette_layout import ROULETTE_FOCUS_PROCESS
+from automation.roulette_middleware import fetch_player_state
 from automation.roulette_script import (
     script_for_board_scan,
     script_for_random_bets_and_spin,
@@ -142,6 +144,8 @@ def peek_betting_phase(log_file: Path, *, peek_bytes: int = 8000) -> str:
 OPEN_UI_SETTLE_SEC = 0.85
 # START (countdown disc / bottom-right button) arms a touch later than the tray.
 OPEN_UI_SETTLE_START_SEC = 1.25
+# Strategy loops: bet the instant the open marker lands; START mash covers grey chrome.
+OPEN_UI_SETTLE_STRATEGY_SEC = 0.35
 
 
 def wait_for_betting_open(
@@ -226,6 +230,158 @@ def _scan_activity(lines: list[str]) -> tuple[int | None, int | None, int, list[
     return staked, credits_total, setchip, menus
 
 
+def _playable_credits(st: dict[str, Any] | None) -> int | None:
+    """Prefer display Credits; fall back to CreditValueDenom."""
+    if not st:
+        return None
+    for key in ("credits", "credit_value_denom"):
+        raw = st.get(key)
+        if raw is None:
+            continue
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _meter_cvd(st: dict[str, Any] | None) -> int | None:
+    if not st:
+        return None
+    cvd = st.get("credit_value_denom")
+    if cvd is not None:
+        try:
+            return int(cvd)
+        except (TypeError, ValueError):
+            pass
+    credits = st.get("credits")
+    if credits is None:
+        return None
+    try:
+        return int(credits)
+    except (TypeError, ValueError):
+        return None
+
+
+def wait_for_round_settled(
+    ip: str,
+    *,
+    credits_before_cvd: int | None,
+    stake_units: int,
+    timeout_sec: float = 35.0,
+    progress: ProgressFn | None = None,
+) -> tuple[int | None, bool | None, str]:
+    """
+    Poll middleware until the spun round has settled.
+
+    Premature credit snapshots (stake deducted, payout not yet applied) look like
+    losses and wrongly advance Martingale. Wait until ``CurrentBet`` clears and
+    either a win meter bump / credit rise above the pre-bet snapshot appears, or
+    the dipped meter stays stable long enough to count as a loss.
+    """
+    deadline = time.time() + timeout_sec
+    last_cvd: int | None = None
+    stable = 0
+    best: dict[str, Any] | None = None
+    cleared_at: float | None = None
+    baseline_lw: int | None = None
+    baseline_wn: int | None = None
+
+    def _as_int(v: Any) -> int:
+        try:
+            return int(v) if v is not None else 0
+        except (TypeError, ValueError):
+            return 0
+
+    while time.time() < deadline:
+        st = fetch_player_state(ip)
+        if not st.get("ok"):
+            time.sleep(0.45)
+            continue
+        best = st
+        cur_bet = st.get("current_bet_cvd")
+        cvd = _meter_cvd(st)
+        lw = _as_int(st.get("last_win_cvd"))
+        wn = _as_int(st.get("win_cvd"))
+        if baseline_lw is None:
+            baseline_lw = lw
+        if baseline_wn is None:
+            baseline_wn = wn
+
+        # Stake still showing — payout cannot be final yet.
+        if cur_bet is not None and int(cur_bet) > 0:
+            last_cvd = cvd
+            stable = 0
+            cleared_at = None
+            time.sleep(0.45)
+            continue
+
+        if cvd is None:
+            time.sleep(0.45)
+            continue
+
+        if cleared_at is None:
+            cleared_at = time.time()
+
+        if last_cvd is not None and cvd == last_cvd:
+            stable += 1
+        else:
+            stable = 0
+        last_cvd = cvd
+
+        since = time.time() - cleared_at
+        clearly_won = (
+            credits_before_cvd is not None and cvd > int(credits_before_cvd)
+        ) or lw > (baseline_lw or 0) or wn > (baseline_wn or 0)
+        clearly_lost = (
+            credits_before_cvd is not None
+            and cvd < int(credits_before_cvd)
+            and stable >= 3
+            and since >= 2.5
+        )
+        # Win path: need at least one repeat so we are not mid-tick.
+        if clearly_won and stable >= 1 and since >= 0.8:
+            break
+        if clearly_lost:
+            break
+        # Push / no movement: give payout time, then accept.
+        if since >= 8.0 and stable >= 3:
+            break
+        time.sleep(0.45)
+
+    if best is None or last_cvd is None:
+        return None, None, "no settled meter"
+
+    lw = _as_int(best.get("last_win_cvd"))
+    wn = _as_int(best.get("win_cvd"))
+    won: bool | None = None
+    if credits_before_cvd is not None:
+        delta = last_cvd - int(credits_before_cvd)
+        stake = max(0, int(stake_units))
+        # Prefer meter delta; LastWin alone is sticky across rounds.
+        if delta > 0:
+            won = True
+        elif delta < 0:
+            won = False
+        elif lw > (baseline_lw or 0) or wn > (baseline_wn or 0):
+            won = True
+        elif stake > 0 and delta == 0:
+            # Push / void / no bet — do not climb Martingale.
+            won = True
+    elif lw > (baseline_lw or 0) or wn > (baseline_wn or 0):
+        won = True
+
+    detail = (
+        f"settled cvd={last_cvd} before={credits_before_cvd} "
+        f"delta={(last_cvd - credits_before_cvd) if credits_before_cvd is not None else None} "
+        f"last_win={lw} baseline_lw={baseline_lw} "
+        f"current_bet={best.get('current_bet_cvd')} won={won}"
+    )
+    if progress is not None:
+        progress(detail)
+    return last_cvd, won, detail
+
+
 def run_roulette_random(
     *,
     ip: str,
@@ -238,6 +394,7 @@ def run_roulette_random(
     base_unit: int = 1,
     open_timeout_sec: float = 90.0,
     session: int = 1,
+    min_credits: int = 100,
     progress: ProgressFn | None = None,
 ) -> list[RouletteRoundResult]:
     """
@@ -245,6 +402,7 @@ def run_roulette_random(
 
     ``strategy_id`` selects a progression system (see ``roulette_strategies``).
     ``random`` keeps the original random straight-up behaviour.
+    Aborts early when the credit meter is below ``min_credits``.
     """
     _ = session
     sid = (strategy_id or "random").strip().lower()
@@ -270,37 +428,27 @@ def run_roulette_random(
     strat_state = StrategyState()
 
     for i in range(1, rounds + 1):
-        # WinRM InputAgent is fast enough to launch after the real open marker.
-        # Wait for "Bets are open" + UI settle so chips / START are clickable
-        # (closed+6s often landed while chrome was still grey).
-        _progress(progress, f"Round {i}/{rounds}: waiting for bets open ...")
-        opened, detail = wait_for_betting_open(
-            roulette_log,
-            timeout_sec=open_timeout_sec,
-            settle_sec=OPEN_UI_SETTLE_START_SEC,
-            progress=progress,
-        )
-        if not opened:
-            results.append(
-                RouletteRoundResult(
-                    round_index=i,
-                    ok=False,
-                    message=f"no bets-open arm point: {detail}",
-                )
-            )
-            _progress(progress, f"Round {i}: FAIL - {detail}")
-            continue
-        offset = roulette_log.stat().st_size
-        _progress(progress, f"Round {i}: open ready - {detail}")
-
+        # Strategy fast path: build plan/script + credit snapshot *before* open so
+        # the InputAgent launches the instant the betting window arms, then START
+        # closes the window early.
         stake_units = 0
         plan = None
+        script: dict[str, Any] | None = None
+        credits_before: int | None = None
+        strategy_fast = sid != "full_board"
+
         if sid == "random":
             script = script_for_random_bets_and_spin(
                 min_bets=min_bets,
                 max_bets=max_bets,
                 include_outside=include_outside,
                 press_spin=True,
+                aggressive=True,
+            )
+            stake_units = int((script.get("meta") or {}).get("stake_units") or 0)
+            _progress(
+                progress,
+                f"Round {i}: plan - aggressive random {stake_units}u bets",
             )
         elif sid == "full_board":
             plan = plan_for_strategy(
@@ -323,9 +471,75 @@ def run_roulette_random(
                 base_unit=base_unit,
                 market=market,
             )
-            script = script_for_strategy_plan(plan, press_spin=True)
+            script = script_for_strategy_plan(plan, press_spin=True, fast=True)
             stake_units = plan.stake_units
             _progress(progress, f"Round {i}: plan - {plan.notes}")
+
+        if strategy_fast:
+            try:
+                pre = fetch_player_state(ip)
+                credits_before = _meter_cvd(pre)
+                playable = _playable_credits(pre)
+            except Exception:  # noqa: BLE001
+                credits_before = None
+                playable = None
+        else:
+            playable = None
+
+        floor = max(0, int(min_credits))
+        if playable is None:
+            try:
+                pre2 = fetch_player_state(ip)
+                playable = _playable_credits(pre2)
+                if credits_before is None:
+                    credits_before = _meter_cvd(pre2)
+            except Exception:  # noqa: BLE001
+                playable = None
+        if playable is None or playable < floor:
+            msg = (
+                f"no/low credits ({playable} < {floor}); "
+                "skip remaining rounds until topped up"
+            )
+            results.append(
+                RouletteRoundResult(
+                    round_index=i,
+                    ok=False,
+                    message=msg,
+                    credits_before=credits_before
+                    if credits_before is not None
+                    else playable,
+                )
+            )
+            _progress(progress, f"Round {i}: STOP - {msg}")
+            break
+
+        settle = (
+            OPEN_UI_SETTLE_STRATEGY_SEC
+            if strategy_fast
+            else OPEN_UI_SETTLE_START_SEC
+        )
+        _progress(progress, f"Round {i}/{rounds}: waiting for bets open ...")
+        opened, detail = wait_for_betting_open(
+            roulette_log,
+            timeout_sec=open_timeout_sec,
+            settle_sec=settle,
+            already_open_settle_sec=0.05 if strategy_fast else 0.15,
+            progress=progress,
+        )
+        if not opened:
+            results.append(
+                RouletteRoundResult(
+                    round_index=i,
+                    ok=False,
+                    message=f"no bets-open arm point: {detail}",
+                )
+            )
+            _progress(progress, f"Round {i}: FAIL - {detail}")
+            continue
+        offset = roulette_log.stat().st_size
+        _progress(progress, f"Round {i}: open ready - {detail}")
+
+        assert script is not None
         meta = script.pop("meta", {})
         chip = str(meta.get("chip") or "")
         bets = list(meta.get("bets") or [])
@@ -342,9 +556,14 @@ def run_roulette_random(
         ruleta_off = ruleta_log.stat().st_size if ruleta_log is not None else 0
         pre_size = roulette_log.stat().st_size
 
-        # Snapshot credit meter before clicks (RCM p=).
-        credits_before: int | None = None
-        if ruleta_log is not None:
+        # Snapshot credit meter before clicks (middleware CVD — stable vs RCM race).
+        if credits_before is None:
+            try:
+                pre = fetch_player_state(ip)
+                credits_before = _meter_cvd(pre)
+            except Exception:  # noqa: BLE001
+                credits_before = None
+        if credits_before is None and ruleta_log is not None:
             try:
                 tail = ruleta_log.read_bytes()[-4000:].decode("utf-8", errors="replace")
                 for line in reversed(tail.replace("\r\n", "\n").splitlines()):
@@ -413,12 +632,33 @@ def run_roulette_random(
                 break
             time.sleep(0.3)
 
-        # RCM credit lines often arrive a few seconds after "Bets are closed".
-        if credits_after is None or credits_after == credits_before:
+        # RCM lines race the payout. Prefer middleware settle for strategy outcomes.
+        settle_detail = ""
+        settled_won: bool | None = None
+        settled_after: int | None = None
+        if sid != "random":
+            settled_after, settled_won, settle_detail = wait_for_round_settled(
+                ip,
+                credits_before_cvd=credits_before,
+                stake_units=stake_units,
+                progress=lambda m: _progress(progress, f"Round {i}: {m}"),
+            )
+            if settled_after is not None:
+                credits_after = settled_after
+            if settled_won is not None:
+                won_settle = settled_won
+            else:
+                won_settle = None
+        else:
+            won_settle = None
+
+        if settled_after is None and (credits_after is None or credits_after == credits_before):
             grace_deadline = time.time() + 12.0
             while time.time() < grace_deadline:
                 if ruleta_log is not None:
-                    ruleta_off, rlines = _read_new_lines(ruleta_log, start_offset=ruleta_off)
+                    ruleta_off, rlines = _read_new_lines(
+                        ruleta_log, start_offset=ruleta_off
+                    )
                     _, p_cred, _, _ = _scan_activity(rlines)
                     if p_cred is not None:
                         credits_after = p_cred
@@ -426,8 +666,8 @@ def run_roulette_random(
                             break
                 time.sleep(0.4)
 
-        won: bool | None = None
-        if credits_before is not None and credits_after is not None:
+        won: bool | None = won_settle
+        if won is None and credits_before is not None and credits_after is not None:
             if credits_after > credits_before:
                 won = True
             elif credits_after < credits_before:
@@ -442,6 +682,7 @@ def run_roulette_random(
                 or (staked_seen is not None and staked_seen > 0)
                 or setchip_hits > 0
                 or any(code not in (193,) for code in menu_codes)
+                or bool(settle_detail)
             )
         )
         if played and sid == "full_board":
@@ -466,9 +707,11 @@ def run_roulette_random(
             scan_note = ""
             if sid == "full_board":
                 scan_note = f" scan_idx={strat_state.scan_index}"
+            settle_bit = f" {settle_detail}" if settle_detail else ""
             msg = (
                 f"{outcome} credits {credits_before}->{credits_after} "
-                f"stake={stake_units}u staked={staked_seen} closed={closed}{scan_note}"
+                f"stake={stake_units}u staked={staked_seen} closed={closed}"
+                f"{scan_note}{settle_bit}"
             )
             results.append(
                 RouletteRoundResult(

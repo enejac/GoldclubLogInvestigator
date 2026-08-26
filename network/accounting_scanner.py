@@ -1,5 +1,5 @@
 """
-Remote ``gm2au`` state read over the admin share.
+Remote / local ``gm2au`` state read for accounting summaries.
 
 Screen capture / QR decoding is bypassed for speed (SAS vs XML workflow). The
 ``local_capture_path`` argument to :func:`fetch_accounting_data` is kept for API
@@ -15,7 +15,96 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _preferred_device_manager_file(gm2au_dir: Path) -> Path | None:
+    """Prefer ``DeviceManagerData.xml_1`` / ``_2`` over unrelated files in gm2au."""
+    for name in (
+        "DeviceManagerData.xml_1",
+        "DeviceManagerData.xml_2",
+        "DeviceManagerData.xml_3",
+        "DeviceManagerData.xml_4",
+    ):
+        cand = gm2au_dir / name
+        try:
+            if cand.is_file():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def resolve_gm2au_dir(ip_or_scan_root: str) -> Path | None:
+    """
+    Resolve the ``gm2au`` folder that holds ``DeviceManagerData.xml_*``.
+
+    Works for:
+    - remote IP (``10.0.0.90``) via SMB admin share
+    - UNC / local scan roots (``\\\\ip\\c$\\Goldclub\\var\\log``, ``C:\\Goldclub\\…``)
+    - roulette ``ruleta\\var\\gm2au`` and slot ``…\\GCMessenger\\gm2au``
+    """
+    from network.goldclub_paths import (
+        extract_ip_from_path,
+        resolve_goldclub_layout,
+        resolve_sas_verify_scan_root,
+    )
+
+    raw = (ip_or_scan_root or "").strip()
+    if not raw:
+        return None
+
+    hint = raw
+    remote_ip = extract_ip_from_path(raw)
+    if remote_ip is None and "\\" not in raw and "/" not in raw and raw.count(".") == 3:
+        # Bare IPv4 → remote cabinet
+        remote_ip = raw
+        hint = rf"\\{raw}\c$\Goldclub\var\log"
+
+    discovery = resolve_sas_verify_scan_root(hint, remote_ip=remote_ip)
+    layout = resolve_goldclub_layout(discovery.scan_root)
+    if layout is not None and layout.state_gcmessenger is not None:
+        gm2au = layout.state_gcmessenger / "gm2au"
+        try:
+            if gm2au.is_dir():
+                return gm2au
+        except OSError:
+            pass
+
+    # Explicit roulette / slot fallbacks (local + UNC)
+    ip = remote_ip or extract_ip_from_path(discovery.scan_root)
+    fallbacks: list[Path] = []
+    if ip:
+        for gc in ("Goldclub", "goldclub"):
+            fallbacks.append(Path(rf"\\{ip}\c$\{gc}\ruleta\var\gm2au"))
+            fallbacks.append(
+                Path(
+                    rf"\\{ip}\c$\{gc}\var\state\GoldClub.Aurum.Services\GCMessenger\gm2au"
+                )
+            )
+    fallbacks.extend(
+        [
+            Path(r"C:\Goldclub\ruleta\var\gm2au"),
+            Path(r"C:\goldclub\ruleta\var\gm2au"),
+            Path(r"G:\Goldclub\ruleta\var\gm2au"),
+            Path(r"G:\goldclub\ruleta\var\gm2au"),
+            Path(r"G:\ruleta\var\gm2au"),
+            Path(
+                r"C:\Goldclub\var\state\GoldClub.Aurum.Services\GCMessenger\gm2au"
+            ),
+        ]
+    )
+    for p in fallbacks:
+        try:
+            if p.is_dir():
+                return p
+        except OSError:
+            continue
+    return None
+
+
 def _gm2au_unc_root(ip: str) -> Path:
+    """Back-compat helper: gm2au dir for a cabinet IP (may not exist)."""
+    found = resolve_gm2au_dir(ip)
+    if found is not None:
+        return found
     ip = (ip or "").strip()
     return Path(rf"\\{ip}\c$\Goldclub\var\state\GoldClub.Aurum.Services\GCMessenger\gm2au")
 
@@ -80,11 +169,14 @@ def _parse_gm2au_meters(raw_text: str) -> str:
 
 
 def _read_state_file_text(gm_path: Path) -> str:
-    """Read ``gm2au`` file or newest file in that directory; return text or error string."""
+    """Read ``gm2au`` DeviceManagerData (or newest file); return text or error string."""
     try:
         if gm_path.is_file():
             return gm_path.read_text(encoding="utf-8", errors="replace")
         if gm_path.is_dir():
+            preferred = _preferred_device_manager_file(gm_path)
+            if preferred is not None:
+                return preferred.read_text(encoding="utf-8", errors="replace")
             files = [p for p in gm_path.iterdir() if p.is_file()]
             if not files:
                 return (
@@ -95,7 +187,7 @@ def _read_state_file_text(gm_path: Path) -> str:
             return newest.read_text(encoding="utf-8", errors="replace")
         return (
             f"Backend state path not found (not a file or directory):\n{gm_path}\n"
-            "Check that GoldClub.Aurum.Services state is deployed on the cabinet."
+            "Check ruleta\\var\\gm2au (roulette) or GCMessenger\\gm2au (slot) on the cabinet."
         )
     except OSError as e:
         return f"Could not read backend state from {gm_path}:\n{e}"
@@ -108,29 +200,29 @@ def _read_gm2au_state_for_ui(gm_path: Path) -> str:
 
 def fetch_accounting_data(ip_address: str, local_capture_path: str) -> tuple[str, str]:
     """
-    Read ``gm2au`` state from the cabinet (SMB). QR / screen capture is bypassed.
+    Read ``gm2au`` state from the cabinet (SMB or local). QR / screen capture is bypassed.
 
+    ``ip_address`` may be a bare IP, UNC path, or local Goldclub/log root.
     ``local_capture_path`` is unused while QR scanning is disabled (API compatibility).
 
     Returns ``(qr_text, state_text)`` — errors are returned as human-readable strings
     in the appropriate side, not raised.
     """
     _ = local_capture_path  # retained for callers; no capture while QR is disabled
-    ip = (ip_address or "").strip()
-    if not ip:
+    target = (ip_address or "").strip()
+    if not target:
         return "No IP address provided.", ""
 
-    # --- Part 1 (Capture and Decode QR) — disabled for fast SAS/XML comparison ---
-    # local = Path(local_capture_path)
-    # ok, msg = capture_remote_screen(ip, str(local))
-    # if not ok:
-    #     return f"Screen capture failed: {msg}", _read_gm2au_state_for_ui(...)
-    # ... OpenCV cv2.imread / QRCodeDetector.detectAndDecode ...
-    # finally: unlink capture file
     qr_text = "QR Scanning Disabled (Bypassed for fast SAS/XML comparison)."
 
-    # --- Part 2 (Fetch XML state via SMB) ---
-    state_text = _read_gm2au_state_for_ui(_gm2au_unc_root(ip))
+    gm2au = resolve_gm2au_dir(target)
+    if gm2au is None:
+        return qr_text, (
+            "Backend gm2au state not found.\n"
+            "Tried roulette ruleta\\var\\gm2au and slot GCMessenger\\gm2au "
+            f"for target={target!r}."
+        )
+    state_text = _read_gm2au_state_for_ui(gm2au)
     return qr_text, state_text
 
 

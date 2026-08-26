@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     Capture SAS stack state from a lab cabinet for before/after comparison.
@@ -54,14 +54,14 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$RepoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
+$RepoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $OutDir) {
     $OutDir = Join-Path $RepoRoot 'aft\investigations'
 }
 
 . "$RepoRoot\LabAccess.ps1"
-if (Test-Path -LiteralPath "$RepoRoot\LabRemoteTransport.ps1") {
-    . "$RepoRoot\LabRemoteTransport.ps1"
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LabRemoteTransport.ps1')) {
+    . (Join-Path $PSScriptRoot 'LabRemoteTransport.ps1')
 }
 
 function Limit-TextLines {

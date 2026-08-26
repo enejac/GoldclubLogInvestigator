@@ -31,12 +31,16 @@ param(
     [int]      $DrainReserveSec = 25,
     [string]   $TargetProcess   = 'OneHand',
     [string]   $WinDivertDir    = 'C:\Tools\WinDivert\extracted\WinDivert-2.2.2-A\x64',
-    [string]   $ExePath         = 'C:\Users\Ezbogar\GoldclubLogInvestigator\ButtonInject.exe',
-    [string]   $ButtonMapPath   = 'C:\Users\Ezbogar\GoldclubLogInvestigator\ButtonMap.json'
+    [string]   $ExePath         = '',
+    [string]   $ButtonMapPath   = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$RepoRoot = Split-Path $PSScriptRoot -Parent
+if (-not $ExePath) { $ExePath = Join-Path $RepoRoot 'probes\ButtonInject.exe' }
+if (-not $ButtonMapPath) { $ButtonMapPath = Join-Path $RepoRoot 'ButtonMap.json' }
 
 $dll = Join-Path $WinDivertDir 'WinDivert.dll'
 $sys = Join-Path $WinDivertDir 'WinDivert64.sys'

@@ -19,7 +19,8 @@
 param()
 
 $ErrorActionPreference = 'Stop'
-Set-Location $PSScriptRoot
+$RepoRoot = Split-Path $PSScriptRoot -Parent
+Set-Location $RepoRoot
 
 if (-not $env:VENICE_API_KEY) {
     Write-Host 'Set VENICE_API_KEY first, e.g.:' -ForegroundColor Yellow
@@ -48,4 +49,4 @@ Write-Host '  POST /v1/chat/completions ... 200' -ForegroundColor DarkGray
 Write-Host 'If no POST lines appear, Cursor is not using this proxy.' -ForegroundColor Yellow
 Write-Host ''
 
-python "$PSScriptRoot\tools\venice_cursor_proxy.py"
+python (Join-Path $RepoRoot 'tools\venice_cursor_proxy.py')

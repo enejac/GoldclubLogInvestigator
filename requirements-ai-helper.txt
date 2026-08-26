@@ -1,0 +1,12 @@
+# Optional: embedded local LLM for AI Helper (offline GGUF via llama.cpp).
+# Install when building with: ./build_exe.ps1 -BundleLocalAi -InstallDeps
+#
+#   python -m pip install -r requirements-ai-helper.txt
+#
+# Then place Qwen3-4B Q4_K_M.gguf under models\ next to the exe
+# (or run scripts/fetch_ai_helper_model.ps1).
+#
+# Note: some PyPI win_amd64 wheels ship Debug CRT DLLs (MSVCP140D / ucrtbased).
+# build_exe.ps1 -BundleLocalAi fetches official llama.cpp Release DLLs into
+# vendor\llama_cpp_lib so the frozen exe loads on cabinets without Visual Studio.
+llama-cpp-python>=0.3.0

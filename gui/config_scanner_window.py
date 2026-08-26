@@ -1,4 +1,4 @@
-"""Standalone window for the Config SHA1 Scanner."""
+"""Standalone window for the Config Scanner."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ class ConfigScannerWindow(QMainWindow):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         logger.info("ConfigScannerWindow.__init__ start")
-        self.setWindowTitle("Config SHA1 Scanner")
-        self.setMinimumSize(980, 720)
+        self.setWindowTitle("Config Scanner")
+        self.setMinimumSize(900, 600)
         self.resize(1180, 860)
         apply_window_branding(self)
 
@@ -38,7 +38,7 @@ class ConfigScannerWindow(QMainWindow):
         brand = QLabel()
         brand.setPixmap(status_bar_brand_pixmap(size=18))
         sb.addWidget(brand)
-        sb.addWidget(QLabel("Config SHA1 Scanner"))
+        sb.addWidget(QLabel("Config Scanner"))
         self._status = QLabel("Ready")
         sb.addWidget(self._status, stretch=1)
 
@@ -61,7 +61,7 @@ def run_config_scanner_app() -> int:
     logger.info("run_config_scanner_app starting log_file=%s", log_path)
     app = QApplication.instance() or QApplication([])
     app.setApplicationName("Log Investigator")
-    app.setApplicationDisplayName("Config SHA1 Scanner")
+    app.setApplicationDisplayName("Config Scanner")
     app.setQuitOnLastWindowClosed(True)
     app.setStyle("Fusion")
 

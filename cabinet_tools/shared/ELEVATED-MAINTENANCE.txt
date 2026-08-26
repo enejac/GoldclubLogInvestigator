@@ -1,0 +1,13 @@
+GoldClub elevated maintenance (ConfigScanner USB)
+
+JT25.BAT
+  1) C:\goldclub\bin\Setup.exe --setup application.ruleta.setup ... (superadmin / keyword here)
+  2) RunManteinanceTasks.1.ps1 on D__JT25\ (same mechanism as D__onlogon on field USB)
+  3) Log: JT25.log next to this bat
+
+Add more elevated tasks
+  Drop numbered *.ps1 files in D__JT25\ (e.g. 02-YourTask.ps1)
+  Or create D__YourName\ and run: _RunElevated.bat D__YourName
+
+_JT25.BAT
+  Copy to C:\goldclub\bin\ - one-line Setup.exe only (your original working bat)

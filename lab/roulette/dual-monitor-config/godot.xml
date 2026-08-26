@@ -1,0 +1,88 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<config xmlns="config">
+	<appname>godot.exe</appname>
+	<apppath>c:\goldclub\apps\godot\3.3.2.0-gc</apppath>  
+	<resname>RouletteGui.pck</resname>
+	<respath>c:\goldclub\ruleta\godot</respath>
+	<!--use false to disable automatic frontend start-->
+	<!--startgodot>true</startgodot-->
+	<!--Here is set of arguments, applied to all player stations
+		Arguments are seperated with comma::
+		
+		nosound : disables all sounds
+		url={url} : URL of a roulette, default is to localhost
+		logmissingstrings : logs all missing string
+		gamestart={game} : start selected game, currently "new", "old" or "selector" can be used, default is "selector"
+		MOVED TO SETUP.XML!-->
+	<!--args>noaudio,pathtoscreenshots=c:\\goldclub\\ruleta\\var\\screens\\,screenshotquality=10,race_with_sqare_view,showLuckyNumberInStatistics,logbets,dynamicpaytables,dpuserselect</args-->
+	<environment>
+		<!-- clamped to max 50 inside mono source code-->
+		<MONO_THREADS_PER_CPU>50</MONO_THREADS_PER_CPU>
+		<MONO_PATH>c:\goldclub\ruleta\lib</MONO_PATH>
+		<!-- mono logs are located under %APPDATA%/godot/....; move them out of windows -->
+		<appdata>c:\goldclub\var\run\</appdata>
+	</environment>
+	<layout>
+		<window1>
+			<position>0,0</position>
+			<playerIndexes>1</playerIndexes>
+			<!--skin>old</skin-->
+			<!--Here is set of arguments, applied to this specific player stations-->
+		</window1>
+		<window2>
+			<position>1920,0</position>
+			<playerIndexes>2</playerIndexes>
+			<!--skin>old</skin-->
+			<!--Here is set of arguments, applied to this specific player stations-->
+		</window2>
+		<window3>
+			<position>3840,0</position>
+			<playerIndexes>3</playerIndexes>
+			<!--skin>old</skin-->
+			<!--Here is set of arguments, applied to this specific player stations-->
+		</window3>
+		<window4>
+			<position>5760,0</position>
+			<playerIndexes>4</playerIndexes>
+			<!--skin>old</skin-->
+			<!--Here is set of arguments, applied to this specific player stations-->
+		</window4>
+		<window5>
+			<position>7680,0</position>
+			<playerIndexes>5</playerIndexes>
+			<!--skin>old</skin-->
+			<!--Here is set of arguments, applied to this specific player stations-->
+		</window5>
+		<window6>
+			<position>9600,0</position>
+			<playerIndexes>6</playerIndexes>
+			<!--skin>old</skin-->
+			<!--Here is set of arguments, applied to this specific player stations-->
+		</window6>
+		<window7>
+			<position>11520,0</position>
+			<playerIndexes>7</playerIndexes>
+			<!--skin>old</skin-->
+			<!--Here is set of arguments, applied to this specific player stations-->
+		</window7>
+		<window8>
+			<position>13440,0</position>
+			<playerIndexes>8</playerIndexes>
+			<!--skin>old</skin-->
+			<!--Here is set of arguments, applied to this specific player stations-->
+		</window8>
+		<window9>
+			<position>15360,0</position>
+			<playerIndexes>9</playerIndexes>			
+			<!--skin>old</skin-->
+			<!--Here is set of arguments, applied to this specific player stations-->
+		</window9>
+		<window10>
+			<position>17280,0</position>
+			<playerIndexes>10</playerIndexes>			
+			<!--skin>old</skin-->
+			<!--Here is set of arguments, applied to this specific player stations-->
+		</window10>
+
+	</layout>
+</config>

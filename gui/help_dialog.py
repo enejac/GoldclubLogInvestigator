@@ -22,72 +22,76 @@ def _help_html() -> str:
 <h1>Log Investigator</h1>
 <p>Version {APP_VERSION}</p>
 <p>
-Log Investigator scans Goldclub cabinet logs (local folders or remote UNC shares),
-finds errors and warnings, and helps you trace what went wrong on a machine.
+Scans GoldClub logs (local folder or remote share), lists errors/warnings, and
+helps you see what went wrong on a cabinet.
 </p>
 
-<h2>Quick start</h2>
+<h2>First run</h2>
 <ol>
-<li><b>Choose how to connect</b> &mdash; <i>Local machine</i> or <i>Remote IP</i>.
-Enter the cabinet IP (for example <code>10.0.0.90</code>). A green dot means the share is reachable.</li>
-<li><b>Check Scan root</b> &mdash; usually <code>\\\\IP\\c$\\Goldclub\\var\\log</code>.
-Use <b>Browse…</b> if you need a different folder.</li>
-<li><b>Scan</b> &mdash; reads log files and fills the incident table.</li>
-<li><b>Click a row</b> &mdash; open the Root Cause panel for surrounding log lines.</li>
+<li>Pick <b>Local machine</b> or <b>Remote IP</b> (e.g. <code>10.0.0.90</code>).
+    Green = share reachable.</li>
+<li>Confirm <b>Scan root</b> — usually
+    <code>\\\\IP\\c$\\Goldclub\\var\\log</code>. Use <b>Browse…</b> if needed.</li>
+<li>Click <b>Scan</b> (or <b>F5</b>).</li>
+<li>Click a row → Root Cause shows nearby log lines.</li>
 </ol>
 
-<h2>Main toolbar</h2>
+<h2>Toolbar</h2>
 <table cellpadding="4">
-<tr><td><b>Scan</b></td><td>Run a full scan of the scan root.</td></tr>
-<tr><td><b>Stop</b></td><td>Cancel a scan in progress.</td></tr>
-<tr><td><b>Verify SAS Accounting</b></td><td>Compare pasted SAS meter traffic against cabinet accounting.</td></tr>
-<tr><td><b>Live Watch</b></td><td>Tail the newest log files while you reproduce an issue.</td></tr>
-<tr><td><b>Start Session</b></td><td>Record only incidents seen after session start (useful during live testing).</td></tr>
-<tr><td><b>Capture Screen</b></td><td>Grab a screenshot from the remote cabinet.</td></tr>
+<tr><td><b>Scan</b> / <b>Stop</b></td><td>Start or cancel a scan (<b>F5</b> / <b>Shift+F5</b>).</td></tr>
+<tr><td><b>Clear</b></td><td>Clear the table and filters only — never deletes log files
+    (<b>Ctrl+Shift+Del</b>).</td></tr>
+<tr><td><b>Verify SAS Accounting</b></td><td>Open meter compare (same as SasVerifyMeters).</td></tr>
+<tr><td><b>Live Watch</b></td><td>Tail newest logs while you reproduce a bug.</td></tr>
+<tr><td><b>Tools</b></td><td>Screen capture, <b>RAM Clear</b>, Config Scanner, AI Helper, signatures.</td></tr>
 </table>
 
-<h2>Filter box</h2>
+<h2>RAM Clear</h2>
 <p>
-Type to narrow the incident list (exception names, themes, paths, and more).
-Press <b>Ctrl+F</b> to jump to the filter. Press <b>Esc</b> to clear it.
+<strong>No EGM reboot required.</strong> Use <b>Tools → RAM Clear…</b> and leave the
+cabinet powered on. It stops the game and GoldClub services, runs the official
+wipe, stamps soft meters (SAS <b>0x7A</b>), then restarts services on the live
+machine. Licences stay. Slot returns via Bootstrap/BiOS2; roulette restarts Ruleta.
 </p>
 
 <h2>Tabs</h2>
 <ul>
-<li><b>Incidents</b> &mdash; main table with severity, game/theme, and validation hints.</li>
-<li><b>Automated Tests</b> &mdash; lab automation status when configured.</li>
-<li><b>History</b> &mdash; past scans stored in the local database.</li>
-<li><b>Fleet Overview</b> &mdash; ping/SMB status for known cabinets on the network.</li>
+<li><b>Incidents</b> — scan results.</li>
+<li><b>Automated Tests</b> — lab automation (when configured).</li>
+<li><b>History</b> — past scans.</li>
+<li><b>Fleet Overview</b> — ping/SMB for known cabinets.</li>
 </ul>
 
-<h2>SAS accounting verification</h2>
+<h2>SAS meters</h2>
 <p>
-Open from <b>Verify SAS Accounting</b>. Paste SAS TX/RX hex lines, click <b>Compare</b>,
-and review meter values side by side with the cabinet.
-Use <b>View &rarr; Columns</b> to show only the columns you need.
+<b>Verify SAS Accounting</b> (or standalone <b>SasVerifyMeters</b>) compares live SAS
+with the cabinet Machine snapshot. Use after credits, handpay, tickets/AFT, or RAM
+clear. That window has its own Help (<b>F1</b>) for COM, Auto fetch, and hotkeys.
 </p>
 
-<h2>Keyboard shortcuts</h2>
+<h2>Shortcuts</h2>
 <table cellpadding="4">
-<tr><td><b>Ctrl+F</b></td><td>Focus the filter box</td></tr>
-<tr><td><b>Ctrl+R</b></td><td>Start / stop session recording</td></tr>
-<tr><td><b>Ctrl+S</b></td><td>Create case snapshot (zip export)</td></tr>
+<tr><td><b>Ctrl+F</b></td><td>Filter box</td></tr>
+<tr><td><b>F5</b> / <b>Shift+F5</b></td><td>Scan / stop</td></tr>
+<tr><td><b>Ctrl+Shift+Del</b></td><td>Clear results</td></tr>
+<tr><td><b>Ctrl+O</b> / <b>Ctrl+Shift+O</b></td><td>Open folder / file</td></tr>
+<tr><td><b>Ctrl+S</b></td><td>Case snapshot (zip)</td></tr>
+<tr><td><b>Ctrl+Shift+C</b> / <b>Ctrl+Shift+A</b></td><td>Config Scanner / AI Helper</td></tr>
 <tr><td><b>Ctrl+,</b></td><td>Settings</td></tr>
-<tr><td><b>F1</b></td><td>Open this help</td></tr>
+<tr><td><b>F1</b></td><td>This help</td></tr>
 </table>
 
-<h2>Settings (File menu)</h2>
-<p>
-Change theme (Light / Dark / System), notification options, log retention,
-AI provider keys, and fleet clock-drift thresholds.
-</p>
+<p><b>SasVerifyMeters</b> (when that window is open):
+<b>Ctrl+Alt+Shift+T</b> next tab · <b>Ctrl+1</b>–<b>8</b> jump tab ·
+<b>Ctrl+Alt+Shift+M</b> other monitor · <b>Ctrl+Alt+Shift+K</b> close ·
+<b>Ctrl+Tab</b> next tab (window focused).</p>
 
 <h2>Tips</h2>
 <ul>
-<li>Remote cabinets need network access to <code>\\\\IP\\c$\\...</code> (SMB port 445).</li>
-<li>Use <b>Time filter</b> before a large scan to limit how much log data is parsed.</li>
-<li>Drag and drop a <code>.log</code> file or folder onto the window to analyze it quickly.</li>
-<li>CRITICAL rows flash during Live Watch; enable <b>Auto-scroll</b> to follow new events.</li>
+<li>Remote needs SMB to <code>\\\\IP\\c$\\…</code> (port 445).</li>
+<li>Use a <b>Time filter</b> before big scans.</li>
+<li>Drag a <code>.log</code> or folder onto the window to open it.</li>
+<li>In Live Watch, turn on <b>Auto-scroll</b> to follow CRITICAL flashes.</li>
 </ul>
 """
 
@@ -102,7 +106,7 @@ class HelpDialog(QDialog):
 
         root = QVBoxLayout(self)
         intro = QLabel(
-            "Quick reference for scanning cabinet logs, live watch, and SAS verification."
+            "Short guide for first-time use: scan logs, Live Watch, Tools, and SAS meters."
         )
         intro.setWordWrap(True)
         root.addWidget(intro)

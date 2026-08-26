@@ -64,6 +64,20 @@ def resolve_game_client_kind_detailed(
         return "roulette", True
     if h == "roulette":
         return "roulette", True
+    # Fleet roulette hosts (e.g. GRT330106) often use ``…\Goldclub\var`` with no
+    # ``ruleta`` segment and an unreachable C$ tree from the lab PC.
+    for source in (scan_root, hint):
+        if not source:
+            continue
+        try:
+            from network.goldclub_paths import extract_ip_from_path
+            from network.lab_access import LAB_ROULETTE_IPS
+
+            host = extract_ip_from_path(str(source))
+            if host in LAB_ROULETTE_IPS:
+                return "roulette", True
+        except Exception:
+            continue
     if h == "slot":
         return "slot", True
     # Shared …\Goldclub\var\log (no "ruleta" in path): probe Ruleta.exe like AFT.
@@ -262,12 +276,20 @@ class OneHandStatus:
 GameClientStatus = OneHandStatus
 
 
-def cabinet_smb_reachable(ip_address: str, *, timeout: float = 2.5) -> bool:
+def cabinet_smb_reachable(
+    ip_address: str,
+    *,
+    timeout: float = 2.5,
+    scan_root: str = "",
+) -> bool:
     """
-    True when the cabinet admin share / log root is reachable (TCP/445 + UNC probe).
+    True when the cabinet admin share / GoldClub tree is reachable (TCP/445 + UNC).
 
-    WMIC can fail even when SMB works; always probe share access before blaming the network.
+    Roulette cabinets (e.g. GRT330106 on ``10.0.0.111``) often have no ``var\\log``
+    folder while ``var`` or ``D:\\Goldclub`` is fine — probe several UNC roots and
+    honour the caller's ``scan_root`` when set.
     """
+    from network.goldclub_paths import normalize_path_str, unc_share_scan_root_reachable
     from network.scanner_utils import is_smb_alive
 
     ip = (ip_address or "").strip()
@@ -276,13 +298,32 @@ def cabinet_smb_reachable(ip_address: str, *, timeout: float = 2.5) -> bool:
     if not is_smb_alive(ip, timeout=timeout):
         return False
     ensure_lab_smb_credential(ip)
-    from pathlib import Path
 
-    log_root = Path(rf"\\{ip}\c$\Goldclub\var\log")
-    try:
-        return log_root.is_dir()
-    except OSError:
-        return False
+    normalized_scan = normalize_path_str(scan_root)
+    if normalized_scan.startswith("\\\\"):
+        try:
+            if unc_share_scan_root_reachable(normalized_scan, smb_timeout=timeout):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+
+    candidates = (
+        Path(rf"\\{ip}\c$\Goldclub\var"),
+        Path(rf"\\{ip}\c$\goldclub\var"),
+        Path(rf"\\{ip}\c$\Goldclub\var\log"),
+        Path(rf"\\{ip}\c$\Goldclub"),
+        Path(rf"\\{ip}\c$\goldclub"),
+        Path(rf"\\{ip}\d$\Goldclub"),
+        Path(rf"\\{ip}\d$\goldclub"),
+        Path(rf"\\{ip}\slot"),
+    )
+    for path in candidates:
+        try:
+            if path.is_dir():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _parse_wmic_running(out: str, *, code: int) -> bool | None:
@@ -460,6 +501,7 @@ def check_game_client_status(
     *,
     kind: GameClientKind = "slot",
     allow_psexec: bool = True,
+    scan_root: str = "",
 ) -> OneHandStatus | None:
     """Probe cabinet reachability, then game client via WinRM (WMIC/PsExec fallback).
 
@@ -467,6 +509,9 @@ def check_game_client_status(
     SAS link another way (e.g. a live COM capture over MUX) should pass
     ``allow_psexec=False`` and only reach for PsExec when that also fails, so the
     fast path stays snappy and silent.
+
+    Share access can fail on workgroup cabinets even when WinRM answers; a definite
+    RUNNING/STOPPED from WinRM/WMIC/PsExec still counts as reachable.
     """
     ip = (ip_address or "").strip()
     if not ip or os.name != "nt":
@@ -479,9 +524,7 @@ def check_game_client_status(
             return check_game_client_status_local(kind=kind)
         logger.debug("game client probe skipped for non-fleet host %r", ip)
         return None
-    smb = cabinet_smb_reachable(ip)
-    if not smb:
-        return OneHandStatus(running=None, smb_reachable=False)
+    smb = cabinet_smb_reachable(ip, scan_root=scan_root)
     # WinRM first (lab standard: fast, reliable, full access). WMIC is deprecated
     # and PsExec needs a bundled tools/psexec.exe, so both are fallbacks only.
     running = _game_client_via_winrm(ip, kind)
@@ -489,6 +532,9 @@ def check_game_client_status(
         running = _game_client_via_wmic(ip, kind)
     if running is None and allow_psexec:
         running = _game_client_via_psexec(ip, kind)
+    reachable = smb or running is not None
+    if not reachable:
+        return OneHandStatus(running=None, smb_reachable=False)
     return OneHandStatus(running=running, smb_reachable=True)
 
 
@@ -564,9 +610,9 @@ def game_client_warning_text(
         )
         return (
             f"<b style='color:#b45309;'>Warning:</b> "
-            f"<code>{exe}</code> is <b>not running</b> on <b>{label}</b>. "
-            f"The SAS host link often returns no RX until the {client} is started "
-            f"on the EGM (Aurum / CommCtrl stack)."
+            f"Cabinet <b>{label}</b> is reachable, but <code>{exe}</code> is "
+            f"<b>not running</b>. Start the {client} on the EGM (Aurum / CommCtrl "
+            f"stack) for live SAS RX."
         )
     if smb_reachable is False:
         if not is_valid_remote_cabinet_ip(ip_address):

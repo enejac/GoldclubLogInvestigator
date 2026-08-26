@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": "py -3 .cursor/hooks/fix_utf16_after_edit.py",
+        "timeout": 15
+      }
+    ],
+    "afterTabFileEdit": [
+      {
+        "command": "py -3 .cursor/hooks/fix_utf16_after_edit.py",
+        "timeout": 15
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "py -3 .cursor/hooks/fix_utf16_after_edit.py",
+        "matcher": "Write|StrReplace|EditNotebook",
+        "timeout": 15
+      }
+    ]
+  }
+}

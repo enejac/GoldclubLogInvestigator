@@ -1,0 +1,41 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Jurisdiction xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <Tag>PuertoRico</Tag>
+  <DenominationDisplay>
+    <SingleDenomination>1</SingleDenomination>
+	<DisplayDenomWithCurrencySymbol>true</DisplayDenomWithCurrencySymbol>
+	<DisplayDenomInCurrency>true</DisplayDenomInCurrency>
+  </DenominationDisplay>
+  <CultureInformation>
+    <CultureName>es-PR</CultureName>
+  </CultureInformation>
+  <CurrencyDisplaySettings>
+    <CurrencyName>USD</CurrencyName>
+	<CurrencySymbol>$</CurrencySymbol>
+	<CurrencyBaseSymbol>¢</CurrencyBaseSymbol>
+	<CurrencyDisplayFormat>
+	  <CurrencyLongFormat>{0} USD</CurrencyLongFormat>
+	  <CurrencyShortFormat>${0}</CurrencyShortFormat>
+	  <CurrencyBaseFormat>{0}¢</CurrencyBaseFormat>
+	</CurrencyDisplayFormat>
+    <DisplaySymbolInCurrency>true</DisplaySymbolInCurrency>
+    <EnableDisplayDecimals>true</EnableDisplayDecimals>
+    <EnableThousandSeparator>true</EnableThousandSeparator>
+  </CurrencyDisplaySettings>
+  <MagicWheelPackSettings>
+    <Enabled>true</Enabled>
+	<MoneyLimit>500</MoneyLimit>
+  </MagicWheelPackSettings>
+  <Languages><!--The first language of the list will be the initial language of the pack-->
+    <LanguageButtonStateSetting><!--StateSettings-->
+      <StateName>Spanish</StateName>
+      <TexturePath>data\GameStarColors\1080p\Red\console\languageBtn\flag_spanish.png</TexturePath>
+      <PressedTexturePath>data\GameStarColors\1080p\Red\console\languageBtn\flag_spanish_pressed.png</PressedTexturePath>
+    </LanguageButtonStateSetting>
+    <LanguageButtonStateSetting><!--StateSettings-->
+      <StateName>English</StateName>
+      <TexturePath>data\GameStarColors\1080p\Red\console\languageBtn\flag_english.png</TexturePath>
+      <PressedTexturePath>data\GameStarColors\1080p\Red\console\languageBtn\flag_english_pressed.png</PressedTexturePath>
+    </LanguageButtonStateSetting>
+  </Languages>
+</Jurisdiction>

@@ -39,7 +39,7 @@ The working decouple point is **Hop 2 (the CommCtrlSAS → Aurum bridge), via Wi
 
 ### Recommendation
 
-**Decouple at Hop 2 using WinDivert in-stream injection** (`../../Invoke-WinDivertAft.ps1` / `../../WdInject.cs`). The key nuance: a *new* socket to `31150` does not work — `CommCtrlSAS` never merges a separate connection into the live serial-backed SAS session. Injecting INTO the existing flow with the correct SEQ does, because Aurum sees the bytes as the next in-order data on its established session. Full method, the live-injection evidence, and the dead-ends are in [`../RUNBOOK.md`](../RUNBOOK.md).
+**Decouple at Hop 2 using WinDivert in-stream injection** (`../../lab/Invoke-WinDivertAft.ps1` / `../../probes/WdInject.cs`). The key nuance: a *new* socket to `31150` does not work — `CommCtrlSAS` never merges a separate connection into the live serial-backed SAS session. Injecting INTO the existing flow with the correct SEQ does, because Aurum sees the bytes as the next in-order data on its established session. Full method, the live-injection evidence, and the dead-ends are in [`../RUNBOOK.md`](../RUNBOOK.md).
 
 What does **not** work (recorded so nobody retries):
 - **Hop 3 direct-post (.NET remoting WAT `requestTransfer`)** — `RequestTransferPosted` `NullReferenceException` for a brand-new id.
@@ -50,4 +50,4 @@ What does **not** work (recorded so nobody retries):
 
 Note: this layer has **no effective registration gate** — an unregistered cabinet with an all-zero key still commits (finding #4). That is exactly why the `SUCCESS_WHILE_UNREGISTERED` monitor exists; keep it on.
 
-For the test oracle, pair any stimulus with **Hop 5** (`../../Invoke-AftTransferTest.ps1` / `../../Convert-AftHistory.ps1`) for automatic PASS/FAIL.
+For the test oracle, pair any stimulus with **Hop 5** (`../../lab/Invoke-AftTransferTest.ps1` / `../../lab/Convert-AftHistory.ps1`) for automatic PASS/FAIL.

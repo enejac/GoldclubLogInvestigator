@@ -7,6 +7,7 @@ produces the raw ``list[int]`` filter order.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,14 @@ class QuickFilterSnapshot:
 
 from parser_rules import match_known_issue
 
+# GoldClub log level after ISO timestamp (INFO/WARN/ERROR/ERRO truncated).
+# Must not match the word "error" inside a message body (that wrongly pulled MEDIUM
+# "Error Log Line" rows into the Critical chip).
+_LOG_LEVEL_ERRO = re.compile(
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?\s+ERRO(?:R)?(?:\s|$)",
+    re.IGNORECASE,
+)
+
 
 def quick_filter_match(inc: Incident, q: QuickFilterSnapshot) -> bool:
     if not q.any_active():
@@ -50,7 +59,11 @@ def quick_filter_match(inc: Incident, q: QuickFilterSnapshot) -> bool:
     if q.critical:
         if inc.severity == "CRITICAL":
             return True
-        if "FATAL" in snip or "FATAL" in et_u:
+        if "FATAL" in et_u or re.search(r"\bFATAL\b", snip):
+            return True
+        # Roulette often logs level as ERRO (truncated); keep those under Critical only
+        # when ERRO/ERROR is the level token, not a word in the message.
+        if _LOG_LEVEL_ERRO.search(inc.line_snippet or ""):
             return True
     if q.warn:
         if inc.severity == "MEDIUM":
@@ -101,6 +114,13 @@ def _timeline_match(
     t0: float | None,
     t1: float | None,
 ) -> bool:
+    """
+    Explicit range selection: a row we cannot place in time is not in the range.
+
+    This is deliberately stricter than :func:`_session_match`, which keeps undated
+    rows — a live tail whose log format has no timestamps must not look empty just
+    because a recording session was started.
+    """
     if t0 is None or t1 is None:
         return True
     k = parse_iso_timestamp_sort_key(inc.timestamp)

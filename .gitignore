@@ -14,6 +14,38 @@ last_session.json
 # Config scanner runtime output (manifests live on USB too)
 config-scanner/snapshots/
 config-scanner/reports/
+config-scanner/cabinet_secrets.json
+config-scanner/browser/chrome-win64/
+config-scanner/browser/user-data/
+config-scanner/browser/*.zip
+config-scanner/browser/VERSION.txt
+snapshots/
+reports/
+
+# Offline AI Helper GGUF weights (multi-GB; fetch via scripts/fetch_ai_helper_model.ps1)
+models/*.gguf
+models/*.gguf.tmp
+
+# llama.cpp Release DLL cache (fetch via scripts/fetch_llama_cpp_release_dlls.ps1)
+vendor/llama_cpp_release/
+vendor/llama_cpp_lib/*.dll
+!vendor/llama_cpp_lib/SOURCE.txt
+
+# Built desktop app (root copy + dist/)
+LogInvestigator.exe
+SasVerifyMeters.exe
+SasVerifyMeters/
+
+# Script/runtime logs
+logs/
+LogInvestigator.log
+
+# Local automation scratch (overlays, verify runs, InputAgent staging)
+_tmp/
+_tmp_logs/
+
+# Local ruleta version packages (software version swap tab)
+software_versions/
 
 # Python / build artifacts
 __pycache__/
@@ -25,3 +57,18 @@ build-stage0/
 *.egg-info/
 py-to-exe/.build-venv/
 automation_runs/
+
+# Local scratch / one-off probes (never ship)
+_tmp_*.py
+_run_batches.py
+_patch_ram_ui.py
+_outline_sasverify.txt
+SasVerifyMeters.log
+mount-goldclub-vhd.log
+aft/captures/
+meter_trace/
+config-scanner/rollback.json
+*.bak_jira
+*.bak_lock
+*.bak-shell-hih
+probes/*.exe

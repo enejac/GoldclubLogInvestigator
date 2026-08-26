@@ -215,10 +215,27 @@ SAS_6F_METER_ALIASES: dict[str, list[str]] = {
         "Total Coin Out",
     ],
     "0002": ["TotalJackpot", "Drop", "jackpot", "progressivecoinout", "totaljackpot"],
-    "0003": ["TotalHandPaidCancelled", "totalhandpaidcancelled", "Handpay", "handpay", "TotalHandpay", "totalhandpay", "attendantpaid"],
-    # NOTE: some Goldclub versions report handpaid/cancelled under the same XML meter name.
-    "0004": ["TotalCancelledCredits", "cancelledcredits", "totalcancelledcredits", "handpay"],
-    "0005": ["TotalGamesPlayed", "GamesPlayed", "vGamesPlayed", "Meter_5", "gamesPlayed", "GameBasePlays", "Games Played"],
+    # Slot builds often use a shared cancelledcredits bucket; roulette (ruleta) uses
+    # handpayCashableOutAmt / handpayKeyedOff*OutAmt instead — keep both families.
+    "0003": [
+        "TotalHandPaidCancelled",
+        "totalhandpaidcancelled",
+        "cancelledcredits",
+        "handpayCashableOutAmt",
+        "handpay_cashableOutAmt",
+        "Handpay",
+        "handpay",
+        "TotalHandpay",
+        "totalhandpay",
+        "attendantpaid",
+    ],
+    # Derived in get_gm2u_value_for_sas_code (0003 + 0016 + 0018); aliases are fallback only.
+    "0004": [
+        "TotalCancelledCredits",
+        "cancelledcredits",
+        "totalcancelledcredits",
+    ],
+    "0005": ["TotalGamesPlayed", "GamesPlayed", "vGamesPlayed", "Meter_5", "gamesPlayed", "GameBasePlays", "Games Played", "gamesSinceInit", "gamessinceinit"],
     "0006": ["GamesWon", "Games Won"],
     # Not always stored directly; often computed as Played - Won.
     "0007": ["TotalGamesLost", "totalgameslost", "gameslost"],
@@ -276,8 +293,28 @@ SAS_6F_METER_ALIASES: dict[str, list[str]] = {
     "0020": ["TotalAttendantPaidProg.Win"],
     "0023": [
         "TotalHandPaid",
+        # Roulette DeviceManager (verified .90 ruleta): handpayCashableOutAmt.
+        "handpayCashableOutAmt",
+        "handpay_cashableOutAmt",
+        "handpayKeyedOffCashableOutAmt",
         "handpay_keyedoffcashableoutamt",
+        "handpayKeyedOffNonCashableOutAmt",
+        "handpayKeyedOffPromoOutAmt",
+        # Slot legacy shared bucket (only when handpay* keys are absent).
         "cancelledcredits",
+        "Handpay",
+        "handpay",
+    ],
+    # Master-tab Handpay In only (not a SAS LP). EGM "Insertar el pago manual"
+    # = deviceClass=handpay meterName=cashableInAmt (and promo/nonCash variants).
+    "HPIN": [
+        "handpayCashableInAmt",
+        "handpay_cashableInAmt",
+        "handpayPromoInAmt",
+        "handpay_promoInAmt",
+        "handpayNonCashInAmt",
+        "handpay_nonCashInAmt",
+        "handpayNonCashableInAmt",
     ],
     "006E": ["Total Bills Dispensed", "totalbillsdispensed", "billsdispensed", "hopperout", "TotalBillsDispensed"],
     # Ticket / voucher transfer buckets (0x80..0x88). Real cabinet voucher bucket keys
@@ -512,7 +549,7 @@ def collapse_consecutive_incidents_to_rows(
     return rows
 
 
-def _logical_incident_key(inc: Incident) -> tuple[str, str, str, str]:
+def _logical_incident_key(inc: Incident) -> tuple[str, str, str, str, str]:
     """
     Collapse rows that are the same log message mirrored into several files.
 
@@ -520,16 +557,21 @@ def _logical_incident_key(inc: Incident) -> tuple[str, str, str, str]:
     the same line to more than one file. The table does not show path, so those
     look like duplicate issues.
     """
-    ts_key = (
-        inc.timestamp.isoformat()
-        if inc.timestamp is not None
-        else ""
-    )
+    if inc.timestamp is not None:
+        ts_key = inc.timestamp.isoformat()
+        origin = ""
+    else:
+        # Without a clock there is no way to tell a mirrored copy from the same
+        # message happening again, so undated rows only dedupe against their own
+        # file and line. Showing a mirror twice beats hiding a real repeat.
+        ts_key = ""
+        origin = f"{inc.log_file_path}#{inc.line_number}"
     return (
         ts_key,
         inc.severity,
         inc.error_type,
         (inc.line_snippet or "").strip(),
+        origin,
     )
 
 
@@ -537,6 +579,8 @@ class IncidentViewModel(QObject):
     """Central state for the incident table, dashboard metrics, and filtering."""
 
     filter_rebuilt = Signal()
+    rows_about_to_be_inserted = Signal(int, int)
+    """Row range that is about to appear; emitted before ``_display_rows`` grows."""
     rows_inserted = Signal(int, int)
     stats_changed = Signal()
     selected_incident_changed = Signal(object)
@@ -909,13 +953,20 @@ class IncidentViewModel(QObject):
         return True
 
     def _finalize_filtered_growth(self, old_filtered_len: int) -> None:
-        self._rebuild_display_rows()
         new_len = len(self._filtered)
-        if new_len <= old_filtered_len:
+        if new_len <= old_filtered_len or self._collapse_duplicates:
+            self._rebuild_display_rows()
+            if new_len > old_filtered_len:
+                self.filter_rebuilt.emit()
             return
-        if self._collapse_duplicates:
-            self.filter_rebuilt.emit()
-        else:
+        # Uncollapsed rows map 1:1 onto filtered indices, so the table can splice
+        # the new rows instead of resetting. Qt requires ``rowCount()`` to still
+        # report the old total while the insert is announced, hence the rebuild
+        # sits between the two signals.
+        self.rows_about_to_be_inserted.emit(old_filtered_len, new_len - 1)
+        try:
+            self._rebuild_display_rows()
+        finally:
             self.rows_inserted.emit(old_filtered_len, new_len - 1)
 
     def files_scanned(self) -> int:
@@ -1348,32 +1399,218 @@ class IncidentViewModel(QObject):
             logger.debug("[VERSION] Binary sniff found ProductVersion-like: %r", raw_pv)
         return raw_pv, product
 
+    _RULETA_NATIVE_VER_RE = re.compile(
+        r"<\s*version\s*>\s*(?P<ver>\d+\.\d+(?:\.\d+)*)"
+        r"(?:\s+clone:\s*(?P<clone>[^\s<]+))?",
+        re.IGNORECASE,
+    )
+
+    def _looks_like_roulette_logs(self, root: Path) -> bool:
+        """True when scan root looks like a roulette/Godot log bundle (not slot SlotLog)."""
+        try:
+            if not root.is_dir():
+                return False
+        except OSError:
+            return False
+        for name in ("ruleta Roulette", "godot", "godot1"):
+            try:
+                if (root / name).is_dir():
+                    return True
+            except OSError:
+                continue
+        try:
+            return (root / "ruleta").is_dir()
+        except OSError:
+            return False
+
+    def _extract_version_from_ruleta_roulette_log(
+        self, log_dir: str | Path
+    ) -> tuple[str | None, str | None]:
+        """
+        Read native roulette engine version from ``ruleta Roulette\\*.log``.
+
+        Example line::
+            < version > 10.1.0.0 clone: LuxuriousIII64 beta < /version >
+        """
+        root = Path(str(log_dir))
+        try:
+            if root.is_file():
+                root = root.parent
+        except OSError:
+            return None, None
+        try:
+            if not root.exists():
+                return None, None
+        except OSError:
+            return None, None
+
+        patterns = [
+            str(root / "ruleta Roulette" / "**" / "*.log"),
+            str(root / "**" / "ruleta Roulette" / "**" / "*.log"),
+        ]
+        files: list[str] = []
+        for pat in patterns:
+            try:
+                files.extend(glob.glob(pat, recursive=True))
+            except Exception:
+                continue
+        uniq: list[str] = []
+        seen: set[str] = set()
+        for f in files:
+            s = str(f)
+            if s and s not in seen:
+                seen.add(s)
+                uniq.append(s)
+        if not uniq:
+            return None, None
+
+        def _mtime(p: str) -> float:
+            try:
+                return float(os.path.getmtime(p))
+            except OSError:
+                return 0.0
+
+        uniq.sort(key=_mtime, reverse=True)
+        for fp_s in uniq[:8]:
+            fp = Path(fp_s)
+            try:
+                with fp.open("r", encoding="utf-8", errors="replace") as f:
+                    for _ in range(120):
+                        line = f.readline()
+                        if not line:
+                            break
+                        m = self._RULETA_NATIVE_VER_RE.search(line)
+                        if not m:
+                            continue
+                        ver = (m.group("ver") or "").strip()
+                        clone = (m.group("clone") or "").strip()
+                        if not ver:
+                            continue
+                        core = ver if ver.startswith("v") else f"v{ver}"
+                        product = clone or "Roulette"
+                        return core, product
+            except OSError:
+                continue
+        return None, None
+
+    def _extract_version_from_ruleta_exe(
+        self, log_dir: str | Path
+    ) -> tuple[str | None, str | None, str | None]:
+        """
+        Windows: read ``Ruleta.exe`` ProductVersion when inferrable from log layout.
+
+        Returns ``(core_version, raw_product_version, product_name_or_none)``.
+        """
+        if os.name != "nt":
+            return None, None, None
+        root = Path(str(log_dir))
+        if root.is_file():
+            root = root.parent
+
+        scan_roots: list[Path] = []
+        cur: Path | None = root
+        for _ in range(10):
+            if cur is None:
+                break
+            scan_roots.append(cur)
+            try:
+                if cur.name.lower() == "goldclub":
+                    break
+            except Exception:
+                pass
+            parent = cur.parent
+            if parent == cur:
+                break
+            cur = parent
+
+        try:
+            from config_scanner.build_version import detect_roulette_exe_version
+        except Exception:
+            return None, None, None
+
+        seen: set[str] = set()
+        for scan_root in scan_roots:
+            key = str(scan_root)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                info = detect_roulette_exe_version(scan_root)
+            except Exception:
+                continue
+            dv = (info.display_version or "").strip()
+            if not dv:
+                continue
+            core = dv if dv.startswith("v") else f"v{dv}"
+            pn = (info.product_name or "").strip() or None
+            raw = (info.product_version or info.file_version or "").strip() or None
+            logger.debug(
+                "Ruleta.exe version from %s: display=%r product=%r",
+                scan_root,
+                core,
+                pn,
+            )
+            return core, raw, pn
+        return None, None, None
+
     def refresh_current_software_version(self, log_dir: str | Path) -> None:
-        # Priority: EXE (metadata) → SlotLog (OneHand SlotMachine line) → LogDaemon (often stale).
+        # Roulette: Ruleta.exe → ruleta Roulette log (10.x) → LogDaemon (platform only).
+        # Slot: EXE (metadata) → SlotLog → LogDaemon.
         core: str | None = None
         product: str | None = None
         raw_pv: str | None = None
 
-        exe = self._extract_version_from_onehand_exe(log_dir)
-        if exe[0]:
-            core, raw_pv, product = exe[0], exe[1], (exe[2] or "").strip() or None
-            logger.debug("Version source=EXE core=%s product=%s", core, product)
-        else:
-            slot = self._extract_version_from_slotlog(log_dir)
-            if slot[0]:
-                core = slot[0]
-                product = (slot[1] or "").strip() or None
-                logger.debug("Version source=SlotLog core=%s", core)
-            else:
-                daemon = self._extract_full_version_from_logs(log_dir)
-                if daemon[0]:
-                    core = daemon[0]
-                    product = (daemon[1] or "").strip() or None
-                    logger.debug(
-                        "Version source=LogDaemon core=%s product=%s", core, product
-                    )
+        root = Path(str(log_dir))
+        try:
+            if root.is_file():
+                root = root.parent
+        except OSError:
+            root = Path(str(log_dir))
 
-        self._software_version_product_raw = raw_pv if exe[0] else None
+        if self._looks_like_roulette_logs(root):
+            exe = self._extract_version_from_ruleta_exe(log_dir)
+            if exe[0]:
+                core, raw_pv, product = exe[0], exe[1], (exe[2] or "").strip() or None
+                logger.debug("Version source=Ruleta.exe core=%s product=%s", core, product)
+            else:
+                rl = self._extract_version_from_ruleta_roulette_log(log_dir)
+                if rl[0]:
+                    core, product = rl[0], (rl[1] or "").strip() or None
+                    logger.debug(
+                        "Version source=ruleta Roulette log core=%s product=%s",
+                        core,
+                        product,
+                    )
+                else:
+                    daemon = self._extract_full_version_from_logs(log_dir)
+                    if daemon[0]:
+                        core = daemon[0]
+                        product = (daemon[1] or "").strip() or None
+                        logger.debug(
+                            "Version source=LogDaemon (roulette fallback) core=%s",
+                            core,
+                        )
+        else:
+            exe = self._extract_version_from_onehand_exe(log_dir)
+            if exe[0]:
+                core, raw_pv, product = exe[0], exe[1], (exe[2] or "").strip() or None
+                logger.debug("Version source=EXE core=%s product=%s", core, product)
+            else:
+                slot = self._extract_version_from_slotlog(log_dir)
+                if slot[0]:
+                    core = slot[0]
+                    product = (slot[1] or "").strip() or None
+                    logger.debug("Version source=SlotLog core=%s", core)
+                else:
+                    daemon = self._extract_full_version_from_logs(log_dir)
+                    if daemon[0]:
+                        core = daemon[0]
+                        product = (daemon[1] or "").strip() or None
+                        logger.debug(
+                            "Version source=LogDaemon core=%s product=%s", core, product
+                        )
+
+        self._software_version_product_raw = raw_pv
         self.current_software_version = core
         self.current_product_name = product
 
@@ -1963,7 +2200,8 @@ class IncidentViewModel(QObject):
         ``machine_state`` is expected to be flattened with normalized keys (see load_machine_accounting_state).
         """
         code = (sas_code or "").strip().upper()
-        if not re.fullmatch(r"[0-9A-F]{4}", code):
+        # HPIN = Master Handpay In (DeviceManager); not a 4-hex SAS LP.
+        if code != "HPIN" and not re.fullmatch(r"[0-9A-F]{4}", code):
             return None
         aliases = SAS_6F_METER_ALIASES.get(code, [])
         if not aliases:
@@ -1981,12 +2219,79 @@ class IncidentViewModel(QObject):
             except Exception:
                 return 0
 
+        def _handpay_out_credits() -> int | None:
+            """Attendant handpay-out total from slot or roulette DeviceManager keys.
+
+            Roulette (ruleta) names meters ``handpayCashableOutAmt`` etc.; some slot
+            builds only expose a shared ``cancelledcredits`` bucket. Prefer the
+            cashable-out total when present (including zero); otherwise sum keyed-off
+            buckets. Returns None when no handpay-family key exists at all.
+            """
+            cashable_keys = (
+                "handpaycashableoutamt",
+                "handpaycashableout",
+            )
+            keyed_keys = (
+                "handpaykeyedoffcashableoutamt",
+                "handpaykeyedoffnoncashableoutamt",
+                "handpaykeyedoffpromooutamt",
+                "keyedoffcashableoutamt",
+                "keyedoffnoncashableoutamt",
+                "keyedoffpromooutamt",
+            )
+            for k in cashable_keys:
+                if k in machine_state and str(machine_state.get(k, "")).strip() != "":
+                    return _safe_int(machine_state.get(k))
+            if any(k in machine_state for k in keyed_keys):
+                return sum(_safe_int(machine_state.get(k)) for k in keyed_keys)
+            return None
+
+        def _handpay_in_credits() -> int | None:
+            """Handpay credits inserted (EGM Maestro Handpay In / pago manual).
+
+            DeviceManager: deviceClass=handpay, meterName=cashableInAmt (and
+            promo/nonCash). Not SAS 0023 (Total Hand Paid = out).
+            """
+            keys = (
+                "handpaycashableinamt",
+                "handpaycashablein",
+                "handpaypromoinamt",
+                "handpaypromoin",
+                "handpaynoncashinamt",
+                "handpaynoncashableinamt",
+                "handpaynoncashin",
+            )
+            if not any(k in machine_state for k in keys):
+                return None
+            return sum(_safe_int(machine_state.get(k)) for k in keys)
+
+        # SPECIAL CASE: Master Handpay In (synthetic HPIN)
+        if code == "HPIN":
+            hp_in = _handpay_in_credits()
+            if hp_in is not None:
+                return str(hp_in)
+
+        # SPECIAL CASE: SAS 0023 (Total Hand Paid)
+        # Roulette DeviceManager: handpayCashableOutAmt (lab .90 = SAS 0023).
+        # Prefer that over keyed-off aliases (often 0) and slot cancelledcredits.
+        if code == "0023":
+            hp = _handpay_out_credits()
+            if hp is not None:
+                return str(hp)
+
+        # SPECIAL CASE: SAS 0003 (Hand Paid Cancelled)
+        # Slot legacy: cancelledcredits. Roulette cancel-to-handpay: same handpay-out
+        # family as 0023 (lab .90: SAS 0003/0023 both 1402500 credits = $14,025).
+        if code == "0003":
+            hp = _handpay_out_credits()
+            if hp is not None:
+                # Monetary scale parity with other 000x gm2u paths (credits/100).
+                return f"{(hp / 100.0):.2f}"
+
         # SPECIAL CASE: SAS 0004 (Total Cancelled Credits)
-        # Observed on this cabinet/firmware the SAS aggregate equals:
+        # Observed on slot and roulette firmware the SAS aggregate equals:
         #   0003 HandPaidCancelled + 0016 TicketOut + 0018 CashlessOut.
-        # Reuse the existing per-code resolution so each component uses the path
-        # that already resolves correctly (0003 shared bucket, 0016 voucher
-        # alias, 0018 WAT bucket-sum) rather than guessing raw keys.
+        # Roulette names the handpay leg handpayCashableOutAmt (not cancelledcredits).
         if code == "0004":
             def _resolved_int(sub_code: str) -> int:
                 resolved = self.get_gm2u_value_for_sas_code(sub_code, machine_state)
@@ -2009,7 +2314,9 @@ class IncidentViewModel(QObject):
         # aggregation (sasbonuswin/progwin) — that is total coin out, not paytable-only.
         if code == "001C":
             v = machine_state.get("coinout") or machine_state.get("totalcoinout")
-            return str(v).strip() if v is not None else None
+            if v is not None and str(v).strip() != "":
+                return str(v).strip()
+            # Fall through so sparse post-clear state can default soft meters to 0.
 
         # SPECIAL CASE: SAS 0001 (Total Coin Out Credits / Win)
         # Include bonus cashable-in transfers when present in transMeter:
@@ -2112,13 +2419,18 @@ class IncidentViewModel(QObject):
             if str(
                 machine_state.get("gamesplayed")
                 or machine_state.get("gamebaseplays")
+                or machine_state.get("gamessinceinit")
                 or ""
             ).strip().isdigit():
                 return "0"
 
         # SPECIAL CASE: Games Lost (Played - Won). Not always stored as its own meter.
         if code == "0007":
-            played_s = str(machine_state.get("gamesplayed") or "").strip()
+            played_s = str(
+                machine_state.get("gamesplayed")
+                or machine_state.get("gamessinceinit")
+                or ""
+            ).strip()
             won_s = str(machine_state.get("gameswon") or "").strip()
             played = int(played_s) if played_s.isdigit() else None
             if played is not None:
@@ -2170,11 +2482,25 @@ class IncidentViewModel(QObject):
             # (e.g., 12600 cents -> "126.00", not "126").
             return f"{adjusted:.2f}"
 
-        # Shared bucket override: some Goldclub cabinets store Hand Paid / Cancelled variants
-        # under the same XML meter key ("cancelledcredits").
+        # Shared bucket (slot legacy): Hand Paid / Cancelled under "cancelledcredits".
+        # Skip when roulette-style handpay*OutAmt keys exist — those are authoritative
+        # and must not be overwritten by a missing/stale cancelledcredits alias.
         if code in {"0003", "0004", "0023"}:
+            hp_present = any(
+                k in machine_state
+                for k in (
+                    "handpaycashableoutamt",
+                    "handpaykeyedoffcashableoutamt",
+                    "handpaykeyedoffnoncashableoutamt",
+                    "handpaykeyedoffpromooutamt",
+                )
+            )
             shared = machine_state.get("cancelledcredits")
-            if shared is not None and str(shared).strip() != "":
+            if (
+                not hp_present
+                and shared is not None
+                and str(shared).strip() != ""
+            ):
                 return scale_machine_value_for_code(code, str(shared))
 
         for a in aliases:
@@ -2187,6 +2513,22 @@ class IncidentViewModel(QObject):
         # No match found in XML/state.
         if code == "0017" and fallback_1000 is not None:
             return fallback_1000
+
+        # After soft meters / RAM clear, DeviceManager is often sparse (only
+        # gameCoinIn / gamesSinceInit / credits). Soft accounting meters that
+        # have no dedicated key yet are zero — not "missing".
+        _soft_zero_when_cleared = {
+            "0002", "0003", "0005", "0006", "0007",
+            "0015", "0016", "0017", "0018", "001C", "001D", "001F", "0020", "0023",
+            "006E", "0080", "0082", "0084", "0086", "0088",
+            "00A0", "00A2", "00A4", "00B8", "00BA", "00BC",
+        }
+        if code in _soft_zero_when_cleared and any(
+            k in machine_state
+            for k in ("gamessinceinit", "gamecoinin", "gamesplayed", "gamebaseplays")
+        ):
+            return "0"
+
         return None
 
     def emergency_lookup_value_for_sas_code_from_logs(self, scan_root: str, sas_code: str) -> str:

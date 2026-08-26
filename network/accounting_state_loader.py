@@ -80,18 +80,33 @@ def flatten_xml_file_to_norm_map(xml_path: Path) -> dict[str, object]:
     credit_promo: int | None = None
     credit_noncash: int | None = None
     extracted_meters_logged = 0
+    # EGM currency straight from the state XML we already parse (fastest route —
+    # no extra file I/O). processorStatus wins over per-meter currencyId.
+    currency_id = ""
+    currency_id_is_processor = False
 
     def local_name(s: str) -> str:
         return (s or "").split("}")[-1].split(":")[-1].strip()
 
     def visit(elem: ET.Element, *, in_theme: bool, in_processor: bool) -> None:
         nonlocal current_credits, extracted_meters_logged, credit_cashable, credit_promo, credit_noncash
+        nonlocal currency_id, currency_id_is_processor
 
         tag = local_name(str(getattr(elem, "tag", "") or "")).lower()
         in_theme2 = in_theme or tag == "themedata"
         in_processor2 = in_processor or tag == "processordata"
 
         attrs = getattr(elem, "attrib", None) or {}
+
+        # <processorStatus currencyId="EUR"/> or <curMeter currencyId="…"/>.
+        if not currency_id_is_processor:
+            for ak, av in attrs.items():
+                if local_name(str(ak)).lower() == "currencyid":
+                    cid = str(av).strip().upper()
+                    if cid:
+                        currency_id = cid
+                        currency_id_is_processor = tag == "processorstatus"
+                    break
 
         # Special case: <creditMeters cashable="..." promo="..." nonCash="..." />
         if tag == "creditmeters":
@@ -207,12 +222,13 @@ def flatten_xml_file_to_norm_map(xml_path: Path) -> dict[str, object]:
 
     visit(root_el, in_theme=False, in_processor=False)
 
-    # Assemble final map: Master-first. Use master meter when it's > 0, otherwise fall back to theme sums.
+    # Assemble final map: Master-first.
+    # If a processor/master value was seen (including zero), it is authoritative.
+    # Theme sums are used only when no master value exists for that key.
     all_keys = set(theme_sums.keys()) | set(master_meters.keys())
     for k in all_keys:
-        mv = master_meters.get(k, 0)
-        if mv > 0:
-            flat[k] = str(mv)
+        if k in master_meters:
+            flat[k] = str(master_meters[k])
         else:
             flat[k] = str(theme_sums.get(k, 0))
 
@@ -227,6 +243,9 @@ def flatten_xml_file_to_norm_map(xml_path: Path) -> dict[str, object]:
         flat["creditpromo"] = str(int(credit_promo))
     if credit_noncash is not None:
         flat["creditnoncash"] = str(int(credit_noncash))
+    if currency_id:
+        # Reserved key (never a SAS meter alias): consumed by the UI for $/€ display.
+        flat["__currencyid__"] = currency_id
 
     _console_log(
         f"[EXTRACTOR] Scan complete (master-first). theme_keys={len(theme_sums)} master_keys={len(master_meters)} "
@@ -237,6 +256,315 @@ def flatten_xml_file_to_norm_map(xml_path: Path) -> dict[str, object]:
             _console_log(f"[EXTRACTOR] TOTAL {test_key.upper()}: {flat[test_key]}")
 
     return flat
+
+
+def load_machine_state_sources(scan_root: str) -> dict[str, dict[str, str]]:
+    """
+    Per-source machine state for local-only compares: source folder name
+    (e.g. ``gm2au``, ``SASControler1``) -> merged flat meter map.
+
+    Used when running on the EGM itself, where live SAS/MUX capture is not
+    possible and the only honest comparison is between the local state folders.
+    """
+    from network.goldclub_paths import (
+        device_manager_data_files,
+        local_filesystem_path_for_scan_root,
+        resolve_goldclub_layout,
+    )
+
+    # Self-UNC (\\\\127.0.0.1\\c$\\…) must read as C:\\… — SMB loopback is slow.
+    normalized_root = local_filesystem_path_for_scan_root(scan_root)
+    if not normalized_root:
+        return {}
+    layout = resolve_goldclub_layout(normalized_root)
+    if layout is None or layout.state_gcmessenger is None:
+        return {}
+
+    sources: dict[str, dict[str, str]] = {}
+    for df in device_manager_data_files(layout.state_gcmessenger):
+        try:
+            if not df.is_file():
+                continue
+        except OSError:
+            continue
+        flat = flatten_xml_file_to_norm_map(df)
+        if not flat:
+            continue
+        folder = df.parent.name
+        merged = sources.setdefault(folder, {})
+        merged.update({str(k).strip(): str(v).strip() for k, v in flat.items()})
+    return sources
+
+
+# The cabinet's SAS controller snapshot folder. The product spells it
+# "SASControler" and the trailing index varies per install, so match a prefix of
+# the alphanumeric-only folder name.
+SAS_CONTROLLER_SOURCE_PREFIX = "sascontrol"
+
+
+def pick_sas_controller_source(sources: dict[str, dict[str, str]]) -> dict[str, str]:
+    """The ``SASControler*`` entry of :func:`load_machine_state_sources`, or ``{}``."""
+    for name in sorted(sources):
+        squashed = "".join(ch for ch in name.lower() if ch.isalnum())
+        if squashed.startswith(SAS_CONTROLLER_SOURCE_PREFIX):
+            return {str(k).strip(): str(v).strip() for k, v in sources[name].items()}
+    return {}
+
+
+def pick_gm2au_source(sources: dict[str, dict[str, str]]) -> dict[str, str]:
+    """The ``gm2au`` entry of :func:`load_machine_state_sources`, or ``{}``."""
+    for name in sources:
+        if name.lower() == "gm2au":
+            return {str(k).strip(): str(v).strip() for k, v in sources[name].items()}
+    return {}
+
+
+def load_sas_controller_state(scan_root: str) -> dict[str, str]:
+    """Flat meters from the ``SASControler*`` folder only.
+
+    A local scan root has no host cable to poll, so this snapshot is the SAS side
+    of the compare while ``gm2au`` stays the Machine side.
+    """
+    return pick_sas_controller_source(load_machine_state_sources(scan_root))
+
+
+def diff_machine_state_sources(
+    sources: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    """
+    Meter keys whose values differ between source folders: key -> {source: value}.
+
+    Only keys present in two or more sources are compared (the folders carry
+    different key subsets by design); reserved ``__…__`` keys are ignored.
+    """
+    if len(sources) < 2:
+        return {}
+
+    def _norm(v: str) -> str:
+        s = (v or "").strip()
+        try:
+            return str(int(float(s))) if s else ""
+        except ValueError:
+            return s
+
+    diffs: dict[str, dict[str, str]] = {}
+    all_keys: set[str] = set()
+    for flat in sources.values():
+        all_keys.update(flat.keys())
+    for key in sorted(all_keys):
+        if key.startswith("__") and key.endswith("__"):
+            continue
+        present = {name: flat[key] for name, flat in sources.items() if key in flat}
+        if len(present) < 2:
+            continue
+        if len({_norm(v) for v in present.values()}) > 1:
+            diffs[key] = present
+    return diffs
+
+
+def _state_folder_names() -> tuple[str, ...]:
+    return ("SASControler1", "gm2au", "SASController1")
+
+
+def device_state_watch_directories(scan_root: str) -> list[Path]:
+    """Local directories whose writes should trigger Auto fetch (meters + AFT).
+
+    Covers DeviceManagerData homes and AFT transaction XML under
+    ``SASControler1`` / ``gm2au`` (including ``History``). Empty when the scan
+    root does not resolve to a GCMessenger state tree.
+    """
+    from network.goldclub_paths import (
+        local_filesystem_path_for_scan_root,
+        resolve_goldclub_layout,
+    )
+
+    normalized_root = local_filesystem_path_for_scan_root(scan_root)
+    if not normalized_root:
+        return []
+    layout = resolve_goldclub_layout(normalized_root)
+    if layout is None or layout.state_gcmessenger is None:
+        return []
+    dirs: list[Path] = []
+    seen: set[str] = set()
+    for folder in _state_folder_names():
+        for candidate in (
+            layout.state_gcmessenger / folder,
+            layout.state_gcmessenger / folder / "History",
+        ):
+            try:
+                if not candidate.is_dir():
+                    continue
+            except OSError:
+                continue
+            key = str(candidate).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            dirs.append(candidate)
+    return dirs
+
+
+def _is_live_aft_state_xml(name: str) -> bool:
+    """True for AFT XMLs that signal a live transfer — not the History dump.
+
+    Cabinets keep hundreds of ``aftTransactionHistory_iN_v*.xml`` under
+    ``SASControler1``. Statting each over SMB makes every Auto-fetch poll take
+    several seconds; live meters/transfers only rewrite CurrentSettings /
+    MostRecent / Pending files in the folder root.
+    """
+    n = (name or "").casefold()
+    if "aft" not in n or not n.endswith(".xml"):
+        return False
+    if "transactionhistory" in n:
+        return False
+    return True
+
+
+def device_state_watch_files(state_gcmessenger: Path) -> list[Path]:
+    """State files whose mtime moves when meters or AFT land on the EGM.
+
+    Intentionally skips ``History/`` and ``aftTransactionHistory_*`` — those
+    archives are large and do not need to wake Auto fetch on remote UNC.
+    """
+    from network.goldclub_paths import device_manager_data_files
+
+    files = list(device_manager_data_files(state_gcmessenger))
+    for folder in _state_folder_names():
+        directory = state_gcmessenger / folder
+        try:
+            if not directory.is_dir():
+                continue
+            for p in directory.iterdir():
+                if not p.is_file():
+                    continue
+                if _is_live_aft_state_xml(p.name):
+                    files.append(p)
+        except OSError:
+            continue
+    return files
+
+
+def device_source_mtimes(scan_root: str) -> dict[str, float]:
+    """Newest ``DeviceManagerData.xml_*`` mtime per state folder.
+
+    Cheap stat-only map keyed by folder name (``gm2au``, ``SASControler1``, …).
+    Used on a local EGM to wait until *both* sides of the compare have written
+    before reading — the two folders can lag each other by several seconds after
+    a game, and reading the early side alone flashes a false MISMATCH.
+    """
+    from network.goldclub_paths import (
+        device_manager_data_files,
+        local_filesystem_path_for_scan_root,
+        resolve_goldclub_layout,
+    )
+
+    normalized_root = local_filesystem_path_for_scan_root(scan_root)
+    if not normalized_root:
+        return {}
+    layout = resolve_goldclub_layout(normalized_root)
+    if layout is None or layout.state_gcmessenger is None:
+        return {}
+    out: dict[str, float] = {}
+    for df in device_manager_data_files(layout.state_gcmessenger):
+        try:
+            mt = df.stat().st_mtime
+        except OSError:
+            continue
+        folder = df.parent.name
+        prev = out.get(folder)
+        if prev is None or mt > prev:
+            out[folder] = mt
+    return out
+
+
+def local_meter_pair_ready(
+    *,
+    baseline: dict[str, float],
+    current: dict[str, float],
+    waited_s: float,
+    max_wait_s: float = 1.5,
+) -> tuple[bool, bool]:
+    """Whether a local Auto-fetch may read now.
+
+    Returns ``(ready, saw_any_change)``. Ready when gm2au *and* a SASControler*
+    folder have both advanced past ``baseline``, or when ``waited_s`` hits the
+    budget (AFT-only / one-sided writes must not stall forever).
+    """
+    if not current:
+        return False, False
+
+    def _advanced(name: str) -> bool:
+        cur = current.get(name)
+        if cur is None:
+            return False
+        return cur > float(baseline.get(name) or 0.0)
+
+    gm2 = any(_advanced(n) for n in current if n.lower() == "gm2au")
+    sas = any(
+        _advanced(n)
+        for n in current
+        if "".join(ch for ch in n.lower() if ch.isalnum()).startswith("sascontroler")
+    )
+    any_change = any(
+        float(current.get(n) or 0.0) > float(baseline.get(n) or 0.0) for n in current
+    )
+    if gm2 and sas:
+        return True, True
+    if any_change and waited_s >= max_wait_s:
+        return True, True
+    return False, any_change
+
+
+def latest_device_state_mtime(scan_root: str) -> float:
+    """
+    Newest mtime across DeviceManagerData.xml_* and live AFT state XML.
+
+    Cheap (stat only, no reads/parses) — used by the auto-fetch watcher to
+    notice the EGM writing fresh meters or completing an AFT transfer.
+    Returns 0.0 when the scan root does not resolve or no state file exists.
+
+    Does **not** walk AFT History archives (hundreds of files on a typical
+    cabinet); stating those over ``\\\\ip\\c$`` made every Auto-fetch poll
+    take multiple seconds.
+    """
+    import os
+
+    from network.goldclub_paths import (
+        device_manager_data_files,
+        local_filesystem_path_for_scan_root,
+        resolve_goldclub_layout,
+    )
+
+    normalized_root = local_filesystem_path_for_scan_root(scan_root)
+    if not normalized_root:
+        return 0.0
+    layout = resolve_goldclub_layout(normalized_root)
+    if layout is None or layout.state_gcmessenger is None:
+        return 0.0
+    latest = 0.0
+    # Fixed DeviceManagerData candidates (missing paths fail fast).
+    for df in device_manager_data_files(layout.state_gcmessenger):
+        try:
+            latest = max(latest, df.stat().st_mtime)
+        except OSError:
+            continue
+    # Live AFT only — scandir carries mtime on Windows FindFirstFile results.
+    for folder in _state_folder_names():
+        directory = layout.state_gcmessenger / folder
+        try:
+            with os.scandir(directory) as it:
+                for entry in it:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    if not _is_live_aft_state_xml(entry.name):
+                        continue
+                    try:
+                        latest = max(latest, entry.stat(follow_symlinks=False).st_mtime)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return latest
 
 
 def normalize_unc_path(scan_root: str) -> str:
@@ -259,10 +587,20 @@ def load_machine_accounting_state_pure(scan_root: str) -> dict[str, str]:
     Supports UNC (``\\\\ip\\c$\\Goldclub\\var\\log``), on-cabinet local
     (``C:\\Goldclub\\var\\log``), and USB full-stack exports
     (``…\\_LogFiles\\log_DD_MM_YYYY\\`` with optional ``state\\…\\GCMessenger``).
-    """
-    from network.goldclub_paths import device_manager_data_files, resolve_goldclub_layout
+    
 
-    normalized_root = normalize_unc_path(scan_root)
+    When the UNC host is *this* machine (EGM / loopback), the path is rewritten to a
+    local drive letter so the read skips the SMB stack and returns near-instantly.
+    """
+    from network.goldclub_paths import (
+        device_manager_data_files,
+        local_filesystem_path_for_scan_root,
+        path_is_local_filesystem,
+        resolve_goldclub_layout,
+    )
+
+    # Self-UNC (\\127.0.0.1\c$\...) must read as C:\... — SMB loopback is slow.
+    normalized_root = local_filesystem_path_for_scan_root(scan_root)
     if not normalized_root:
         return {}
 
@@ -272,9 +610,11 @@ def load_machine_accounting_state_pure(scan_root: str) -> dict[str, str]:
         return {}
 
     direct_files = device_manager_data_files(layout.state_gcmessenger)
+    local_disk = path_is_local_filesystem(normalized_root)
 
     _console_log(f"\n[SCANNER-LOG] Starting pure loader for root: {scan_root}")
     _console_log(f"[SCANNER-LOG] Normalized root: {normalized_root}")
+    _console_log(f"[SCANNER-LOG] Local disk: {local_disk}")
     _console_log(f"[SCANNER-LOG] Layout kind: {layout.kind.value}")
     _console_log(f"[SCANNER-LOG] State GCMessenger: {layout.state_gcmessenger}")
     _console_log(f"[SCANNER-LOG] Checking {len(direct_files)} potential state files...")
@@ -282,7 +622,7 @@ def load_machine_accounting_state_pure(scan_root: str) -> dict[str, str]:
     t_all = time.perf_counter()
 
     def probe_and_parse(df: Path) -> dict[str, object]:
-        """One SMB probe + parse, safe to run concurrently (pure, no shared state)."""
+        """One probe + parse, safe to run concurrently (pure, no shared state)."""
         try:
             t0 = time.perf_counter()
             if not df.is_file():
@@ -297,10 +637,18 @@ def load_machine_accounting_state_pure(scan_root: str) -> dict[str, str]:
             _console_log(f"[SCANNER-LOG] OS error probing/parsing: {df}")
             return {}
 
-    # Probe/read/parse all candidates concurrently — each SMB round trip is
-    # latency-bound, so parallel fan-out cuts wall time roughly by file count.
-    with ThreadPoolExecutor(max_workers=len(direct_files)) as pool:
-        results = list(pool.map(probe_and_parse, direct_files))
+    if not direct_files:
+        _console_log("[SCANNER-LOG] No DeviceManagerData candidates under state root.")
+        return {}
+
+    # Remote UNC is latency-bound — parallelize. Local disk is already instant;
+    # a thread pool would only add scheduling noise.
+    if local_disk:
+        results = [probe_and_parse(df) for df in direct_files]
+    else:
+        workers = min(8, max(1, len(direct_files)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(probe_and_parse, direct_files))
 
     merged: dict[str, object] = {}
     parsed_any = False
@@ -365,8 +713,10 @@ def parse_game_catalog_entries(xml_text: str) -> list[tuple[str, str]]:
                 theme_id = text
             elif ctag in ("themepath", "internalid"):
                 folder = text
-        if not theme_id:
+        if not theme_id and not folder:
             continue
+        if not theme_id:
+            theme_id = folder
         if not folder:
             folder = theme_id
         if theme_id not in seen:
@@ -392,9 +742,14 @@ def resolve_game_catalog_path(scan_root: str) -> Path | None:
     if layout is None:
         return None
     themes_candidates: list[Path] = []
-    if layout.themes_root is not None:
-        themes_candidates.append(layout.themes_root)
-    themes_candidates.append(layout.log_root)
+    themes_root = getattr(layout, "themes_root", None)
+    if themes_root is not None:
+        themes_candidates.append(Path(themes_root))
+    log_root = getattr(layout, "log_root", None)
+    if log_root is not None:
+        themes_candidates.append(Path(log_root))
+    if not themes_candidates:
+        return None
     for themes_root in themes_candidates:
         mgconfig = themes_root / "mgconfig.xml"
         if not mgconfig.is_file():
@@ -431,6 +786,7 @@ def load_cabinet_game_theme_ids(scan_root: str) -> list[str]:
 def load_cabinet_game_catalog(scan_root: str) -> list[tuple[str, str]]:
     """Installed multigame titles as ``(display Id, theme folder)`` pairs."""
     catalog = resolve_game_catalog_path(scan_root)
+    entries: list[tuple[str, str]] = []
     if catalog is not None:
         try:
             entries = parse_game_catalog_entries(
@@ -470,6 +826,47 @@ def _merge_nested_theme_perf_int(
             for nk, val_int in meters.items():
                 prev = meter_bucket.get(nk)
                 meter_bucket[nk] = val_int if prev is None else max(prev, val_int)
+
+
+
+def theme_id_match_key(theme_id: str) -> str:
+    """Normalize catalog Id / ThemePath / perfMeter themeId for comparison."""
+    return _norm_key(theme_id)
+
+
+def resolve_theme_perf_meters(
+    perf_by_paytable: dict[str, dict[str, dict[str, str]]],
+    theme_id: str,
+    *,
+    folder: str | None = None,
+) -> dict[str, dict[str, str]]:
+    """Paytable meters for one catalog game.
+
+    Catalog ``<Id>`` (e.g. ``Roulette Game`` / ``Sizzling Sevens HD HnW``) often
+    differs from DeviceManagerData ``themeId`` or ``ThemePath`` (``RouletteGame``,
+    ``SizzlingSevensHD_HnW``). Match exact, folder, case-insensitive, then
+    alphanumerics-only so per-game Game-tab filters work for slots and roulette.
+    """
+    if not perf_by_paytable:
+        return {}
+    candidates = [c for c in ((theme_id or "").strip(), (folder or "").strip()) if c]
+    if not candidates:
+        return {}
+    for cand in candidates:
+        hit = perf_by_paytable.get(cand)
+        if hit is not None:
+            return dict(hit)
+    lower_map = {k.lower(): k for k in perf_by_paytable}
+    for cand in candidates:
+        key = lower_map.get(cand.lower())
+        if key is not None:
+            return dict(perf_by_paytable[key])
+    want = {theme_id_match_key(c) for c in candidates}
+    want.discard("")
+    for key, meters in perf_by_paytable.items():
+        if theme_id_match_key(key) in want:
+            return dict(meters)
+    return {}
 
 
 def extract_theme_perf_meters_from_xml(xml_path: Path) -> dict[str, dict[str, dict[str, str]]]:
@@ -540,17 +937,32 @@ def aggregate_theme_paytable_meters(
 
 
 def load_theme_perf_meters_by_paytable(scan_root: str) -> dict[str, dict[str, dict[str, str]]]:
-    """Merge per-theme/per-paytable perf meters from gm2au ``DeviceManagerData.xml_*``."""
-    from network.goldclub_paths import device_manager_data_files, resolve_goldclub_layout
+    """Merge per-theme/per-paytable perf meters from gm2au ``DeviceManagerData.xml_*``.
+
+    Scans every meter-state root (GCMessenger and ``ruleta\\var``) so roulette
+    per-game rows are not missed when the primary layout root is the slot tree.
+    """
+    from network.goldclub_paths import (
+        device_manager_data_files,
+        meter_state_roots_for_layout,
+        resolve_goldclub_layout,
+    )
 
     layout = resolve_goldclub_layout(scan_root)
-    if layout is None or layout.state_gcmessenger is None:
+    roots = meter_state_roots_for_layout(layout)
+    if not roots:
         return {}
-    direct_files = [
-        p
-        for p in device_manager_data_files(layout.state_gcmessenger)
-        if p.parent.name.lower() == "gm2au"
-    ]
+    direct_files: list[Path] = []
+    seen_files: set[str] = set()
+    for root in roots:
+        for p in device_manager_data_files(root):
+            if p.parent.name.lower() != "gm2au":
+                continue
+            key = str(p).lower()
+            if key in seen_files:
+                continue
+            seen_files.add(key)
+            direct_files.append(p)
     merged: dict[str, dict[str, dict[str, int]]] = {}
     for df in direct_files:
         if not df.is_file():
@@ -586,9 +998,13 @@ def load_theme_paytable_ids(
     if not theme:
         return []
     ids: set[str] = set()
-    if perf_by_paytable is not None:
-        ids.update(perf_by_paytable.get(theme, {}).keys())
     folder = (catalog_folders or {}).get(theme, theme)
+    if perf_by_paytable is not None:
+        ids.update(
+            resolve_theme_perf_meters(
+                perf_by_paytable, theme, folder=folder
+            ).keys()
+        )
     math_path: Path | None = None
     from network.goldclub_paths import resolve_goldclub_layout
 

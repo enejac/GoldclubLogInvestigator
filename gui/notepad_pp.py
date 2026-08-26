@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import os
 import subprocess
 import sys
@@ -292,6 +293,38 @@ def open_with_notepad_pp(path: str | Path) -> tuple[bool, str]:
     except OSError as e:
         return False, f"Could not start Notepad++:\n{e}"
     return True, f"Opened in Notepad++:\n{normalized}"
+
+
+def open_with_notepad_or_npp(path: str | Path) -> tuple[bool, str]:
+    """Open a text file in Notepad++ when installed, else fall back to plain Notepad."""
+    if not _is_windows():
+        return False, "Opening files is only supported on Windows."
+
+    raw = str(path or "").strip()
+    if not raw:
+        return False, "No file path specified."
+
+    normalized = os.path.normpath(raw)
+    file_path = Path(normalized)
+    try:
+        if not file_path.is_file():
+            return False, f"File not found or not reachable:\n{normalized}"
+    except OSError as e:
+        return False, f"Could not access path:\n{normalized}\n\n{e}"
+
+    npp = resolve_notepad_pp_exe()
+    if npp is not None:
+        try:
+            subprocess.Popen([str(npp), normalized], shell=False, close_fds=True)
+            return True, f"Opened in Notepad++:\n{normalized}"
+        except OSError as e:
+            return False, f"Could not start Notepad++:\n{e}"
+
+    try:
+        subprocess.Popen(["notepad.exe", normalized], shell=False, close_fds=True)
+    except OSError as e:
+        return False, f"Could not start Notepad:\n{e}"
+    return True, f"Opened in Notepad:\n{normalized}"
 
 
 def create_open_with_npp_action(

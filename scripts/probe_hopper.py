@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 import xml.etree.ElementTree as ET
 ip = "10.0.0.90"
 p = Path("//%s/c$/Goldclub/var/state/GoldClub.Aurum.Services/GCMessenger/gm2au/DeviceManagerData.xml_1" % ip)

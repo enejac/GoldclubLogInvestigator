@@ -1,0 +1,28 @@
+---
+description: Never edit cabinet serialport layout.json or locations.json
+alwaysApply: true
+---
+
+# Serialport layout / locations — DO NOT EDIT
+
+On GoldClub cabinets, these files are **board / firmware port maps**. Agents and scripts must **never** hand-edit them to “fix” ticket/printer/COM issues.
+
+## Forbidden
+
+- `...\system\hardware\serialport\layout.json` and `locations.json` (under `config\etc\application\` **and** `bios\`)
+- Do **not** run `Fix-SerialPortLocations.ps1` on a **live** cabinet
+- Do **not** use BiOS **COM ports** → Save / `Show-SerialPortName.ps1` casually — it rewrites `layout.json` via `ConvertTo-Json` and has dropped **Leds/COM7** and duplicated Ticket (then boot `10-ConfigureSerialPort.ps1` → `Set-SerialPortName -Batch` applies the bad map → no COM7 → **30700 refused**)
+
+## If already corrupted
+
+Restore from known-good **cabinet** backups only (must keep **Leds → COM7** and Security → COM6; avoid baks that drop Leds or dual-Ticket). Re-apply with GoldClub `Set-SerialPortName -Batch` + serialport HotFix if a UART is `CM_PROB_FAILED_START`. On `.90`, layout was left **read-only** (`attrib +R`) so COM-ports Save cannot silently overwrite — do not clear +R unless intentionally remapping.
+
+## Safe places to fix TITO / printer / COM problems
+
+- HW `driverssetup\configuration.xml` (FutureLogic `tito` index **0** @ **30400**; switch@30600 / light@30700)
+- CommCtrl / `Run-FullStack.ps1` (ordered start; interactive Session 1 for Godot)
+- Bill acceptor is KeyCtrl **COM3 → 30300**, not driverssetup
+
+## Port map (reference only — do not rewrite into layout/locations)
+
+TCP = `30000 + COM#` → bill/keyboard **30300/COM3**, ticket **30400/COM4**, switch **30600/COM6**, lights **30700/COM7**.

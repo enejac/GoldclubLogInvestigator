@@ -17,9 +17,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-Set-Location -Path $PSScriptRoot
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+Set-Location -Path $RepoRoot
 
-$src = Join-Path $PSScriptRoot "cabinet_tools\\InputAgent\\InputAgent.cs"
+$src = Join-Path $RepoRoot "cabinet_tools\InputAgent\InputAgent.cs"
 if (-not (Test-Path $src)) { throw "Missing $src" }
 
 $hash = (Get-FileHash -Algorithm SHA256 $src).Hash.Substring(0, 12).ToLowerInvariant()

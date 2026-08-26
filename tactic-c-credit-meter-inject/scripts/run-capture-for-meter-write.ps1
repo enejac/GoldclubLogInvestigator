@@ -66,7 +66,7 @@ if (-not (Test-Path $wdDir)) {
     throw "WinDivert directory not found at $wdDir"
 }
 
-$wdSniff = Join-Path $PSScriptRoot '..\..\WdSniff.cs'
+$wdSniff = Join-Path $PSScriptRoot '..\..\probes\WdSniff.cs'
 if (-not (Test-Path $wdSniff)) {
     throw "WdSniff.cs not found"
 }

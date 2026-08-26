@@ -1,4 +1,4 @@
-﻿from automation.remote_input_agent import _unc_to_remote_local
+from automation.remote_input_agent import _unc_to_remote_local
 
 
 def test_unc_to_remote_local() -> None:

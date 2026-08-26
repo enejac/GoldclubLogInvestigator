@@ -1,0 +1,40 @@
+Macrium restore — BIWIN disk prep (Disk 2 in your session)
+============================================================
+
+WRONG FORMAT usually means:
+  - Old GCEFISYS/GCDATA0 partitions still on disk, OR
+  - MBR disk when image expects GPT (or vice versa), OR
+  - Restoring a single partition onto G: instead of whole-disk restore
+
+IDENTIFY (must say BIWIN, ~119 GB, NOT Samsung, NOT KINGSTON):
+
+  list disk
+  select disk 2
+  detail disk
+
+PREPARE (empty GPT — let Macrium recreate partitions from image):
+
+  select disk 2
+  clean
+  convert gpt
+  list partition          ← should show NO partitions
+
+MACRIUM PE UI:
+  1. Restore tab -> Browse -> USB\_images\Alegro_10.2_128GB_BIWIN.mrimg
+  2. Verify Image first
+  3. Click Restore on the DISK entry (not one partition only)
+  4. "Select a disk to restore to..." -> Disk 2 (BIWIN)
+  5. Drag ALL partitions from the image onto the empty disk
+  6. Do NOT restore to D: or to Samsung USB
+  7. If wizard offers "Delete existing partitions" — yes
+
+If restore still fails with format error:
+  - Boot Macrium rescue USB in UEFI mode (not Legacy BIOS)
+  - Image may be MBR: after clean, use convert gpt + create partition efi size=200
+    format fs=fat32 quick + create partition msr size=128
+    then restore per Macrium KB "MBR image to GPT disk"
+
+Disk map (typical on this PC):
+  Disk 0 = KINGSTON SATA = internal Windows — NEVER clean
+  Disk 1 = Samsung USB = H: ConfigScanner — NEVER clean
+  Disk 2 = BIWIN SS D = EGM target — clean this one only

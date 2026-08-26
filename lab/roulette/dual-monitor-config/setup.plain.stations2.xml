@@ -1,0 +1,1237 @@
+<?xml version="1.0" encoding="utf-8"?>
+<config content-type="gcxml-plain" manglerKeyword="settings" sourceEncrypted="C:\Goldclub\config\etc\application\ruleta\setup.xml">
+  <node name="game settings">
+    <node name="denominations">
+      <node name="smartdenominationformat">0</node>
+      <node name="check account denomination">1</node>
+      <node name="value">
+        <node name="denomination02">20000</node>
+        <node name="denomination03">50000</node>
+        <node name="denomination01">10000</node>
+        <node name="denomination04">1000</node>
+        <node name="denomination05">200</node>
+      </node>
+      <node name="number">2</node>
+    </node>
+    <node name="tokens">
+      <node name="number">5</node>
+      <node name="value">
+        <node name="token05">999</node>
+        <node name="token03">49</node>
+        <node name="token07">999</node>
+        <node name="token04">99</node>
+        <node name="token06">999</node>
+        <node name="token02">9</node>
+        <node name="token01">4</node>
+      </node>
+    </node>
+    <node name="timing">
+      <node name="no more bets time">8</node>
+      <node name="bets time">22</node>
+      <node name="screensaver">
+        <node name="time">30</node>
+        <node name="displayinsertticketright">0</node>
+        <node name="numberofspins2activate">3</node>
+        <node name="active">0</node>
+      </node>
+      <node name="still time">30</node>
+      <node name="ball read time">5</node>
+    </node>
+    <node name="neighbors">
+      <node name="reset after bet">0</node>
+      <node name="number">0</node>
+    </node>
+    <node name="states">
+      <node name="backup">
+        <node name="severity stop level">100</node>
+        <node name="frequency">1000</node>
+        <node name="tolerance counter max">1</node>
+        <node name="active">0</node>
+      </node>
+    </node>
+    <node name="languages">
+      <node name="text language">
+        <node name="board 06">15</node>
+        <node name="board 07">15</node>
+        <node name="board 05">15</node>
+        <node name="board 03">15</node>
+        <node name="board 04">15</node>
+        <node name="board 08">15</node>
+        <node name="board 02">15</node>
+        <node name="board 01">15</node>
+      </node>
+      <node name="text languages in menu">
+        <node name="number">2</node>
+        <node name="language01">SPANISH</node>
+        <node name="language02">ENGLISH</node>
+      </node>
+      <node name="sound">
+        <node name="clicksounds">0</node>
+        <node name="language">4</node>
+        <node name="stereomono">5</node>
+        <node name="volume">0</node>
+        <node name="ballrollinglength">0</node>
+      </node>
+    </node>
+    <node name="per board limits">
+      <node name="board 10">
+        <node name="max tokens straight">0</node>
+        <node name="max">
+          <node name="board">4000</node>
+          <node name="1_02">100</node>
+          <node name="1_12">100</node>
+          <node name="1_05">100</node>
+          <node name="1_01">50</node>
+          <node name="1_06">100</node>
+          <node name="1_54">300</node>
+          <node name="1_09">80</node>
+          <node name="inner board">0</node>
+          <node name="outer board">0</node>
+          <node name="1_04">100</node>
+          <node name="1_36">100</node>
+          <node name="1_03">100</node>
+        </node>
+        <node name="min">
+          <node name="1_03">5</node>
+          <node name="1_06">10</node>
+          <node name="1_01">1</node>
+          <node name="1_54">1</node>
+          <node name="1_12">10</node>
+          <node name="1_09">1</node>
+          <node name="1_05">5</node>
+          <node name="1_36">10</node>
+          <node name="1_02">2</node>
+          <node name="1_04">5</node>
+        </node>
+        <node name="max tokens">200</node>
+      </node>
+      <node name="board 04">
+        <node name="max tokens">200</node>
+        <node name="max">
+          <node name="board">4000</node>
+          <node name="1_12">100</node>
+          <node name="outer board">0</node>
+          <node name="1_36">100</node>
+          <node name="1_02">100</node>
+          <node name="1_04">100</node>
+          <node name="1_01">50</node>
+          <node name="1_09">80</node>
+          <node name="1_03">100</node>
+          <node name="1_06">100</node>
+          <node name="1_54">300</node>
+          <node name="1_05">100</node>
+          <node name="inner board">0</node>
+        </node>
+        <node name="max tokens straight">0</node>
+        <node name="min">
+          <node name="1_03">5</node>
+          <node name="1_05">5</node>
+          <node name="1_01">1</node>
+          <node name="1_09">1</node>
+          <node name="1_02">2</node>
+          <node name="1_06">10</node>
+          <node name="1_04">5</node>
+          <node name="1_54">1</node>
+          <node name="1_12">10</node>
+          <node name="1_36">10</node>
+        </node>
+      </node>
+      <node name="board 08">
+        <node name="min">
+          <node name="1_12">10</node>
+          <node name="1_03">5</node>
+          <node name="1_36">10</node>
+          <node name="1_05">5</node>
+          <node name="1_04">5</node>
+          <node name="1_54">1</node>
+          <node name="1_01">1</node>
+          <node name="1_09">1</node>
+          <node name="1_02">2</node>
+          <node name="1_06">10</node>
+        </node>
+        <node name="max tokens">200</node>
+        <node name="max">
+          <node name="1_05">100</node>
+          <node name="board">4000</node>
+          <node name="1_03">100</node>
+          <node name="1_04">100</node>
+          <node name="1_09">80</node>
+          <node name="1_36">100</node>
+          <node name="1_01">50</node>
+          <node name="1_06">100</node>
+          <node name="outer board">0</node>
+          <node name="1_54">300</node>
+          <node name="1_02">100</node>
+          <node name="inner board">0</node>
+          <node name="1_12">100</node>
+        </node>
+        <node name="max tokens straight">0</node>
+      </node>
+      <node name="board 09">
+        <node name="min">
+          <node name="1_01">1</node>
+          <node name="1_05">5</node>
+          <node name="1_03">5</node>
+          <node name="1_36">10</node>
+          <node name="1_06">10</node>
+          <node name="1_02">2</node>
+          <node name="1_12">10</node>
+          <node name="1_09">1</node>
+          <node name="1_04">5</node>
+          <node name="1_54">1</node>
+        </node>
+        <node name="max tokens straight">0</node>
+        <node name="max tokens">200</node>
+        <node name="max">
+          <node name="1_06">100</node>
+          <node name="1_09">80</node>
+          <node name="1_03">100</node>
+          <node name="1_02">100</node>
+          <node name="1_36">100</node>
+          <node name="1_01">50</node>
+          <node name="1_12">100</node>
+          <node name="outer board">0</node>
+          <node name="1_05">100</node>
+          <node name="board">4000</node>
+          <node name="1_04">100</node>
+          <node name="inner board">0</node>
+          <node name="1_54">300</node>
+        </node>
+      </node>
+      <node name="board 03">
+        <node name="min">
+          <node name="1_54">1</node>
+          <node name="1_36">10</node>
+          <node name="1_03">5</node>
+          <node name="1_09">1</node>
+          <node name="1_02">2</node>
+          <node name="1_01">1</node>
+          <node name="1_04">5</node>
+          <node name="1_05">5</node>
+          <node name="1_12">10</node>
+          <node name="1_06">10</node>
+        </node>
+        <node name="max tokens straight">0</node>
+        <node name="max">
+          <node name="1_04">100</node>
+          <node name="board">4000</node>
+          <node name="1_06">100</node>
+          <node name="1_54">300</node>
+          <node name="1_03">100</node>
+          <node name="1_05">100</node>
+          <node name="1_12">100</node>
+          <node name="1_09">80</node>
+          <node name="1_02">100</node>
+          <node name="1_36">100</node>
+          <node name="1_01">50</node>
+          <node name="outer board">0</node>
+          <node name="inner board">0</node>
+        </node>
+        <node name="max tokens">200</node>
+      </node>
+      <node name="ignore min wager with residual credits">1</node>
+      <node name="board 02">
+        <node name="max tokens">200</node>
+        <node name="min">
+          <node name="1_09">1</node>
+          <node name="1_12">10</node>
+          <node name="1_36">10</node>
+          <node name="1_54">1</node>
+          <node name="1_06">10</node>
+          <node name="1_04">5</node>
+          <node name="1_05">5</node>
+          <node name="1_01">1</node>
+          <node name="1_02">2</node>
+          <node name="1_03">5</node>
+        </node>
+        <node name="max">
+          <node name="1_04">100</node>
+          <node name="1_06">100</node>
+          <node name="outer board">0</node>
+          <node name="inner board">0</node>
+          <node name="1_12">100</node>
+          <node name="1_54">300</node>
+          <node name="1_01">50</node>
+          <node name="1_03">100</node>
+          <node name="1_09">80</node>
+          <node name="1_36">100</node>
+          <node name="1_05">100</node>
+          <node name="board">4000</node>
+          <node name="1_02">100</node>
+        </node>
+        <node name="max tokens straight">0</node>
+      </node>
+      <node name="board 06">
+        <node name="max tokens">200</node>
+        <node name="min">
+          <node name="1_36">10</node>
+          <node name="1_05">5</node>
+          <node name="1_04">5</node>
+          <node name="1_54">1</node>
+          <node name="1_02">2</node>
+          <node name="1_12">10</node>
+          <node name="1_01">1</node>
+          <node name="1_03">5</node>
+          <node name="1_06">10</node>
+          <node name="1_09">1</node>
+        </node>
+        <node name="max">
+          <node name="1_36">100</node>
+          <node name="outer board">0</node>
+          <node name="1_09">80</node>
+          <node name="1_02">100</node>
+          <node name="1_05">100</node>
+          <node name="1_03">100</node>
+          <node name="1_54">300</node>
+          <node name="1_01">50</node>
+          <node name="board">4000</node>
+          <node name="1_04">100</node>
+          <node name="inner board">0</node>
+          <node name="1_12">100</node>
+          <node name="1_06">100</node>
+        </node>
+        <node name="max tokens straight">0</node>
+      </node>
+      <node name="board 01">
+        <node name="min">
+          <node name="1_04">5</node>
+          <node name="1_01">1</node>
+          <node name="1_54">1</node>
+          <node name="1_05">5</node>
+          <node name="1_03">5</node>
+          <node name="1_12">10</node>
+          <node name="1_02">2</node>
+          <node name="1_06">10</node>
+          <node name="1_36">10</node>
+          <node name="1_09">1</node>
+        </node>
+        <node name="max">
+          <node name="1_09">80</node>
+          <node name="1_36">100</node>
+          <node name="board">4000</node>
+          <node name="1_01">50</node>
+          <node name="1_06">100</node>
+          <node name="1_03">100</node>
+          <node name="outer board">0</node>
+          <node name="1_05">100</node>
+          <node name="1_02">100</node>
+          <node name="1_12">100</node>
+          <node name="inner board">0</node>
+          <node name="1_04">100</node>
+          <node name="1_54">300</node>
+        </node>
+        <node name="max tokens">200</node>
+        <node name="max tokens straight">0</node>
+      </node>
+      <node name="board 05">
+        <node name="min">
+          <node name="1_04">5</node>
+          <node name="1_09">1</node>
+          <node name="1_02">2</node>
+          <node name="1_36">10</node>
+          <node name="1_54">1</node>
+          <node name="1_03">5</node>
+          <node name="1_12">10</node>
+          <node name="1_06">10</node>
+          <node name="1_01">1</node>
+          <node name="1_05">5</node>
+        </node>
+        <node name="max tokens straight">0</node>
+        <node name="max">
+          <node name="1_05">100</node>
+          <node name="outer board">0</node>
+          <node name="1_04">100</node>
+          <node name="1_06">100</node>
+          <node name="1_03">100</node>
+          <node name="1_36">100</node>
+          <node name="1_01">50</node>
+          <node name="inner board">0</node>
+          <node name="1_12">100</node>
+          <node name="1_54">300</node>
+          <node name="1_02">100</node>
+          <node name="1_09">80</node>
+          <node name="board">4000</node>
+        </node>
+        <node name="max tokens">200</node>
+      </node>
+      <node name="always calculate limit by highest denomination">0</node>
+      <node name="board 07">
+        <node name="min">
+          <node name="1_09">1</node>
+          <node name="1_02">2</node>
+          <node name="1_05">5</node>
+          <node name="1_36">10</node>
+          <node name="1_01">1</node>
+          <node name="1_03">5</node>
+          <node name="1_06">10</node>
+          <node name="1_12">10</node>
+          <node name="1_54">1</node>
+          <node name="1_04">5</node>
+        </node>
+        <node name="max">
+          <node name="1_54">300</node>
+          <node name="1_02">100</node>
+          <node name="1_05">100</node>
+          <node name="board">4000</node>
+          <node name="1_04">100</node>
+          <node name="outer board">0</node>
+          <node name="1_01">50</node>
+          <node name="1_06">100</node>
+          <node name="1_03">100</node>
+          <node name="1_12">100</node>
+          <node name="inner board">0</node>
+          <node name="1_09">80</node>
+          <node name="1_36">100</node>
+        </node>
+        <node name="max tokens straight">0</node>
+        <node name="max tokens">200</node>
+      </node>
+    </node>
+    <node name="testmode">
+      <node name="forcerng">1</node>
+      <node name="additionallimitations">none</node>
+      <node name="inputamount">100000</node>
+    </node>
+    <node name="dynamic paytable">
+      <node name="keepPaytableUserSelection">0</node>
+      <node name="log results">
+        <node name="enable">0</node>
+      </node>
+      <node name="all players draw same numbers">1</node>
+      <node name="resetSelectedPaytableAfterGames">1</node>
+    </node>
+    <node name="currency base units">100</node>
+    <node name="godot">
+      <node name="MultiplierXformat">True</node>
+      <node name="backgroundColor">0</node>
+      <node name="keepUserSelectionBetweeenGames">False</node>
+      <node name="skin">new</node>
+      <node name="dynamic paytable">
+        <node name="enable player select">1</node>
+      </node>
+      <node name="showFPS">False</node>
+      <node name="cycleLayouts">True</node>
+      <node name="paytableResetAfterGames">1</node>
+      <node name="useWordForFichas">False</node>
+      <node name="irelandExtraDisclaimers">False</node>
+      <node name="screenShotQuality">10</node>
+      <node name="screenShotPath">c:\goldclub\ruleta\var\screens\</node>
+      <node name="payoutAutoConfirm">0</node>
+      <node name="logPlayerBetsInformation">True</node>
+      <node name="screenshotDelayAfterBetsClosed">500</node>
+      <node name="disableLayoutSwitch">False</node>
+      <node name="ShowBetMultipliersOnPaytableSelect">True</node>
+    </node>
+    <node name="pay system">
+      <node name="jackpotlimitfilter">128</node>
+      <node name="jackpotlimit">0</node>
+      <node name="outputtype">3</node>
+      <node name="wat over smart media">0</node>
+      <node name="handpay abort">0</node>
+      <node name="jackpotlimitaction">0</node>
+      <node name="celebrationlimit">0</node>
+      <node name="userpayout">
+        <node name="cashout delay after pay in">0</node>
+        <node name="type">3</node>
+        <node name="postpone time">0</node>
+        <node name="max">0</node>
+        <node name="min">0</node>
+      </node>
+      <node name="handpayenabledwhenEGMdisabled">0</node>
+      <node name="titolimittype">1</node>
+      <node name="titolimit">0</node>
+      <node name="handpayreceipt">0</node>
+      <node name="celebrationlimitaction">0</node>
+      <node name="handpaylimit">0</node>
+      <node name="celebrationlimitfilter">16</node>
+      <node name="creditlimitaction">0</node>
+      <node name="creditlimit">0</node>
+      <node name="no output fractions">8737</node>
+    </node>
+    <node name="money2cre convertion">10</node>
+    <node name="chips">
+      <node name="value">
+        <node name="chip06">250</node>
+        <node name="chip05">100</node>
+        <node name="chip03">10</node>
+        <node name="chip02">5</node>
+        <node name="chip01">1</node>
+        <node name="chip04">50</node>
+        <node name="chip07">500</node>
+      </node>
+      <node name="number">5</node>
+      <node name="chips and bets displayed in money">0</node>
+    </node>
+    <node name="wincounting">
+      <node name="active">
+        <node name="board 09">1</node>
+        <node name="board 07">1</node>
+        <node name="board 05">1</node>
+        <node name="board 02">1</node>
+        <node name="board 01">1</node>
+        <node name="board 08">1</node>
+        <node name="board 03">1</node>
+        <node name="board 10">1</node>
+        <node name="board 06">1</node>
+        <node name="board 04">1</node>
+      </node>
+      <node name="stepminimal">1</node>
+      <node name="waittostartcounting">2</node>
+    </node>
+    <node name="meters">
+      <node name="creditsfromaurum">0</node>
+      <node name="serialize CRC">0</node>
+      <node name="backup">
+        <node name="tolerance counter max">1</node>
+        <node name="active">1</node>
+        <node name="frequency">1000</node>
+        <node name="severity stop level">100</node>
+      </node>
+      <node name="view format">euro</node>
+      <node name="daily stamps time">00:00:00</node>
+      <node name="consistency check at start">1</node>
+      <node name="numbers winbet calculation type">0</node>
+      <node name="stamps available">1</node>
+      <node name="consistency check error action">1</node>
+    </node>
+    <node name="currency account denomination">1</node>
+    <node name="layouts">
+      <node name="board 10">futura_doublezero</node>
+      <node name="board 04">futura_doublezero</node>
+      <node name="showsquareviewinraceview">1</node>
+      <node name="layout3">
+        <node name="board 01">none</node>
+        <node name="board 10">none</node>
+        <node name="board 07">none</node>
+        <node name="board 08">none</node>
+        <node name="board 02">none</node>
+        <node name="board 05">none</node>
+        <node name="board 06">none</node>
+        <node name="board 09">none</node>
+        <node name="board 03">none</node>
+        <node name="board 04">none</node>
+      </node>
+      <node name="layout1">
+        <node name="board 04">futura_doublezero</node>
+        <node name="board 02">futura_doublezero</node>
+        <node name="board 03">futura_doublezero</node>
+        <node name="board 10">futura_doublezero</node>
+        <node name="board 05">futura_doublezero</node>
+        <node name="board 08">futura_doublezero</node>
+        <node name="board 06">futura_doublezero</node>
+        <node name="board 01">futura_doublezero</node>
+        <node name="board 07">futura_doublezero</node>
+        <node name="board 09">futura_doublezero</node>
+      </node>
+      <node name="layout2">
+        <node name="board 08">futura_doublezeroCrycle</node>
+        <node name="board 03">futura_doublezeroCrycle</node>
+        <node name="board 02">futura_doublezeroCrycle</node>
+        <node name="board 10">futura_doublezeroCrycle</node>
+        <node name="board 07">futura_doublezeroCrycle</node>
+        <node name="board 04">futura_doublezeroCrycle</node>
+        <node name="board 09">futura_doublezeroCrycle</node>
+        <node name="board 05">futura_doublezeroCrycle</node>
+        <node name="board 01">futura_doublezeroCrycle</node>
+        <node name="board 06">futura_doublezeroCrycle</node>
+      </node>
+      <node name="board 08">futura_doublezero</node>
+      <node name="board 09">futura_doublezero</node>
+      <node name="board 07">futura_doublezero</node>
+      <node name="board 01">futura_doublezero</node>
+      <node name="board 06">futura_doublezero</node>
+      <node name="board 02">futura_doublezero</node>
+      <node name="board 03">futura_doublezero</node>
+      <node name="board 05">futura_doublezero</node>
+    </node>
+    <node name="multigamer support">0</node>
+    <node name="resetToPlayerDefaultsAfterNGames">
+      <node name="language">1</node>
+      <node name="neighboursPower">1</node>
+      <node name="predefinedBets">1</node>
+      <node name="skin">1</node>
+      <node name="layout">1</node>
+      <node name="dynamicSelect">1</node>
+      <node name="games">0</node>
+      <node name="all">True</node>
+      <node name="denomination">1</node>
+      <node name="showWins">1</node>
+      <node name="hotCold">1</node>
+      <node name="paytable">1</node>
+      <node name="selectedChip">1</node>
+    </node>
+    <node name="additional">
+      <node name="forcetonextpayouttypeafterwatfailed">1</node>
+      <node name="expireddayscheck">0</node>
+      <node name="index for rimcamera">13</node>
+      <node name="countdown timer">1</node>
+      <node name="daily maintenance restart">
+        <node name="enabled">0</node>
+      </node>
+      <node name="iconsrenderingtype">1</node>
+      <node name="blockNonCashablePayoutViaSmartKey">0</node>
+      <node name="logic">1</node>
+      <node name="maxbet start level">0</node>
+      <node name="expireddayswatcheck">0</node>
+      <node name="jackpot progressive monitor">none</node>
+      <node name="bonus">
+        <node name="type2">0</node>
+        <node name="directx">
+          <node name="enable">0</node>
+          <node name="SplitPercentage">0.5</node>
+          <node name="IsSplit">1</node>
+        </node>
+        <node name="type5">0</node>
+        <node name="type4">0</node>
+        <node name="slot">
+          <node name="param">0</node>
+        </node>
+        <node name="type3">0</node>
+        <node name="type">0</node>
+        <node name="spanish">
+          <node name="LabCommands">0</node>
+          <node name="FoilVersion">0</node>
+          <node name="LeaveMysteryFichas">0</node>
+          <node name="bonusbeforeroulette">0</node>
+          <node name="fichaslimit">250000</node>
+          <node name="transferlogic">
+            <node name="type">1</node>
+          </node>
+          <node name="ips">
+            <node name="id">1</node>
+          </node>
+          <node name="collectfichas">1</node>
+          <node name="percentage">
+            <node name="calculateindex">0</node>
+            <node name="mysteryforcedpercentage">100</node>
+            <node name="mysteryforcednadapercentage">2</node>
+            <node name="mysterymaxwin">10000</node>
+            <node name="penaltyfactor">10000</node>
+            <node name="mysteryafter">19000</node>
+            <node name="mysteryminwin">7000</node>
+            <node name="tabletype">extended</node>
+            <node name="europrizetill5e">1</node>
+          </node>
+          <node name="NoBonusWithBetsClosed">0</node>
+          <node name="coininhibit">1</node>
+          <node name="gametime">
+            <node name="averagetime">5000</node>
+            <node name="factor">1.18</node>
+          </node>
+          <node name="riesgolimit">100000</node>
+          <node name="PayoutType">285</node>
+          <node name="PlayTimeMessage">0</node>
+          <node name="RiesgoTableType">2</node>
+        </node>
+      </node>
+      <node name="simplebetspercentlimit">100</node>
+      <node name="meterhost url">none</node>
+      <node name="hour shutdown">
+        <node name="hour of day">0</node>
+        <node name="showing message till">1</node>
+        <node name="close wagers till">5</node>
+        <node name="active">0</node>
+      </node>
+      <node name="enable dynamic paytables">1</node>
+      <node name="statistic">1</node>
+      <node name="maxbetlevel">5</node>
+      <node name="PIN auto unlock">0</node>
+      <node name="forcetohandpayafterwatfailed">1</node>
+      <node name="CtrlAltDel disabled">1</node>
+      <node name="jackpot shown time">10000</node>
+      <node name="timebeforeeating">3</node>
+      <node name="nextbets">0</node>
+      <node name="set game">0</node>
+      <node name="bet delay after pay in">0</node>
+      <node name="repeatbetserialization">1</node>
+      <node name="jurisdiction behavior">0</node>
+      <node name="winspernumber">1</node>
+      <node name="number of player stations">2</node>
+      <node name="spinsbeforeeating">0</node>
+      <node name="layout behavior">0</node>
+      <node name="iconsdrawingtype">0</node>
+      <node name="wincalculating">
+        <node name="winlimitruntime">
+          <node name="enable">0</node>
+        </node>
+        <node name="winlimit">
+          <node name="board 07">120000</node>
+          <node name="board 09">120000</node>
+          <node name="board 05">120000</node>
+          <node name="board 02">120000</node>
+          <node name="board 06">120000</node>
+          <node name="board 03">120000</node>
+          <node name="board 08">120000</node>
+          <node name="board 10">120000</node>
+          <node name="board 04">120000</node>
+          <node name="board 01">120000</node>
+        </node>
+        <node name="specialtype">none</node>
+      </node>
+      <node name="time for rimcamera">0</node>
+      <node name="chipsDontCoverNumbers">1</node>
+      <node name="jackpot">0</node>
+      <node name="RNG">
+        <node name="IntegratedType">0</node>
+        <node name="blowoutmin">0</node>
+        <node name="IsLogging">0</node>
+        <node name="blowout">0</node>
+        <node name="IsHITChange">1</node>
+        <node name="blowoutmax">0</node>
+      </node>
+      <node name="repeat">81</node>
+      <node name="previousbet">0</node>
+      <node name="game history">
+        <node name="always">0</node>
+      </node>
+      <node name="maxbet keep chip">1</node>
+      <node name="maxbettype">
+        <node name="board 08">1</node>
+        <node name="board 02">1</node>
+        <node name="board 05">1</node>
+        <node name="board 03">1</node>
+        <node name="board 09">1</node>
+        <node name="board 01">1</node>
+        <node name="board 06">1</node>
+        <node name="board 07">1</node>
+        <node name="board 04">1</node>
+        <node name="board 10">1</node>
+      </node>
+      <node name="PIN for user lock">1</node>
+      <node name="bonusing">1</node>
+      <node name="jackpotStatistics">1</node>
+      <node name="respondingCOMtime">140</node>
+      <node name="creditcalculating">
+        <node name="creditlimitruntime">
+          <node name="enable">0</node>
+        </node>
+      </node>
+      <node name="ballread">
+        <node name="maxtimediff">0.99</node>
+        <node name="safestartaction">0</node>
+        <node name="sensor type">2</node>
+        <node name="times2readball">3</node>
+        <node name="IsCheckBeforeBlow">0</node>
+        <node name="actionafterball2soondetected">4</node>
+      </node>
+      <node name="balleat">
+        <node name="error if max eating time">1</node>
+        <node name="max eating time">16500</node>
+        <node name="delay before spin">1500</node>
+      </node>
+      <node name="side bets">
+        <node name="type">0</node>
+      </node>
+      <node name="PIN lock timeout">0</node>
+      <node name="statisticnumbers">120</node>
+      <node name="currency format within fast financial">0</node>
+      <node name="repeatbettype">0</node>
+      <node name="minimal wager amount">0</node>
+    </node>
+    <node name="bettype">1</node>
+  </node>
+  <node name="hardware settings">
+    <node name="switches">
+      <node name="switch04">1</node>
+      <node name="switch05">1</node>
+      <node name="switch06">1</node>
+      <node name="switch03">1</node>
+      <node name="active">1</node>
+      <node name="switch08">1</node>
+      <node name="switch07">1</node>
+      <node name="switch02">1</node>
+      <node name="switch01">1</node>
+    </node>
+    <node name="credits string">CRE</node>
+    <node name="inverter">
+      <node name="hit5">1</node>
+      <node name="hit7">1</node>
+      <node name="hit8">1</node>
+      <node name="hit6">1</node>
+      <node name="hit2">1</node>
+      <node name="hit4">1</node>
+      <node name="hit3">1</node>
+    </node>
+    <node name="additional">
+      <node name="wheel">double zero with serie</node>
+      <node name="KeyboardPanel">
+        <node name="lockbuttonspresscounter">5</node>
+        <node name="IsAutomaticCoinOnCommand">0</node>
+        <node name="IsTimeoutForCommands">1</node>
+        <node name="ledstype">4</node>
+        <node name="IsRemoveKeyEvent">1</node>
+        <node name="lockbuttons">0</node>
+        <node name="TimeoutForCommandsTimeout">2200</node>
+        <node name="version">4</node>
+        <node name="IsPing">1</node>
+        <node name="IsPeripheralSerialNumbersCheck">1</node>
+      </node>
+      <node name="foil">
+        <node name="type">0</node>
+      </node>
+    </node>
+    <node name="lights">
+      <node name="layoutname">pepo</node>
+      <node name="active">1</node>
+      <node name="drivername">light0</node>
+    </node>
+    <node name="currency">
+      <node name="cents without leading zeros">0</node>
+      <node name="display cent symbol before value">0</node>
+    </node>
+    <node name="bill">
+      <node name="H">
+        <node name="nominal">1</node>
+        <node name="active">0</node>
+        <node name="string">ml_BILLS_H</node>
+        <node name="code">104</node>
+        <node name="credit">1</node>
+      </node>
+      <node name="M">
+        <node name="active">0</node>
+      </node>
+      <node name="A">
+        <node name="code">97</node>
+        <node name="credit">100000</node>
+        <node name="active">1</node>
+        <node name="string">ml_BILLS_A</node>
+        <node name="nominal">1000</node>
+        <node name="currency">COP</node>
+      </node>
+      <node name="N">
+        <node name="active">0</node>
+      </node>
+      <node name="J">
+        <node name="active">0</node>
+      </node>
+      <node name="C">
+        <node name="string">ml_BILLS_C</node>
+        <node name="nominal">5000</node>
+        <node name="credit">500000</node>
+        <node name="active">1</node>
+        <node name="currency">COP</node>
+        <node name="code">99</node>
+      </node>
+      <node name="K">
+        <node name="active">0</node>
+      </node>
+      <node name="F">
+        <node name="code">102</node>
+        <node name="string">ml_BILLS_F</node>
+        <node name="credit">5000000</node>
+        <node name="nominal">50000</node>
+        <node name="currency">COP</node>
+        <node name="active">1</node>
+      </node>
+      <node name="P">
+        <node name="active">0</node>
+      </node>
+      <node name="G">
+        <node name="credit">10000000</node>
+        <node name="currency">COP</node>
+        <node name="string">ml_BILLS_G</node>
+        <node name="nominal">100000</node>
+        <node name="code">103</node>
+        <node name="active">1</node>
+      </node>
+      <node name="B">
+        <node name="active">1</node>
+        <node name="string">ml_BILLS_B</node>
+        <node name="nominal">2000</node>
+        <node name="credit">200000</node>
+        <node name="code">98</node>
+        <node name="currency">COP</node>
+      </node>
+      <node name="serial bill">
+        <node name="billlimit">0</node>
+        <node name="errorswithoutlock_checktype">0</node>
+        <node name="statistic">0</node>
+        <node name="serial numbers">
+          <node name="board 06">none</node>
+          <node name="board 07">none</node>
+          <node name="board 09">none</node>
+          <node name="board 10">none</node>
+          <node name="board 08">none</node>
+          <node name="board 05">none</node>
+          <node name="board 03">none</node>
+          <node name="board 02">none</node>
+          <node name="board 04">none</node>
+          <node name="board 01">none</node>
+        </node>
+        <node name="lockstationifcheated">0</node>
+        <node name="version numbers">
+          <node name="board 07">JCM</node>
+          <node name="board 10">JCM</node>
+          <node name="board 08">JCM</node>
+          <node name="board 03">JCM</node>
+          <node name="board 05">JCM</node>
+          <node name="board 01">JCM</node>
+          <node name="board 04">JCM</node>
+          <node name="board 06">JCM</node>
+          <node name="board 09">JCM</node>
+          <node name="board 02">JCM</node>
+        </node>
+        <node name="startingcode">97</node>
+        <node name="errorswithoutlock_totalsecondstillremove">43200</node>
+        <node name="autoinitializefromkeyboard">0</node>
+        <node name="escrowdelaytimer">0</node>
+        <node name="automaticstackeremptyperformed">0</node>
+        <node name="automaticunlockafterstackerinstalled">1</node>
+        <node name="mintimebetweenbills">1000</node>
+        <node name="errorswithoutlock_extrastring">none</node>
+        <node name="firmwarecheck">0</node>
+        <node name="active">1</node>
+        <node name="lastbill serialization">1</node>
+        <node name="ticket redeem">1</node>
+        <node name="bezelmode">0</node>
+        <node name="errorswithoutlock_maxcount">10</node>
+      </node>
+      <node name="L">
+        <node name="active">0</node>
+      </node>
+      <node name="O">
+        <node name="active">0</node>
+      </node>
+      <node name="D">
+        <node name="credit">1000000</node>
+        <node name="nominal">10000</node>
+        <node name="currency">COP</node>
+        <node name="code">100</node>
+        <node name="active">1</node>
+        <node name="string">ml_BILLS_D</node>
+      </node>
+      <node name="E">
+        <node name="active">1</node>
+        <node name="currency">COP</node>
+        <node name="code">101</node>
+        <node name="string">ml_BILLS_E</node>
+        <node name="nominal">20000</node>
+        <node name="credit">2000000</node>
+      </node>
+      <node name="I">
+        <node name="active">0</node>
+      </node>
+    </node>
+    <node name="wat">
+      <node name="noncashdisabled">0</node>
+      <node name="transfermulticredittypesinwat">0</node>
+      <node name="transferamounttyperetries">1</node>
+    </node>
+    <node name="coin">
+      <node name="D">
+        <node name="code">214</node>
+        <node name="nominal">02</node>
+        <node name="credit">20</node>
+        <node name="active">0</node>
+        <node name="string">ml_COINS_D</node>
+      </node>
+      <node name="F">
+        <node name="active">0</node>
+      </node>
+      <node name="exceptioninonerow">0</node>
+      <node name="C">
+        <node name="string">ml_COINS_C</node>
+        <node name="active">0</node>
+        <node name="credit">50</node>
+        <node name="code">215</node>
+        <node name="nominal">05</node>
+      </node>
+      <node name="fastpayout">1</node>
+      <node name="positions per drop">1</node>
+      <node name="afterhopperstatusalwayspayout">1</node>
+      <node name="A">
+        <node name="code">216</node>
+        <node name="string">ml_COINS_A</node>
+        <node name="nominal">1</node>
+        <node name="active">0</node>
+        <node name="credit">100</node>
+      </node>
+      <node name="notenoughcoinstohandpay">0</node>
+      <node name="autoinitializefromkeyboard">0</node>
+      <node name="hopper max">0</node>
+      <node name="E">
+        <node name="code">213</node>
+        <node name="string">ml_COINS_E</node>
+        <node name="active">0</node>
+        <node name="credit">10</node>
+        <node name="nominal">01</node>
+      </node>
+      <node name="ResetOnTimeout">0</node>
+      <node name="checkhopperstatusbeforepayout">0</node>
+      <node name="exceptionvaluesintokens">0</node>
+      <node name="centspayout">0</node>
+      <node name="B">
+        <node name="credit">200</node>
+        <node name="active">0</node>
+        <node name="nominal">2</node>
+        <node name="string">ml_COINS_B</node>
+        <node name="code">217</node>
+      </node>
+      <node name="refilldirectlythroughhopper">1</node>
+      <node name="drop max">0</node>
+      <node name="destination">0</node>
+      <node name="hopper min">0</node>
+      <node name="hopper mask">0</node>
+    </node>
+    <node name="bill dispenser">
+      <node name="bill index for payout">3</node>
+      <node name="minimal payout">10000</node>
+      <node name="active">0</node>
+      <node name="mandatory hopper payout">0</node>
+    </node>
+    <node name="ups">
+      <node name="severityiserror">3303</node>
+      <node name="drivername">ups0</node>
+      <node name="active">0</node>
+    </node>
+    <node name="handpay">
+      <node name="active">1</node>
+    </node>
+    <node name="currency delimiter">0</node>
+    <node name="layout">
+      <node name="multiregionsupport">1</node>
+      <node name="statisticbutton">1</node>
+      <node name="multilanguagebuttonsupport">1</node>
+      <node name="alphaselectioncontrols">27</node>
+      <node name="luckynumbersinstatistics">1</node>
+      <node name="machineid">none</node>
+      <node name="alertmoveminimalamount">0</node>
+      <node name="screensaverlogoname">none</node>
+    </node>
+    <node name="cylinder">
+      <node name="active">0</node>
+    </node>
+    <node name="multiwheel">
+      <node name="number">1</node>
+      <node name="signals">
+        <node name="camera4_set">#</node>
+        <node name="camera3_set">#</node>
+        <node name="camera2_set">#</node>
+        <node name="camera1_set">#</node>
+        <node name="camera5_set">#</node>
+        <node name="camera6_set">#</node>
+      </node>
+    </node>
+    <node name="towerlight">
+      <node name="service">
+        <node name="running">0</node>
+      </node>
+      <node name="signals">
+        <node name="service_call">SF 8
+SF 4
+</node>
+        <node name="switch_alert">SF 7
+SF 4
+</node>
+        <node name="player_win">SF 6
+SF 3
+</node>
+        <node name="tito_paperout">SF 7
+SF 2
+</node>
+        <node name="coin_off">SF 8
+SF 3
+</node>
+        <node name="off">SF 0
+</node>
+        <node name="hopper">SF 8
+SF 2
+</node>
+        <node name="jackpot_and_credit_limit">SF 6
+SF 2
+</node>
+        <node name="bill_off">SF 7
+SF 3
+</node>
+        <node name="tito_error">SF 7
+SF 3
+</node>
+        <node name="handpay_limit">SF 7
+SF 2
+</node>
+        <node name="bonus_win">SF 6
+SF 4
+</node>
+      </node>
+    </node>
+    <node name="dallas">
+      <node name="code4other">0</node>
+      <node name="dallascodestype">1</node>
+      <node name="minimalelapsedtime">1000</node>
+      <node name="maximalkeysallowed">100</node>
+    </node>
+    <node name="gsm">
+      <node name="comport">0</node>
+      <node name="alarmlimit">1000000</node>
+    </node>
+    <node name="touchscreen">
+      <node name="pressdowntime">0</node>
+      <node name="holdingdownfirsttime">700</node>
+      <node name="playingtype">2</node>
+      <node name="playingtypespecialcodes">0</node>
+    </node>
+    <node name="diagnostics">
+      <node name="processes">
+        <node name="service">
+          <node name="running">0</node>
+        </node>
+      </node>
+    </node>
+    <node name="currency format">128</node>
+    <node name="asset number">
+      <node name="board 10">none</node>
+      <node name="board 06">none</node>
+      <node name="board 04">none</node>
+      <node name="board 09">none</node>
+      <node name="board 02">none</node>
+      <node name="board 03">none</node>
+      <node name="board 01">none</node>
+      <node name="board 05">none</node>
+      <node name="board 08">none</node>
+      <node name="board 07">none</node>
+    </node>
+    <node name="online">
+      <node name="slave2">
+        <node name="type">0</node>
+      </node>
+      <node name="custom setting">0</node>
+      <node name="master">
+        <node name="path">0</node>
+        <node name="type">8388608</node>
+        <node name="assemblypath">0</node>
+        <node name="version">0</node>
+      </node>
+      <node name="promo to cashable conversion">1</node>
+      <node name="egm behavior">2</node>
+      <node name="autoplay">
+        <node name="collectgamefrequency">100000</node>
+        <node name="collectfrequency">100000</node>
+        <node name="screenchangefrequency">100000</node>
+        <node name="collectamountfrequency">100000</node>
+        <node name="inputamount">100000</node>
+        <node name="ramcleargamefrequency">200000</node>
+        <node name="numofgames">100000</node>
+        <node name="rnd">
+          <node name="screenchange">1</node>
+          <node name="collect">1</node>
+        </node>
+      </node>
+      <node name="slave3">
+        <node name="type">0</node>
+      </node>
+      <node name="slave4">
+        <node name="type">0</node>
+      </node>
+      <node name="slave">
+        <node name="version">0</node>
+        <node name="type">0</node>
+        <node name="path">0</node>
+      </node>
+    </node>
+    <node name="peripheral">
+      <node name="devices">65</node>
+    </node>
+    <node name="mechanical counters">
+      <node name="active">0</node>
+    </node>
+    <node name="switches additional">
+      <node name="drivername">switch0</node>
+      <node name="is reset lock allowed even switch still tampered">0</node>
+      <node name="active">0</node>
+      <node name="serialize ID">0</node>
+    </node>
+    <node name="currency display">0</node>
+    <node name="tito">
+      <node name="tickethandpayreceiptname">handpayreceipt0</node>
+      <node name="ticketname">ticket0</node>
+      <node name="amountdotseparated">1</node>
+      <node name="Isticketresidualcreditscurrentdenomination">0</node>
+      <node name="ticketmemoname">memo</node>
+      <node name="Isticketnoncashableprinting">1</node>
+      <node name="amountwithwordsformat">Pesos</node>
+      <node name="active">1</node>
+      <node name="forcetohandpayafterprintingfailed">1</node>
+      <node name="Isticketresidualcredits">1</node>
+      <node name="ticketjackpotreceiptname">jackpotreceipt0</node>
+      <node name="Isticketnoncashable">0</node>
+      <node name="drivername">
+        <node name="board 02">tito1</node>
+        <node name="board 01">tito0</node>
+      </node>
+      <node name="amountformat">$%AMOUNT%</node>
+      <node name="lockafterticketerror">1</node>
+      <node name="ticketnoncashablename">noncashable0</node>
+    </node>
+    <node name="egasa">
+      <node name="active">0</node>
+    </node>
+    <node name="ticket">
+      <node name="type">0</node>
+    </node>
+  </node>
+  <node name="controls">
+    <node name="info">
+      <node name="CR_KREDITEXTRA">
+        <node name="type">none</node>
+      </node>
+    </node>
+  </node>
+  <node name="menu access">
+    <node name="allowedgames">
+      <node name="allowe2">
+        <node name="maxboardbet">0</node>
+        <node name="code">0</node>
+      </node>
+      <node name="allowe3">
+        <node name="code">0</node>
+        <node name="maxboardbet">0</node>
+      </node>
+      <node name="allowe1">
+        <node name="code">0</node>
+        <node name="maxboardbet">0</node>
+      </node>
+    </node>
+    <node name="fastfinancialtype">11</node>
+    <node name="mask">33516864</node>
+    <node name="lock in admin menu only when no credits on position">0</node>
+    <node name="lock in guest menu">1</node>
+    <node name="lock in admin menu">1</node>
+    <node name="type">Normal</node>
+    <node name="password">
+      <node name="admin">808283178</node>
+      <node name="user">283031178</node>
+      <node name="supervisor">132134135178</node>
+    </node>
+    <node name="screens max games">0</node>
+    <node name="InputOutputSelectionAmounts">
+      <node name="Amount06">100000000</node>
+      <node name="Amount04">5000000</node>
+      <node name="Amount03">1000000</node>
+      <node name="Amount01">10000</node>
+      <node name="Amount05">10000000</node>
+      <node name="Amount02">100000</node>
+    </node>
+    <node name="game history with position selection">0</node>
+    <node name="DallasMinPayIn">
+      <node name="code">2</node>
+      <node name="value">0</node>
+    </node>
+    <node name="autoclose timeout">60000</node>
+    <node name="screens in guest menu">0</node>
+    <node name="administrator lock with position selection">0</node>
+    <node name="RFIDSkipPassword">1</node>
+    <node name="CRC">1</node>
+  </node>
+  <node name="other settings">
+    <node name="trial">3</node>
+    <node name="technical stuff">
+      <node name="DatabaseRecordsLimit">6</node>
+      <node name="SetThreadPriority">1</node>
+    </node>
+    <node name="onlyonce">0</node>
+    <node name="trial ver2">0</node>
+    <node name="bios">
+      <node name="BiosVersion">none</node>
+    </node>
+  </node>
+</config>

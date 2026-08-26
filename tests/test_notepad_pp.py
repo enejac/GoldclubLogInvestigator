@@ -127,3 +127,59 @@ def test_open_with_notepad_pp_not_blocked_on_windows(monkeypatch: pytest.MonkeyP
     ok, msg = npp.open_with_notepad_pp(target)
     assert ok is False
     assert "only supported on Windows" not in msg
+
+
+def test_open_with_notepad_or_npp_uses_npp_when_found(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(npp.os, "name", "nt")
+    monkeypatch.setattr(npp.sys, "platform", "win32")
+    npp_exe = tmp_path / "notepad++.exe"
+    npp_exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(npp, "resolve_notepad_pp_exe", lambda: npp_exe)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        npp.subprocess, "Popen", lambda args, **kw: calls.append(args)
+    )
+
+    target = tmp_path / "report.log"
+    target.write_text("hello", encoding="utf-8")
+    ok, msg = npp.open_with_notepad_or_npp(target)
+
+    assert ok is True
+    assert "Notepad++" in msg
+    assert calls and calls[0][0] == str(npp_exe)
+
+
+def test_open_with_notepad_or_npp_falls_back_to_notepad(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(npp.os, "name", "nt")
+    monkeypatch.setattr(npp.sys, "platform", "win32")
+    monkeypatch.setattr(npp, "resolve_notepad_pp_exe", lambda: None)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        npp.subprocess, "Popen", lambda args, **kw: calls.append(args)
+    )
+
+    target = tmp_path / "report.log"
+    target.write_text("hello", encoding="utf-8")
+    ok, msg = npp.open_with_notepad_or_npp(target)
+
+    assert ok is True
+    assert "Notepad" in msg and "Notepad++" not in msg
+    assert calls and calls[0] == ["notepad.exe", str(target)]
+
+
+def test_open_with_notepad_or_npp_missing_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(npp.os, "name", "nt")
+    monkeypatch.setattr(npp.sys, "platform", "win32")
+
+    ok, msg = npp.open_with_notepad_or_npp(tmp_path / "does_not_exist.log")
+
+    assert ok is False
+    assert "not found" in msg.lower()

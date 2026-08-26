@@ -23,7 +23,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--mode", choices=("random", "systematic"), default="random")
     p.add_argument("--layouts", default="layout1,layout2")
     p.add_argument("--max-clicks-per-cycle", type=int, default=80)
-    p.add_argument("--batch-size", type=int, default=5)
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="0 = use bot_config profile batch_size",
+    )
+    p.add_argument("--profile", default="", help="Bot timing profile (emulation|safe|custom)")
+    p.add_argument("--config", default="", help="Path to bot_config.json")
     p.add_argument("--aft-cents", type=int, default=2_000_000)
     p.add_argument("--out-root", default="")
     p.add_argument("--no-aft", action="store_true")
@@ -58,12 +65,14 @@ def main(argv: list[str] | None = None) -> int:
         mode=args.mode,
         layouts=layouts,
         max_clicks_per_cycle=args.max_clicks_per_cycle,
-        batch_size=args.batch_size,
+        batch_size=args.batch_size or None,
         aft_cents=args.aft_cents,
         no_aft=bool(args.no_aft),
         stop_on_first=bool(args.stop_on_first),
         out_root=out,
         progress=print,
+        bot_profile=args.profile or None,
+        bot_config_path=args.config or None,
     )
     print(json.dumps({"ok": True, "out": str(root)}))
     return 0

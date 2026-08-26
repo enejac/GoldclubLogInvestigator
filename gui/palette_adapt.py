@@ -185,6 +185,23 @@ def error_border_color(palette: QPalette) -> QColor:
     return QColor(176, 0, 32) if surface_is_light(palette) else QColor(244, 71, 71)
 
 
+def time_filter_active_stylesheet(palette: QPalette) -> str:
+    """Active time-filter button tint — readable in light and dark themes."""
+    light = surface_is_light(palette)
+    accent = text_success(palette)
+    if light:
+        bg = QColor(230, 255, 230)
+    else:
+        base = palette.color(QPalette.ColorRole.Button)
+        bg = blend_colors(base, accent, 0.38)
+    return (
+        f"background-color: {bg.name()}; "
+        f"color: {accent.name()}; "
+        f"border: 1px solid {accent.name()}; "
+        "font-weight: 600; padding: 4px 8px;"
+    )
+
+
 def filter_chip_stylesheet(palette: QPalette, accent: QColor) -> str:
     """
     QToolButton chip: structure + palette-based neutrals; checked state tinted with ``accent``.

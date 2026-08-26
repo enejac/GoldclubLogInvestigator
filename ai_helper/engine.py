@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 import logging
 import os
+import sys
 import threading
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,14 @@ class LlamaCppEngine(HelperEngine):
             try:
                 from llama_cpp import Llama  # type: ignore[import-untyped]
             except Exception as exc:  # noqa: BLE001
-                self._load_error = f"llama-cpp unavailable ({exc})"
+                err = str(exc)
+                if getattr(sys, "frozen", False) and "llama_cpp" in err:
+                    self._load_error = (
+                        "llama-cpp not bundled in this LogInvestigator build "
+                        "(search-only works; use full/ai build or pip install llama-cpp-python)"
+                    )
+                else:
+                    self._load_error = f"llama-cpp unavailable ({exc})"
                 return None
             try:
                 self._llm = Llama(

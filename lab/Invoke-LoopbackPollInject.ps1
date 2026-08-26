@@ -54,7 +54,7 @@ param(
     [string] $PollFrames = '1B81,1B80',
     [string] $PsExecPath = 'C:\Tools\PSTools\PsExec.exe',
     [string] $WinDivertDir = 'C:\Tools\WinDivert\extracted\WinDivert-2.2.2-A\x64',
-    [string] $OutDir = (Join-Path $PSScriptRoot 'aft\captures'),
+    [string] $OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent) 'aft\captures'),
     [pscredential] $Credential,
     [switch] $RemoveDriver
 )
@@ -132,7 +132,8 @@ else { "WINDIVERT_NOT_STOPPED_SKIP_DELETE" }
 $WinDivertDir = Resolve-WinDivertDir -Preferred $WinDivertDir
 $dll = Join-Path $WinDivertDir 'WinDivert.dll'
 $sys = Join-Path $WinDivertDir 'WinDivert64.sys'
-$csSrc = Join-Path $PSScriptRoot 'WdPollInject.cs'
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$csSrc = Join-Path $RepoRoot 'probes\WdPollInject.cs'
 foreach ($f in @($PsExecPath, $dll, $sys, $csSrc)) {
     if (-not (Test-Path -LiteralPath $f)) { throw "Required file not found: $f" }
 }

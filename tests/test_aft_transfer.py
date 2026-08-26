@@ -1,4 +1,4 @@
-﻿"""Tests for AFT transfer lexicon, parsers, and correlator."""
+"""Tests for AFT transfer lexicon, parsers, and correlator."""
 
 from __future__ import annotations
 

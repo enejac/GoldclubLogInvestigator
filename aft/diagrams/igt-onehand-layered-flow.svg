@@ -26,8 +26,8 @@
   </defs>
 
   <!-- Header -->
-  <text x="24" y="32" class="title">IGT SAS Simulator ? OneHand.exe  Layered byte flow</text>
-  <text x="24" y="52" class="subtitle">Lab cabinet 10.0.0.90 (GST20664 / GCC_ST_20664_01)  verified AFT path</text>
+  <text x="24" y="32" class="title">IGT SAS Simulator to OneHand.exe - Layered byte flow</text>
+  <text x="24" y="52" class="subtitle">Lab cabinet 10.0.0.90 (GST20664 / GCC_ST_20664_01) - verified AFT path</text>
 
   <!-- Layer 1: Physical -->
   <rect x="20" y="70" width="1160" height="110" class="lane-bg"/>
@@ -71,7 +71,7 @@
   <rect x="500" y="318" width="220" height="64" class="box"/>
   <text x="515" y="340" class="box-title">:31150 host poll leg</text>
   <text x="515" y="358" class="box-body">CommCtrlSAS ? Aurum ephemeral</text>
-  <text x="515" y="374" class="box-body">e.g. 1B80, 1B81, 1B017245&</text>
+  <text x="515" y="374" class="box-body">e.g. 1B80, 1B81, 1B017245...</text>
   <line x1="720" y1="350" x2="780" y2="350" stroke="#1565c0" stroke-width="2" marker-end="url(#arrow-blue)"/>
   <text x="725" y="342" class="edge-label">1B80 / 1B81</text>
   <text x="725" y="368" class="edge-label">1B + 01 72 45...</text>

@@ -8,12 +8,15 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from config_scanner.build_version import BuildInfo, format_build_info_log_line
+from config_scanner.build_version import BuildInfo, format_build_info_log_line, format_software_display
+from config_scanner.machine_identity import is_licence_path
+from config_scanner.write_scope import is_protected_write_path
 from config_scanner.xml_diff import (
     ContentChange,
     FileDiff,
     change_summary,
     is_encrypted_origin_config_path,
+    is_structural_item_change,
 )
 
 _FILE_HINTS: dict[str, str] = {
@@ -148,6 +151,8 @@ def write_comparison_report(
         "__REPORT_TITLE__": f"Config Scan Diff: {baseline_snapshot} vs {target_snapshot}",
         "__BASELINE_SNAPSHOT__": html.escape(baseline_snapshot),
         "__TARGET_SNAPSHOT__": html.escape(target_snapshot),
+        "__BASELINE_SOFTWARE__": html.escape(format_software_display(baseline_info)),
+        "__TARGET_SOFTWARE__": html.escape(format_software_display(target_info)),
         "__BASELINE_BUILD__": html.escape(baseline_info.build_number or ""),
         "__TARGET_BUILD__": html.escape(target_info.build_number or ""),
         "__BASELINE_BRANCH__": html.escape(baseline_info.branch or ""),
@@ -197,15 +202,12 @@ def write_comparison_report(
 
 
 def format_diff_cell_value(value: str | None, *, max_len: int = 40) -> str:
-    """Compact baseline/target cell text for the compare panel.
-
-    Distinguishes missing keys from present-but-blank values so Apply is unambiguous.
-    """
+    """Compact reference/compared cell text for the compare panel."""
     if value is None:
-        return "not present"
+        return "missing"
     stripped = value.strip()
     if not stripped:
-        return '"" (blank)'
+        return "(empty)"
     if len(stripped) > max_len:
         return stripped[: max_len - 1] + "…"
     return stripped
@@ -214,10 +216,10 @@ def format_diff_cell_value(value: str | None, *, max_len: int = 40) -> str:
 def format_apply_value_detail(value: str | None) -> str:
     """Full value text for Apply confirmations (not truncated)."""
     if value is None:
-        return "not present (setting missing in that snapshot)"
+        return "missing in that snapshot"
     stripped = value.strip()
     if not stripped:
-        return '"" (blank / empty string — the setting exists but has no text)'
+        return "(empty — setting exists but has no text)"
     return value
 
 
@@ -231,16 +233,48 @@ def _format_plain_value(value: str | None) -> str:
 
 
 def apply_button_label(value: str | None) -> str:
-    """Short button caption: blank values say Write blank so the action is obvious."""
+    """Short button caption for per-setting apply actions."""
     if value is None:
-        return "Write"
+        return "Apply"
     if not value.strip():
-        return "Write blank"
-    return "Write"
+        return "Apply empty"
+    return "Apply"
+
+
+_ITEM_IDENTITY_SETTING_RE = re.compile(
+    r"^item\[@(\w+)='((?:\\'|[^'])*)'\]$",
+    re.IGNORECASE,
+)
+_ITEM_IDENTITY_IN_PATH_RE = re.compile(
+    r"item\[@(\w+)='((?:\\'|[^'])*)'\]/(.+)$",
+    re.IGNORECASE,
+)
 
 
 def _setting_name(path: str) -> str:
-    segment = path.rsplit("/", 1)[-1]
+    """Human label for a diff path (never bare ``item`` for HW drivers)."""
+    norm = (path or "").replace("\\", "/")
+    segment = norm.rsplit("/", 1)[-1] if norm else ""
+
+    # Whole HW driver entry: item[@aliasName='tito']
+    whole = _ITEM_IDENTITY_SETTING_RE.fullmatch(segment)
+    if whole:
+        alias = whole.group(2).replace("\\'", "'")
+        return f"HW driver «{alias}»"
+
+    # Leaf under an identity-keyed driver: light · endpointaddress
+    under = _ITEM_IDENTITY_IN_PATH_RE.search(norm)
+    if under:
+        alias = under.group(2).replace("\\'", "'")
+        leaf_seg = under.group(3).rsplit("/", 1)[-1]
+        name_match = re.search(r"\[@name='([^']+)'\]", leaf_seg)
+        if name_match:
+            leaf = name_match.group(1)
+        else:
+            leaf_match = re.match(r"^([A-Za-z_][\w]*)", leaf_seg)
+            leaf = leaf_match.group(1) if leaf_match else leaf_seg
+        return f"{alias} · {leaf}"
+
     name_match = re.search(r"\[@name='([^']+)'\]", segment)
     if name_match:
         return name_match.group(1)
@@ -264,23 +298,83 @@ def file_diff_header_label(relative_path: str, status: str) -> str:
     """Return a changed-file header line for UI panels."""
     status_label = _STATUS_LABELS.get(status, status.title())
     label = f"{status_label}: {_file_label(relative_path)}"
+    if is_licence_path(relative_path):
+        label = f"{label}  [licence — never overwritten]"
+    elif is_protected_write_path(relative_path):
+        label = f"{label}  [protected — never written]"
     if is_encrypted_origin_config_path(relative_path):
         return f"{label}  [encrypted on disk]"
     return label
 
 
-def compare_panel_encrypted_origin_styles() -> dict[str, str]:
-    """Qt stylesheets for encrypted-origin vs plain config rows in the compare panel."""
+def compare_panel_encrypted_origin_styles(palette: object | None = None) -> dict[str, str]:
+    """Qt stylesheets for encrypted-origin vs plain config rows in the compare panel.
+
+    Pass a ``QPalette`` for theme-aware colors; without one, use dark-friendly defaults
+    that remain readable on the app dark theme.
+    """
+    if palette is not None:
+        from gui.palette_adapt import muted_text, rgba_css, surface_is_light, text_warning
+
+        warn = text_warning(palette)
+        muted = muted_text(palette)
+        from PySide6.QtGui import QPalette
+
+        link = palette.color(QPalette.ColorRole.Link)
+        if not link.isValid() or link.lightness() < 40:
+            link = palette.color(QPalette.ColorRole.Highlight)
+        text = palette.color(QPalette.ColorRole.WindowText)
+        light = surface_is_light(palette)
+        plain = text.name() if light else "#E0E0E0"
+        return {
+            "encrypted_header": f"font-weight: 700; color: {warn.name()};",
+            "encrypted_setting": f"color: {warn.name()};",
+            "encrypted_value": f"color: {warn.name()};",
+            "encrypted_value_muted": f"color: {rgba_css(warn, 0.75)};",
+            "plain_header": f"font-weight: 700; color: {link.name()};",
+            "protected_header": f"font-weight: 700; color: {muted.name()};",
+            "plain_setting": f"color: {plain};",
+            "plain_value": f"color: {plain};",
+            "plain_value_muted": f"color: {muted.name()};",
+            "legend": f"color: {muted.name()}; font-size: 11px;",
+            "summary": f"font-weight: 700; font-size: 14px; color: {plain};",
+            "chip": (
+                f"padding: 2px 8px; border-radius: 4px; "
+                f"background-color: {rgba_css(link, 0.18)}; color: {plain};"
+            ),
+            "chip_muted": (
+                f"padding: 2px 8px; border-radius: 4px; "
+                f"background-color: {rgba_css(muted, 0.2)}; color: {muted.name()};"
+            ),
+            "arrow": f"color: {muted.name()}; font-weight: 600; padding: 0 4px;",
+            "file_card": (
+                f"border: 1px solid {rgba_css(muted, 0.35)}; border-radius: 6px; "
+                f"padding: 4px;"
+            ),
+        }
+    # Dark-theme defaults (Config Scanner window uses dark stylesheet).
     return {
-        "encrypted_header": "font-weight: bold; color: #B35C00;",
-        "encrypted_setting": "color: #B35C00;",
-        "encrypted_value": "color: #8A4500;",
+        "encrypted_header": "font-weight: 700; color: #E8A54B;",
+        "encrypted_setting": "color: #E8A54B;",
+        "encrypted_value": "color: #E8A54B;",
         "encrypted_value_muted": "color: #A67C52;",
-        "plain_header": "font-weight: bold; color: #1F4E79;",
-        "plain_setting": "color: #1A1A1A;",
-        "plain_value": "color: #1A1A1A;",
-        "plain_value_muted": "color: #858585;",
-        "legend": "color: #666666; font-size: 11px;",
+        "plain_header": "font-weight: 700; color: #4FC3F7;",
+        "protected_header": "font-weight: 700; color: #888888;",
+        "plain_setting": "color: #E0E0E0;",
+        "plain_value": "color: #E0E0E0;",
+        "plain_value_muted": "color: #9E9E9E;",
+        "legend": "color: #9E9E9E; font-size: 11px;",
+        "summary": "font-weight: 700; font-size: 14px; color: #E0E0E0;",
+        "chip": (
+            "padding: 2px 8px; border-radius: 4px; "
+            "background-color: rgba(79, 195, 247, 0.18); color: #E0E0E0;"
+        ),
+        "chip_muted": (
+            "padding: 2px 8px; border-radius: 4px; "
+            "background-color: rgba(158, 158, 158, 0.2); color: #9E9E9E;"
+        ),
+        "arrow": "color: #9E9E9E; font-weight: 600; padding: 0 4px;",
+        "file_card": "border: 1px solid #3E3E42; border-radius: 6px; padding: 4px;",
     }
 
 
@@ -342,9 +436,28 @@ def looks_like_writable_setting_name(name: str) -> bool:
     return False
 
 
-def is_actionable_content_change(change: ContentChange) -> bool:
+def is_actionable_content_change(
+    change: ContentChange,
+    *,
+    relative_path: str = "",
+) -> bool:
     """True when a field-level Write is meaningful (readable setting, not gcxml churn)."""
+    from config_scanner.machine_identity import is_protected_identity_field
+
+    if is_protected_identity_field(change.path, relative_path):
+        return False
+    # Whole HW driver add/remove is not a leaf Write — restore the file instead.
+    if is_structural_item_change(change):
+        return False
     name = setting_display_name(change.path)
+    # "HW driver «tito»" / "light · endpointaddress" — only leaf fields are writable.
+    if " · " in name:
+        leaf = name.rsplit(" · ", 1)[-1]
+        if looks_like_writable_setting_name(leaf):
+            values = [v for v in (change.old_value, change.new_value) if v is not None]
+            if not values or any(not looks_like_ciphertext_token(v) for v in values):
+                return True
+        return False
     if looks_like_writable_setting_name(name):
         return True
     # Plain path segment that is a writable name
@@ -370,18 +483,37 @@ def prioritize_content_changes(changes: list[ContentChange]) -> list[ContentChan
 
 def content_change_panel_partition(
     changes: list[ContentChange],
+    *,
+    relative_path: str = "",
 ) -> tuple[list[ContentChange], list[ContentChange]]:
-    """Split into (actionable, opaque) preserving relative order within each group."""
-    actionable = [c for c in changes if is_actionable_content_change(c)]
-    opaque = [c for c in changes if not is_actionable_content_change(c)]
-    return actionable, opaque
+    """Split into (panel_primary, opaque_ciphertext).
+
+    Primary includes writable leaf settings and structural HW driver add/remove
+    rows (shown clearly in the UI). Structural rows are not Write-actionable —
+    `is_actionable_content_change` stays False for those.
+    """
+    primary: list[ContentChange] = []
+    opaque: list[ContentChange] = []
+    for change in changes:
+        if is_structural_item_change(change) or is_actionable_content_change(
+            change, relative_path=relative_path
+        ):
+            primary.append(change)
+        else:
+            opaque.append(change)
+    return primary, opaque
 
 
 def file_diff_has_actionable_changes(file_diff: FileDiff) -> bool:
     if not file_diff.content_diff:
         # Whole-file add/remove can still be written via snapshot restore.
         return file_diff.status in {"added", "removed", "modified"}
-    return any(is_actionable_content_change(c) for c in file_diff.content_diff)
+    rel = file_diff.relative_path
+    return any(
+        is_actionable_content_change(c, relative_path=rel)
+        or is_structural_item_change(c)
+        for c in file_diff.content_diff
+    )
 
 
 def prioritize_file_diffs_for_panel(file_diffs: list[FileDiff]) -> list[FileDiff]:
@@ -390,7 +522,10 @@ def prioritize_file_diffs_for_panel(file_diffs: list[FileDiff]) -> list[FileDiff
     with_actionable: list[FileDiff] = []
     opaque_only: list[FileDiff] = []
     for item in changed:
-        actionable, opaque = content_change_panel_partition(item.content_diff)
+        actionable, opaque = content_change_panel_partition(
+            item.content_diff,
+            relative_path=item.relative_path,
+        )
         if item.content_diff and not actionable and opaque:
             opaque_only.append(item)
         else:
@@ -448,8 +583,64 @@ def format_compare_summary(
     return text
 
 
+def format_compare_panel_summary(file_diffs: list[FileDiff]) -> str:
+    """Short stats line for the in-app Changes panel (files · settings)."""
+    changed = prioritize_file_diffs_for_panel(file_diffs)
+    if not changed:
+        return "No changes"
+    n_files = len(changed)
+    n_settings = 0
+    for file_diff in changed:
+        if file_diff.content_diff:
+            actionable, _opaque = content_change_panel_partition(
+                file_diff.content_diff,
+                relative_path=file_diff.relative_path,
+            )
+            n_settings += len(actionable)
+            if not actionable and file_diff.status in {"added", "removed", "modified"}:
+                n_settings += 1
+        else:
+            n_settings += 1
+    files_phrase = "1 file" if n_files == 1 else f"{n_files} files"
+    if n_settings == 1:
+        settings_phrase = "1 setting"
+    else:
+        settings_phrase = f"{n_settings} settings"
+    return f"{files_phrase} · {settings_phrase}"
+
+
+def format_compare_panel_header(
+    baseline_snapshot: str,
+    target_snapshot: str,
+    file_diffs: list[FileDiff],
+    *,
+    session_reference: str | None = None,
+) -> str:
+    """Hero header: snapshot pair plus change counts."""
+    stats = format_compare_panel_summary(file_diffs)
+    header = f"{baseline_snapshot} \u2192 {target_snapshot}"
+    if stats == "No changes":
+        return f"{header} · no differences"
+    if session_reference and session_reference == baseline_snapshot:
+        header += "  (reference snapshot)"
+    return f"{header} · {stats}"
+
+
 def _format_content_change(change: ContentChange) -> str:
     setting = _setting_name(change.path)
+    if is_structural_item_change(change):
+        # Be explicit: list-index churn is NOT a rename of one driver into another.
+        if change.change_type == "removed":
+            return (
+                f"  − {setting}: entire driver entry removed "
+                f"({_format_plain_value(change.old_value)}). "
+                f"Not a rename — other drivers kept their identity; only list indices shifted."
+            )
+        if change.change_type == "added":
+            return (
+                f"  + {setting}: entire driver entry added "
+                f"({_format_plain_value(change.new_value)})."
+            )
     if change.change_type == "added":
         return f"  + {setting}: {_format_plain_value(change.new_value)}"
     if change.change_type == "removed":
@@ -556,7 +747,10 @@ def compare_panel_layout_metrics(
         if not file_diff.content_diff:
             notes += 1
             continue
-        actionable, opaque = content_change_panel_partition(file_diff.content_diff)
+        actionable, opaque = content_change_panel_partition(
+            file_diff.content_diff,
+            relative_path=file_diff.relative_path,
+        )
         if actionable:
             apply_rows += min(len(actionable), max_changes_per_file)
             if len(actionable) > max_changes_per_file:
@@ -600,7 +794,10 @@ def format_compare_changed_list(file_diffs: list[FileDiff], *, max_details: int 
         status = _STATUS_LABELS.get(item.status, item.status.title())
         lines.append(f"{status}: {_file_label(item.relative_path)}")
         if item.content_diff:
-            actionable, opaque = content_change_panel_partition(item.content_diff)
+            actionable, opaque = content_change_panel_partition(
+            item.content_diff,
+            relative_path=item.relative_path,
+        )
             for line in actionable[:max_details]:
                 lines.append(_format_content_change(line))
             if len(actionable) > max_details:

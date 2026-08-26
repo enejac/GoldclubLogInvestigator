@@ -8,7 +8,7 @@ Hop 5 is the **test oracle**: it reads the state that the earlier hops produced 
 emits PASS/FAIL. It is defensive QA / architecture mapping only.
 
 Sources:
-- [`Invoke-AftTransferTest.ps1`](../../Invoke-AftTransferTest.ps1) — orchestration + per-transfer verification.
+- [`Invoke-AftTransferTest.ps1`](../../lab/Invoke-AftTransferTest.ps1) — orchestration + per-transfer verification.
 - [`Convert-AftHistory.ps1`](../../Convert-AftHistory.ps1) — read-only parser + audit/robustness checks.
 - [`report/README.md`](../report/README.md) — documented IGT tester workflow.
 

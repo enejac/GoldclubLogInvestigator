@@ -16,6 +16,23 @@ alwaysApply: true
 4. **Emit a repro pack** (below). Report pass/fail + pack path to the user.
 5. **After a product bug fix**: repeat from step 1 on the same cabinet — expect **PASS** (no critical). Keep the same click script; do not "fix" the repro by switching to HTTP-only.
 
+## Cabinet or this machine
+
+Every repro tool takes a **target**, not just an IP: `--target 10.0.0.90` drives a
+cabinet over WinRM + the admin share, `--target local` drives the roulette client
+running on this machine (or its primary monitor when the client is not here) and
+reads the middleware over `127.0.0.1`.
+
+```powershell
+python -m automation.run_jira_repro --key RSW-6534 --target local
+python -m automation.roulette_edge_probe --target local --layout layout2
+```
+
+In the GUI, type `local` in the **Cabinet IP** box. The connection is checked before
+the first step and the probe result is written to `connection.json` in the pack, so
+"unreachable" says which of SMB 445 / `C$` / WinRM failed and how to fix it. Bill
+inject stays cabinet-only — it talks to KeyCtrl on the cabinet's COM3 bridge.
+
 ## Click vs HTTP
 
 - **Repro body = clicks** on Godot (`godot` focus, interactive session).

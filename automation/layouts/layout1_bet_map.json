@@ -1,0 +1,21 @@
+{
+  "layout_id": "layout1",
+  "source": "docs/action-endpoint-commands.md",
+  "notes": [
+    "place_bet = middleware PUT /api/action PlaceBet Data (no amounts).",
+    "Pixel hitboxes in layout1_hitboxes.json are used for cloth clicks.",
+    "Clear with CancelAllBets; select chip with SetChip index string.",
+    "Straight-up red 1 = PlaceBet [\"1\"] / expect Fields Id=1."
+  ],
+  "actions": {
+    "clear": { "Type": "CancelAllBets" },
+    "set_chip_1": { "Type": "SetChip", "Data": "0" }
+  },
+  "bets": {
+    "straightup_red_1": {
+      "place_bet": ["1"],
+      "expect": { "BetType": "Fields", "Id": "1" },
+      "hitbox_ref": "straightup_red_1"
+    }
+  }
+}

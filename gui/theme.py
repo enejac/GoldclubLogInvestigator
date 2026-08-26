@@ -29,6 +29,14 @@ QWidget {{
     font-size: 13px;
     font-family: "Segoe UI", "San Francisco", system-ui, sans-serif;
 }}
+/* QToolTip is a QWidget; without this it keeps the OS pale-yellow base
+   while inheriting light QWidget text — unreadable on Dark theme. */
+QToolTip {{
+    background-color: {COLOR_BG_ELEVATED};
+    color: {COLOR_TEXT};
+    border: 1px solid {COLOR_BORDER};
+    padding: 6px 8px;
+}}
 QMainWindow {{
     background-color: {COLOR_BG};
 }}
@@ -74,6 +82,10 @@ QTableView {{
 }}
 QTableView::item {{
     padding: 4px 8px;
+}}
+/* Config Scanner snapshot list: app padding offsets indexAt / row hits. */
+QTableView#configScannerSnapshotTable::item {{
+    padding: 0px;
 }}
 QHeaderView::section {{
     background-color: {COLOR_BG_INPUT};

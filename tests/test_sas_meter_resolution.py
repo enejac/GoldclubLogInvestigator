@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from gui.view_model import (
     IncidentViewModel,
     SAS_6F_METER_ALIASES,
@@ -150,6 +152,38 @@ def test_0004_components_resolve_individually() -> None:
     assert _norm_compare(vm.get_gm2u_value_for_sas_code("0018", state)) == "18000"
 
 
+def test_roulette_handpay_meters_match_sas_credits() -> None:
+    """Roulette ruleta DeviceManager names differ from slot cancelledcredits."""
+    vm = _make_vm()
+    state = {
+        "handpaycashableoutamt": "1402500",
+        "handpaykeyedoffcashableoutamt": "0",
+        "handpaykeyedoffnoncashableoutamt": "0",
+        "handpaykeyedoffpromooutamt": "0",
+        "vouchercashableoutamt": "2000000",
+        "watcashableinamt": "2000000",  # WAT present but no out buckets → 0018 = 0
+    }
+    # Prefer cashable-out over keyed-off=0; no cancelledcredits key on roulette.
+    assert _norm_compare(vm.get_gm2u_value_for_sas_code("0023", state)) == "1402500"
+    assert _norm_compare(vm.get_gm2u_value_for_sas_code("0003", state)) == "1402500"
+    # 0004 = handpay (0003) + ticket out (0016) + cashless out (0018)
+    assert _norm_compare(vm.get_gm2u_value_for_sas_code("0004", state)) == "3402500"
+    assert _norm_compare(vm.get_gm2u_value_for_sas_code("0016", state)) == "2000000"
+    assert _norm_compare(vm.get_gm2u_value_for_sas_code("0018", state)) == "0"
+
+
+def test_roulette_handpay_not_eclipsed_by_stale_cancelledcredits() -> None:
+    vm = _make_vm()
+    state = {
+        "handpaycashableoutamt": "1402500",
+        "cancelledcredits": "999",  # stale / wrong-family if both somehow present
+        "vouchercashableoutamt": "2000000",
+        "watcashableinamt": "0",
+    }
+    assert _norm_compare(vm.get_gm2u_value_for_sas_code("0023", state)) == "1402500"
+    assert _norm_compare(vm.get_gm2u_value_for_sas_code("0003", state)) == "1402500"
+
+
 def test_dollar_display_converts_sas_credits() -> None:
     from gui.sas_verify_dialog import EgmCurrency, _format_meter_value_display
 
@@ -216,6 +250,62 @@ def test_parse_sas_2f_igt_first_meter_text() -> None:
     got = parse_sas_2f_paste(paste)
     assert got["0000"] == "100"
     assert got["0005"] == "1"
+
+
+def test_column_visibility_protects_last_column() -> None:
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    from gui.sas_verify_dialog import SasVerifyDialog
+
+    app = QApplication.instance() or QApplication([])
+    dlg = SasVerifyDialog(
+        SimpleNamespace(current_product_name="GUI-Test"),
+        QThreadPool.globalInstance(),
+        scan_root="",
+    )
+    dlg._prefetch_started = True
+    acts = list(dlg._column_actions.values())
+    assert acts
+    # Leave exactly one column checked, then try to hide it.
+    for act in acts[:-1]:
+        act.setChecked(False)
+    last = acts[-1]
+    assert last.isChecked() is True
+    last.setChecked(False)
+    assert last.isChecked() is True
+    dlg.deleteLater()
+    app.processEvents()
+
+
+def test_2f_autoshow_does_not_persist_prefs() -> None:
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    from gui.sas_verify_dialog import COL_SAS_2F_VALUE, SasVerifyDialog
+
+    app = QApplication.instance() or QApplication([])
+    dlg = SasVerifyDialog(
+        SimpleNamespace(current_product_name="GUI-Test"),
+        QThreadPool.globalInstance(),
+        scan_root="",
+    )
+    dlg._prefetch_started = True
+    act = dlg._column_actions[COL_SAS_2F_VALUE]
+    act.setChecked(False)
+    saves: list[int] = []
+    dlg._save_column_visibility_prefs = lambda: saves.append(1)  # type: ignore[method-assign]
+    dlg._sas_2f_values = {"0000": "1"}
+    dlg._update_2f_column_visibility()
+    assert act.isChecked() is True
+    assert dlg._2f_autoshow_done is True
+    assert saves == []
+    dlg.deleteLater()
+    app.processEvents()
 
 
 def test_default_verify_column_visible() -> None:
@@ -332,6 +422,7 @@ def test_0001_coin_out_sums_theme_win_meters() -> None:
     assert _norm_compare(vm.get_gm2u_value_for_sas_code("0001", state)) == "1000"
 
 
+@pytest.mark.integration
 def test_0001_coin_out_from_lab_cabinet_state() -> None:
     """Live-cabinet check: 0001 = max(paytable coin-out keys) + sasbonuswin + progwin.
 
@@ -383,3 +474,32 @@ def test_cabinet_bill_aggregate_keys_from_lab_state() -> None:
     assert cabinet_bill_stacker_amount_credits(state) == "600"
     assert cabinet_bill_stacker_count(state) == "2"
     assert cabinet_bill_reject_count(state) == "0"
+
+
+def test_games_since_init_maps_to_total_games_played() -> None:
+    """Post-RAM-clear DeviceManager exposes gamesSinceInit, not gamesPlayed."""
+    vm = _make_vm()
+    st = {"gamessinceinit": "0", "gamecoinin": "0", "creditcashable": "0"}
+    assert vm.get_gm2u_value_for_sas_code("0005", st) == "0"
+    assert vm.get_gm2u_value_for_sas_code("0006", st) == "0"
+    assert vm.get_gm2u_value_for_sas_code("0007", st) == "0"
+
+
+def test_sparse_cleared_state_zeros_soft_meters() -> None:
+    """Ticket/transfer soft meters are 0 when only clear markers exist."""
+    vm = _make_vm()
+    st = {"gamessinceinit": "0", "gamecoinin": "0"}
+    for code in ("0015", "0016", "0017", "0018", "001C", "0023", "0080", "00A0"):
+        assert vm.get_gm2u_value_for_sas_code(code, st) == "0", code
+
+
+def test_notes_stacker_not_zeroed_by_clear_heuristic() -> None:
+    """Physical stacker amount must not be invented as 0 after soft clear."""
+    vm = _make_vm()
+    st = {
+        "gamessinceinit": "0",
+        "gamecoinin": "0",
+        "notesinstackeramt": "18800",
+    }
+    assert vm.get_gm2u_value_for_sas_code("000B", st) == "18800"
+

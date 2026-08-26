@@ -49,20 +49,28 @@ SAS_TO_XML: dict[str, tuple[str, str]] = {
 }
 
 
-def _meter_value_to_int(val_str: str) -> int:
+def meter_value_to_int_or_none(val_str: str) -> int | None:
     """
-    Parses a string of BCD (Binary Coded Decimal) bytes into an integer.
-    Since BCD maps 0x00-0x99 directly to decimal 0-99, a hex string representation
-    like '000034' can be natively cast as a base-10 integer.
+    BCD payload bytes as an integer, or ``None`` when the payload is not BCD.
+
+    BCD maps 0x00-0x99 directly to decimal 0-99, so the hex rendering of a valid
+    payload (``'000034'``) reads as base 10. Any ``A-F`` digit means the bytes are
+    corrupt; callers that can show "no reading" should prefer that over a zero,
+    which is indistinguishable from a genuine zero meter.
     """
     s = (val_str or "").strip()
     if not s:
-        return 0
+        return None
     try:
         return int(s, 10)
     except ValueError:
-        # If the string contains A-F, it is a malformed BCD packet
-        return 0
+        return None
+
+
+def _meter_value_to_int(val_str: str) -> int:
+    """BCD payload as an integer, treating a malformed packet as ``0``."""
+    value = meter_value_to_int_or_none(val_str)
+    return 0 if value is None else value
 
 
 def _compare_intish(value: str) -> int | None:

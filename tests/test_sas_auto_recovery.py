@@ -6,6 +6,11 @@ from types import SimpleNamespace
 
 from gui.sas_verify_dialog import (
     SAS_VERIFY_HELP_HTML,
+    CABINET_SHARE_FETCH_BUTTON_LABEL,
+    CABINET_SHARE_WAIT_COM_BUTTON_LABEL,
+    build_com_blocked_cabinet_share_dialog,
+    cabinet_share_only_status,
+    cabinet_share_when_com_blocked_prompt_text,
     com_access_denied_online_status,
     com_error_is_link_dead,
     com_error_is_port_busy,
@@ -15,6 +20,7 @@ from gui.sas_verify_dialog import (
     local_files_only_status,
     share_error_is_access,
     share_recovery_waiting_status,
+    should_offer_cabinet_share_when_com_blocked,
     should_offer_g_drive_prompt,
     should_offer_local_scan_prompt,
     local_g_drive_waiting_for_game_status,
@@ -57,23 +63,105 @@ def test_recovery_waiting_status_texts() -> None:
 
 def test_help_html_mentions_key_fixes() -> None:
     assert "IGT SAS tester" in SAS_VERIFY_HELP_HTML
+    assert "SASControler" in SAS_VERIFY_HELP_HTML
+    assert "10.0.0.90" in SAS_VERIFY_HELP_HTML
     assert "registered automatically" in SAS_VERIFY_HELP_HTML
     assert "cmdkey /add:" in SAS_VERIFY_HELP_HTML
     assert "Auto fetch" in SAS_VERIFY_HELP_HTML
     assert "DeviceManagerData.xml" in SAS_VERIFY_HELP_HTML
+    assert "Always on top" in SAS_VERIFY_HELP_HTML
+    assert "ruleta\\var" in SAS_VERIFY_HELP_HTML
+    assert "Open Machine source file" in SAS_VERIFY_HELP_HTML
+    assert "SYNCING" in SAS_VERIFY_HELP_HTML
+    assert "soft pulse" in SAS_VERIFY_HELP_HTML
+    # Monitor + hotkey features (documented in a Keyboard shortcuts section).
+    assert "Move to Monitor 2" in SAS_VERIFY_HELP_HTML
+    assert "Keyboard shortcuts" in SAS_VERIFY_HELP_HTML
+    assert "Ctrl+Alt+Shift+M" in SAS_VERIFY_HELP_HTML
+    assert "Ctrl+Alt+Shift+K" in SAS_VERIFY_HELP_HTML
+    assert "Ctrl+Alt+Shift+T" in SAS_VERIFY_HELP_HTML
+    assert "Ctrl+Tab" in SAS_VERIFY_HELP_HTML
+    assert "Ctrl+1" in SAS_VERIFY_HELP_HTML
+    assert "What this tool is for" in SAS_VERIFY_HELP_HTML
+    assert "Handpay In" in SAS_VERIFY_HELP_HTML
+    assert "0023" in SAS_VERIFY_HELP_HTML
+    assert "handpay*InAmt" in SAS_VERIFY_HELP_HTML
+    assert "Refresh Meters" in SAS_VERIFY_HELP_HTML
+    assert "No EGM reboot required" in SAS_VERIFY_HELP_HTML
+    assert "you do not need to" in SAS_VERIFY_HELP_HTML
+    assert "power-cycle or reboot" in SAS_VERIFY_HELP_HTML
 
 
 def _make_dialog():
     from PySide6.QtCore import QThreadPool
     from PySide6.QtWidgets import QApplication
 
-    from gui.sas_verify_dialog import SasVerifyDialog
+    from gui.sas_verify_dialog import (
+        _KEY_AUTO_FETCH,
+        SasVerifyDialog,
+        _sas_verify_settings,
+    )
+
+    s = _sas_verify_settings()
+    s.remove(f"sasVerify/{_KEY_AUTO_FETCH}")
+    s.sync()
 
     app = QApplication.instance() or QApplication([])
     vm = SimpleNamespace(current_product_name="GUI-Test")
     dlg = SasVerifyDialog(vm, QThreadPool.globalInstance(), scan_root="")
     dlg._prefetch_started = True  # avoid COM/cabinet prefetch side effects in CI
+    # Default Auto fetch is checked but not armed until show — keep it off in
+    # unit tests so processEvents cannot start a real cabinet/COM round.
+    # blockSignals: setChecked(False) would otherwise persist auto_fetch=false.
+    blocked = dlg._auto_fetch_toggle.blockSignals(True)
+    dlg._auto_fetch_toggle.setChecked(False)
+    dlg._auto_fetch_toggle.blockSignals(blocked)
+    for name in (
+        "_auto_fetch_timer",
+        "_auto_fetch_queue_timer",
+        "_settle_repaint_timer",
+        "_meter_flash_timer",
+        "_recovery_timer",
+    ):
+        timer = getattr(dlg, name, None)
+        if timer is not None:
+            timer.stop()
     return app, dlg
+
+
+def _close_dialog(app, dlg) -> None:
+    """Safe teardown: drop worker signals, stop timers/threads, restore pref."""
+    from gui.sas_verify_dialog import _KEY_AUTO_FETCH, _sas_verify_settings
+
+    dlg._accept_worker_signals = False
+    for name in (
+        "_auto_fetch_timer",
+        "_auto_fetch_queue_timer",
+        "_settle_repaint_timer",
+        "_meter_flash_timer",
+        "_recovery_timer",
+    ):
+        timer = getattr(dlg, name, None)
+        if timer is not None:
+            timer.stop()
+    try:
+        dlg._stop_meter_fetch_thread(wait_ms=200)
+    except Exception:
+        pass
+    try:
+        dlg._stop_compare_thread(wait_ms=200)
+    except Exception:
+        pass
+    toggle = getattr(dlg, "_auto_fetch_toggle", None)
+    if toggle is not None:
+        blocked = toggle.blockSignals(True)
+        toggle.setChecked(False)
+        toggle.blockSignals(blocked)
+    s = _sas_verify_settings()
+    s.remove(f"sasVerify/{_KEY_AUTO_FETCH}")
+    s.sync()
+    dlg.deleteLater()
+    app.processEvents()
 
 
 def test_should_offer_local_scan_prompt_gates_igt_and_online_hold() -> None:
@@ -90,6 +178,40 @@ def test_should_offer_local_scan_prompt_gates_igt_and_online_hold() -> None:
         mux_detail="PermissionError(13, 'Access is denied', None, 5)",
         igt_running=False,
     )
+
+
+def test_should_offer_cabinet_share_when_com_blocked() -> None:
+    # Access Denied + remote UNC is the only gate (not process names).
+    assert should_offer_cabinet_share_when_com_blocked(
+        has_remote_unc=True,
+        port_busy=True,
+    )
+    assert not should_offer_cabinet_share_when_com_blocked(
+        has_remote_unc=True,
+        port_busy=False,
+    )
+    assert not should_offer_cabinet_share_when_com_blocked(
+        has_remote_unc=False,
+        port_busy=True,
+    )
+
+
+
+def test_cabinet_share_when_com_blocked_prompt_text() -> None:
+    body = cabinet_share_when_com_blocked_prompt_text(
+        scan_root=r"\\10.0.0.90\c$\Goldclub\var",
+        cabinet_ip="10.0.0.90",
+        com_detail="Access is denied",
+    )
+    assert "Access Denied" in body
+    assert "Access is denied" in body
+    assert "SASControler1" in body
+    assert "cabinet share" in body.lower()
+    assert "gm2au" in body
+    status = cabinet_share_only_status(r"\\10.0.0.90\c$\Goldclub\var")
+    assert "COM blocked" in status
+    assert "SASControler" in status
+    assert "no live SAS/MUX" in status
 
 
 def test_should_offer_g_drive_prompt_requires_local_game_client() -> None:
@@ -149,8 +271,7 @@ def test_dialog_schedule_local_scan_prefers_g_when_game_up(monkeypatch) -> None:
     app.processEvents()
     assert offers == [r"G:\var\log"]
     assert prompts == []
-    dlg.deleteLater()
-    app.processEvents()
+    _close_dialog(app, dlg)
 
 
 def test_dialog_schedule_local_scan_waits_on_egm_without_game(monkeypatch) -> None:
@@ -180,15 +301,15 @@ def test_dialog_schedule_local_scan_waits_on_egm_without_game(monkeypatch) -> No
     assert offers == []
     assert prompts == []
     assert "not running" in dlg._prefetch_status_label.text().lower()
-    dlg.deleteLater()
-    app.processEvents()
+    _close_dialog(app, dlg)
 
 
 def test_com_access_denied_online_status() -> None:
     txt = com_access_denied_online_status("COM4")
     assert "Access denied" in txt
     assert "COM4" in txt
-    assert "online" in txt.lower()
+    assert "No IGT SAS tester" in txt
+    assert "Auto-recovery armed" not in txt
 
 
 def test_dialog_com_recovery_arms_and_recaptures(monkeypatch) -> None:
@@ -226,8 +347,7 @@ def test_dialog_com_recovery_arms_and_recaptures(monkeypatch) -> None:
     dlg._apply_meter_fetch_complete(None)
     assert not dlg._com_recovery_pending
 
-    dlg.deleteLater()
-    app.processEvents()
+    _close_dialog(app, dlg)
 
 
 def test_dialog_port_busy_without_igt_is_access_denied(monkeypatch) -> None:
@@ -242,23 +362,124 @@ def test_dialog_port_busy_without_igt_is_access_denied(monkeypatch) -> None:
 
     dlg._meter_fetch_prefetch = True
     dlg._scan_root = ""
+    # Stale latch from a prior misdetect must not keep blaming IGT.
+    dlg._com_recovery_pending = True
+    dlg._recovery_timer.start()
     dlg._on_meter_fetch_error(
         "could not open port 'COM4': PermissionError(13, 'Access is denied', None, 5)"
     )
     assert not dlg._com_recovery_pending
+    assert not dlg._recovery_timer.isActive()
     assert prompts == []
     assert "Access denied" in dlg._prefetch_status_label.text()
-    assert "online" in dlg._prefetch_status_label.text().lower()
+    assert "No IGT SAS tester" in dlg._prefetch_status_label.text()
+    assert "Auto-recovery armed" not in dlg._prefetch_status_label.text()
 
-    dlg.deleteLater()
-    app.processEvents()
+    _close_dialog(app, dlg)
 
 
-def test_dialog_share_recovery_arms_on_empty_unc_state() -> None:
+def test_recovery_recapture_pairs_with_machine_resync() -> None:
+    """A capture landing after COM recovery must re-read Machine, not settle
+    fresh SAS values against the older snapshot (transient false MISMATCH)."""
+    app, dlg = _make_dialog()
+    blocked = dlg._auto_fetch_toggle.blockSignals(True)
+    dlg._auto_fetch_toggle.setChecked(True)
+    dlg._auto_fetch_toggle.blockSignals(blocked)
+    dlg._auto_fetch_timer.stop()
+    dlg._scan_root = r"\\10.0.0.90\c$\Goldclub\var\log"
+    resyncs: list[bool] = []
+    dlg._resync_machine_after_auto_fetch_capture = (  # type: ignore[method-assign]
+        lambda: resyncs.append(True)
+    )
+    dlg._apply_meter_fetch_result = lambda r: False  # type: ignore[method-assign]
+    dlg._flush_pending_cabinet_ui_refresh = lambda: None  # type: ignore[method-assign]
+    dlg._machine_loaded_for_current_root = lambda: True  # type: ignore[method-assign]
+    dlg._update_prefetch_status = lambda *a, **k: None  # type: ignore[method-assign]
+
+    # The recovery recapture path arms the pairing flag...
+    fetches: list[dict] = []
+    dlg._begin_meter_fetch = lambda **kw: fetches.append(kw) or True  # type: ignore[method-assign]
+    dlg._restart_capture_after_com_freed()
+    assert dlg._recovery_recapture_pending is True
+    assert fetches and fetches[0].get("full_timing") is True
+
+    # ...and completion outside a round opens one and pairs Machine.
+    dlg._auto_fetch_round_active = False
+    dlg._apply_meter_fetch_complete(None)
+    assert resyncs == [True]
+    assert dlg._auto_fetch_round_active is True
+    assert dlg._recovery_recapture_pending is False
+
+    dlg._auto_fetch_round_active = False
+    dlg._auto_fetch_toggle.setChecked(False)
+    _close_dialog(app, dlg)
+
+
+def test_access_denied_status_survives_with_machine_loaded(monkeypatch) -> None:
+    """The curated 'No IGT SAS tester' text must be the final status even when
+    Machine is already loaded (the bare recompute used to overwrite it)."""
+    app, dlg = _make_dialog()
+    monkeypatch.setattr(
+        "gui.sas_verify_dialog.igt_sas_tester_is_running",
+        lambda force_refresh=False: False,
+    )
+    root = r"\\10.0.0.90\c$\Goldclub\var\log"
+    dlg._scan_root = root
+    dlg._machine_state = {"coinin": "1"}
+    dlg._machine_state_loaded = True
+    dlg._loaded_cabinet_scan_root = root
+    dlg._machine_state_loaded_at = 1_000.0
+    dlg._meter_fetch_prefetch = True
+    dlg._meter_prefetch_retried = True
+    dlg._flush_pending_cabinet_ui_refresh = lambda: None  # type: ignore[method-assign]
+    dlg._refresh_com_port_list = lambda **kw: None  # type: ignore[method-assign]
+    dlg._update_onehand_warning_label = lambda *a, **k: None  # type: ignore[method-assign]
+
+    dlg._on_meter_fetch_error(
+        "could not open port 'COM4': PermissionError(13, 'Access is denied', None, 5)"
+    )
+    assert "No IGT SAS tester" in dlg._prefetch_status_label.text()
+
+    _close_dialog(app, dlg)
+
+
+def test_get_meters_modal_does_not_blame_igt_without_blocker(monkeypatch) -> None:
+    """Manual Get Meters must not show the IGT Auto-recovery false positive."""
+    from PySide6.QtWidgets import QMessageBox
+
+    app, dlg = _make_dialog()
+    boxes: list[str] = []
+    monkeypatch.setattr(
+        "gui.sas_verify_dialog.igt_sas_tester_is_running",
+        lambda force_refresh=False: False,
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *args, **kwargs: boxes.append(str(args[2] if len(args) > 2 else kwargs.get("text", ""))),
+    )
+    dlg._meter_fetch_prefetch = False  # manual path → modal
+    dlg._com_recovery_pending = True
+    dlg._on_meter_fetch_error(
+        "Could not open COM4: Access is denied."
+    )
+    assert boxes
+    assert "Auto-recovery armed" not in boxes[0]
+    assert "No IGT SAS tester" in boxes[0]
+    assert not dlg._com_recovery_pending
+
+    _close_dialog(app, dlg)
+
+
+def test_dialog_share_recovery_arms_on_empty_unc_state(monkeypatch) -> None:
     app, dlg = _make_dialog()
     calls: list[tuple] = []
     dlg._begin_meter_fetch = lambda **kw: calls.append(("fetch", kw))
     dlg._scan_root = r"\\127.0.0.1\c$\Goldclub\var"
+    monkeypatch.setattr(
+        "network.goldclub_paths.should_arm_share_recovery_after_empty_load",
+        lambda _sr: True,
+    )
 
     # Empty machine state on a UNC root arms the share watcher.
     dlg._apply_cabinet_state({})
@@ -288,8 +509,7 @@ def test_dialog_share_recovery_arms_on_empty_unc_state() -> None:
     assert not dlg._share_recovery_pending
     assert not dlg._share_recovery_reloading
 
-    dlg.deleteLater()
-    app.processEvents()
+    _close_dialog(app, dlg)
 
 
 def test_com_error_is_link_dead() -> None:
@@ -385,12 +605,16 @@ def test_dialog_local_files_only_mode_and_mux_skip() -> None:
     assert port == ""
     assert "not possible" in detail
 
-    # UNC root is never files-only.
+    # Self-UNC remaps to a local path; without a local Goldclub install /
+    # on-EGM runtime it is still not files-only (COM capture stays available).
     _set_scan_root_silently(dlg, r"\\127.0.0.1\c$\Goldclub\var")
     assert not dlg._local_files_only_mode()
 
-    dlg.deleteLater()
-    app.processEvents()
+    # A remote cabinet UNC must never be files-only.
+    _set_scan_root_silently(dlg, r"\\10.0.0.90\c$\Goldclub\var")
+    assert not dlg._local_files_only_mode()
+
+    _close_dialog(app, dlg)
 
 
 def test_dialog_game_recovery_refetches_all_meters() -> None:
@@ -430,8 +654,7 @@ def test_dialog_game_recovery_refetches_all_meters() -> None:
     dlg._apply_meter_fetch_complete(None)
     assert not dlg._game_recovery_pending
 
-    dlg.deleteLater()
-    app.processEvents()
+    _close_dialog(app, dlg)
 
 
 def test_dialog_game_recovery_client_already_up_stops_instead_of_looping() -> None:
@@ -456,8 +679,7 @@ def test_dialog_game_recovery_client_already_up_stops_instead_of_looping() -> No
     assert calls == []
     assert "SAS link is silent" in dlg._prefetch_status_label.text()
 
-    dlg.deleteLater()
-    app.processEvents()
+    _close_dialog(app, dlg)
 
 
 def test_resolve_scan_root_never_remaps_to_g_drive(monkeypatch) -> None:
@@ -524,8 +746,7 @@ def test_dialog_link_dead_error_arms_game_recovery() -> None:
     dlg._on_meter_fetch_error("SAS link not responding on COM4 (no RX during 2.0s sync)")
     assert dlg._game_recovery_pending
 
-    dlg.deleteLater()
-    app.processEvents()
+    _close_dialog(app, dlg)
 
 
 def test_dialog_has_help_menu_with_setup_dialog() -> None:
@@ -540,5 +761,193 @@ def test_dialog_has_help_menu_with_setup_dialog() -> None:
     assert "Help" in help_dlg.windowTitle()
     help_dlg.hide()
 
-    dlg.deleteLater()
-    app.processEvents()
+    _close_dialog(app, dlg)
+
+
+def test_com_blocked_dialog_has_share_fetch_button() -> None:
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    box = build_com_blocked_cabinet_share_dialog(None, body="test body")
+    labels = [b.text() for b in box.buttons()]
+    assert CABINET_SHARE_FETCH_BUTTON_LABEL in labels
+    assert CABINET_SHARE_WAIT_COM_BUTTON_LABEL in labels
+    assert "SASControler1" in CABINET_SHARE_FETCH_BUTTON_LABEL
+    box.close()
+
+
+def test_should_offer_cabinet_share_on_access_denied_without_named_blocker() -> None:
+    assert should_offer_cabinet_share_when_com_blocked(
+        has_remote_unc=True,
+        port_busy=True,
+    )
+
+
+def test_game_recovery_disarms_after_inconclusive_probes() -> None:
+    from gui.sas_verify_dialog import GAME_RECOVERY_INCONCLUSIVE_MAX
+
+    app, dlg = _make_dialog()
+    dlg._scan_root = r"\\10.0.0.90\c$\Goldclub\var"
+    dlg._arm_game_recovery()
+    assert dlg._game_recovery_pending
+    for _ in range(GAME_RECOVERY_INCONCLUSIVE_MAX - 1):
+        dlg._on_recovery_probe_done(False, False, None)
+        assert dlg._game_recovery_pending
+    dlg._on_recovery_probe_done(False, False, None)
+    assert not dlg._game_recovery_pending
+    assert "WinRM unreachable" in dlg._prefetch_status_label.text()
+    _close_dialog(app, dlg)
+
+
+def test_share_recovery_reloads_when_compare_stuck() -> None:
+    import time
+
+    app, dlg = _make_dialog()
+    calls: list[dict] = []
+    dlg._scan_root = r"\\127.0.0.1\c$\Goldclub\var"
+    dlg._share_recovery_pending = True
+    dlg._compare_running = lambda: True  # type: ignore[method-assign]
+    dlg._compare_started_mono = time.monotonic() - 25.0
+    dlg._begin_cabinet_compare = lambda **kw: calls.append(kw)
+    dlg._stop_compare_thread = lambda **kw: None  # type: ignore[method-assign]
+    dlg._invalidate_machine_cabinet_cache = lambda **kw: None  # type: ignore[method-assign]
+
+    dlg._on_recovery_probe_done(False, True)
+    assert not dlg._share_recovery_pending
+    assert dlg._share_recovery_reloading
+    assert calls == [{"prefetch": True, "force": True}]
+
+    _close_dialog(app, dlg)
+
+
+def test_recovery_timer_probes_share_while_compare_running(monkeypatch) -> None:
+    app, dlg = _make_dialog()
+    dlg._share_recovery_pending = True
+    dlg._compare_running = lambda: True  # type: ignore[method-assign]
+    captured: list[bool] = []
+
+    class _FakeTask:
+        def __init__(self, **kwargs) -> None:
+            captured.append(bool(kwargs.get("check_share")))
+
+    class _FakePool:
+        def start(self, task) -> None:
+            pass
+
+    monkeypatch.setattr("gui.sas_verify_dialog._RecoveryProbeTask", _FakeTask)
+    dlg._pool = _FakePool()  # type: ignore[assignment]
+    dlg._resolve_active_scan_root = lambda: r"\\127.0.0.1\c$\Goldclub\var"  # type: ignore[method-assign]
+
+    dlg._on_recovery_timer()
+    assert captured == [True]
+
+    _close_dialog(app, dlg)
+
+
+def test_recovery_recapture_pairs_with_machine_when_auto_fetch_off() -> None:
+    app, dlg = _make_dialog()
+    dlg._auto_fetch_toggle.setChecked(False)
+    dlg._auto_fetch_timer.stop()
+    dlg._scan_root = r"\\10.0.0.90\c$\Goldclub\var\log"
+    resyncs: list[bool] = []
+    dlg._resync_machine_after_auto_fetch_capture = (  # type: ignore[method-assign]
+        lambda: resyncs.append(True)
+    )
+    dlg._apply_meter_fetch_result = lambda r: False  # type: ignore[method-assign]
+    dlg._flush_pending_cabinet_ui_refresh = lambda: None  # type: ignore[method-assign]
+    dlg._machine_loaded_for_current_root = lambda: True  # type: ignore[method-assign]
+    dlg._update_prefetch_status = lambda *a, **k: None  # type: ignore[method-assign]
+
+    dlg._recovery_recapture_pending = True
+    dlg._auto_fetch_round_active = False
+    dlg._apply_meter_fetch_complete(None)
+    assert resyncs == [True]
+    assert dlg._auto_fetch_round_active is True
+    assert dlg._recovery_recapture_pending is False
+
+    _close_dialog(app, dlg)
+
+
+def test_stale_meter_fetch_orphan_releases_ui(monkeypatch) -> None:
+    import time
+
+    from gui.sas_verify_dialog import METER_FETCH_STALE_S
+
+    app, dlg = _make_dialog()
+    dlg._meter_fetch_started_mono = time.monotonic() - METER_FETCH_STALE_S - 5.0
+    dlg._meter_fetch_job_id = 3
+    dlg._active_meter_fetch_job_id = 3
+    dlg._meters_ui_pending = True
+    dlg._manual_meters_refresh = True
+    stopped: list[bool] = []
+    dlg._meter_fetch_running = lambda: True  # type: ignore[method-assign]
+    dlg._stop_meter_fetch_thread = lambda **kw: stopped.append(True) or True  # type: ignore[method-assign]
+    dlg._set_busy_progress_active = lambda: None  # type: ignore[method-assign]
+    dlg._update_prefetch_status = lambda *a, **k: None  # type: ignore[method-assign]
+
+    dlg._orphan_stale_meter_fetch_if_needed()
+    assert stopped == [True]
+    assert dlg._active_meter_fetch_job_id == 4
+    assert not dlg._meters_ui_pending
+    assert not dlg._manual_meters_refresh
+
+    _close_dialog(app, dlg)
+
+
+def test_recovery_probe_done_always_emits_after_share_exception(monkeypatch) -> None:
+    """Share-branch Exception must still release the probe latch via done.emit."""
+    from gui.sas_verify_dialog import _RecoveryProbeSignals, _RecoveryProbeTask
+
+    app, dlg = _make_dialog()
+    seen: list[tuple] = []
+
+    class _Sig(_RecoveryProbeSignals):
+        def __init__(self) -> None:
+            super().__init__()
+            self.done.connect(lambda *a: seen.append(a))
+
+    sig = _Sig()
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("smb blew up")
+
+    monkeypatch.setattr(
+        "network.goldclub_paths.unc_share_scan_root_reachable", _boom
+    )
+    monkeypatch.setattr(
+        "network.lab_access.ensure_lab_smb_credential", lambda *_a, **_k: None
+    )
+    task = _RecoveryProbeTask(
+        port="",
+        scan_root=r"\\10.0.0.90\c$\Goldclub\var",
+        check_com=False,
+        check_share=True,
+        signals=sig,
+    )
+    task.run()
+    assert seen == [(False, False, None)]
+
+    _close_dialog(app, dlg)
+
+
+def test_recovery_timer_clears_stale_probe_latch() -> None:
+    import time
+
+    app, dlg = _make_dialog()
+    dlg._share_recovery_pending = True
+    dlg._recovery_probe_running = True
+    dlg._recovery_probe_started_mono = time.monotonic() - 61.0
+    started: list[bool] = []
+
+    class _FakePool:
+        def start(self, task) -> None:
+            started.append(True)
+
+    dlg._pool = _FakePool()  # type: ignore[assignment]
+    dlg._resolve_active_scan_root = lambda: r"\\127.0.0.1\c$\Goldclub\var"  # type: ignore[method-assign]
+    dlg._on_recovery_timer()
+    assert started == [True]
+    assert dlg._recovery_probe_running is True
+    assert dlg._recovery_probe_started_mono > 0.0
+
+    _close_dialog(app, dlg)

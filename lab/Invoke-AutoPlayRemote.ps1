@@ -77,7 +77,8 @@ function Invoke-PsExec {
 # quarantines freshly built SendInput tools. Instead we ship the harmless C#
 # source to the cabinet and compile it there (the EGM has csc and no EDR).
 $scriptDir = Resolve-ScriptDir
-$localSrc  = Join-Path $scriptDir 'AutoPlay.cs'
+$repoRoot = Split-Path $scriptDir -Parent
+$localSrc  = Join-Path $repoRoot 'probes\AutoPlay.cs'
 if (-not (Test-Path $localSrc)) {
     throw "AutoPlay.cs not found next to this script ($localSrc)."
 }

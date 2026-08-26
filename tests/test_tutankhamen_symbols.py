@@ -1,3 +1,5 @@
+import pytest
+
 from automation.tutankhamen_symbols import (
     TUTANKHAMEN_SWEEP_COUNT,
     tutankhamen_row,
@@ -8,7 +10,9 @@ from automation.tutankhamen_symbols import (
 
 def test_tutankhamen_row() -> None:
     assert tutankhamen_row(0) == "0 0 0 0 0"
-    assert tutankhamen_row(14) == "14 14 14 14 14"
+    assert tutankhamen_row(11) == "11 11 11 11 11"
+    with pytest.raises(ValueError):
+        tutankhamen_row(14)
 
 
 def test_tutankhamen_three_row_combo_pipe() -> None:

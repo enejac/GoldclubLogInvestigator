@@ -10,7 +10,11 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-from network.meter_comparator import SAS_TO_XML, _meter_value_to_int
+from network.meter_comparator import (
+    SAS_TO_XML,
+    _meter_value_to_int,
+    meter_value_to_int_or_none,
+)
 
 _WEEKDAY_START = frozenset({"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"})
 
@@ -86,7 +90,10 @@ def parse_rx_response_ordered(rx_line: str) -> list[tuple[str, int]]:
                     m_len = int(b[cursor + 2])
                     cursor += 3
                     if m_len <= 0:
-                        out_b.append((code, 0))
+                        # Length 0 = EGM did not report this meter (unsupported /
+                        # empty). Skip it — do not invent a zero that would MATCH
+                        # a missing cabinet key. Same "no reading" policy as
+                        # corrupt BCD below.
                         continue
                     if cursor + m_len > len(b):
                         break
@@ -97,9 +104,18 @@ def parse_rx_response_ordered(rx_line: str) -> list[tuple[str, int]]:
                     if m_len == 9 and len(data) == 9 and code == "0B00":
                         data = data[:8]
                     val_str = data.hex().upper()
-                    out_b.append((code, _meter_value_to_int(val_str)))
-                if out_b:
-                    return out_b
+                    value = meter_value_to_int_or_none(val_str)
+                    if value is None:
+                        # Corrupt BCD for this meter. The cursor already skipped
+                        # its bytes, so parsing stays in sync; leaving the meter
+                        # out shows "no reading" instead of a zero that would
+                        # compare equal to a genuine zero on the cabinet.
+                        continue
+                    out_b.append((code, value))
+                # Verified 6F frame: return even when every meter was skipped
+                # (empty / corrupt BCD). Falling through would invent zeros via
+                # the legacy token path.
+                return out_b
 
     # Fallback to token-based parsing for legacy formats.
     tokens = _tokens_from_hex_line(rx_line)

@@ -177,6 +177,29 @@ class SettingsDialog(QDialog):
         ai_lay.addLayout(row_ve)
         root.addWidget(ai)
 
+        local_ai = QGroupBox("Local AI Helper (Offline)")
+        local_lay = QVBoxLayout(local_ai)
+        row_m = QHBoxLayout()
+        row_m.addWidget(QLabel("GGUF model path (optional):"))
+        self._ai_helper_model = QLineEdit()
+        self._ai_helper_model.setPlaceholderText(
+            r"e.g. H:\ConfigScanner\models\Qwen3-4B-Q4_K_M.gguf"
+        )
+        self._ai_helper_model.setText(SettingsManager.get_ai_helper_model_path())
+        self._ai_helper_model.setToolTip(
+            "Override path to a local GGUF. Leave blank to auto-detect under "
+            "models\\ next to LogInvestigator.exe. Requires llama-cpp-python."
+        )
+        row_m.addWidget(self._ai_helper_model)
+        local_lay.addLayout(row_m)
+        hint = QLabel(
+            "No network — search always works. LLM answers need Qwen3-4B Q4_K_M "
+            "and llama-cpp-python (see requirements-ai-helper.txt)."
+        )
+        hint.setWordWrap(True)
+        local_lay.addWidget(hint)
+        root.addWidget(local_ai)
+
         self._spin_archive.valueChanged.connect(self._on_archive_changed)
         self._spin_delete.valueChanged.connect(self._on_delete_changed)
 
@@ -229,6 +252,7 @@ class SettingsDialog(QDialog):
         vm = self._combo_venice_model.currentData()
         if vm in VENICE_MODEL_CHOICES:
             SettingsManager.set_venice_model(str(vm))
+        SettingsManager.set_ai_helper_model_path(self._ai_helper_model.text())
         self.accept()
 
     def _on_clear_notification_blacklist(self) -> None:

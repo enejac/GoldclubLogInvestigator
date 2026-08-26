@@ -341,16 +341,43 @@ def format_related_tracking(match: KnownIssueMatch) -> str:
 def related_tracking_for_incident(incident_message: str, severity: str) -> str | None:
     """Return Related tracking plain text when a known issue matches, else None."""
     match = match_known_issue(incident_message, severity)
-    if match is None:
+    catalog_line: str | None = None
+    try:
+        from roulette_errors import find_roulette_error_in_text
+
+        info = find_roulette_error_in_text(incident_message or "")
+        if info is not None:
+            catalog_line = f"Catalog: {info.error_type} — {info.title}"
+    except Exception:
+        catalog_line = None
+
+    if match is None and catalog_line is None:
         return None
-    return format_related_tracking(match)
+    if match is None:
+        return (
+            "Known issue: GCI-ROULETTE-007 — Roulette ERROR N screen (Godot UI closed)\n"
+            f"{catalog_line}"
+        )
+    text = format_related_tracking(match)
+    if catalog_line and catalog_line not in text:
+        text = f"{text}\n{catalog_line}"
+    return text
 
 
 def apply_triage_rules(incident_message: str, severity: str) -> str | None:
     """
     Return a fixed probable-cause string when a JSON or legacy rule matches.
-    JSON catalog is checked first.
+    Roulette ERROR N catalog and JSON known-issues are checked first.
     """
+    try:
+        from roulette_errors import describe_roulette_error_line
+
+        roulette_cause = describe_roulette_error_line(incident_message or "")
+        if roulette_cause:
+            return roulette_cause
+    except Exception:
+        pass
+
     json_match = match_known_issue(incident_message, severity)
     if json_match is not None and json_match.probable_cause:
         return json_match.probable_cause

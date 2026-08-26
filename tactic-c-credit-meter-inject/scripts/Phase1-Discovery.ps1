@@ -41,11 +41,10 @@ $ErrorActionPreference = 'Stop'
 
 $scriptPath = $PSScriptRoot
 $repoRoot = (Get-Item $scriptPath).Parent.Parent.FullName
-$rootProjectRoot = (Get-Item ($repoRoot + "\..\GoldclubLogInvestigator")).FullName
 
-$parentScript = Join-Path $rootProjectRoot "Send-TestAft1000.ps1"
+$parentScript = Join-Path $repoRoot "lab\Send-TestAft1000.ps1"
 $parser = Join-Path $repoRoot "tactic-c-credit-meter-inject\parser\SasMeterParser.py"
-$injectAft = Join-Path $repoRoot "Invoke-WinDivertAft.ps1"
+$injectAft = Join-Path $repoRoot "lab\Invoke-WinDivertAft.ps1"
 
 # Timestamp for filenames
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -63,7 +62,7 @@ Write-Host "Duration       : ${DurationSec}s"
 Write-Host "Amount         : \$$([int]($AmountCents / 100)).00 ($AmountCents cents)"
 Write-Host "Bucket         : $BucketType"
 Write-Host "Capture File   : $captureFile"
-Write-Host "Repo Root      : $rootProjectRoot"
+Write-Host "Repo Root      : $repoRoot"
 Write-Host ""
 Write-Host "============================================================="
 
@@ -87,13 +86,13 @@ if (-not (Test-Path $parser)) {
 Write-Host "`n[1/4] Creating WinDivert capture command..." -ForegroundColor Cyan
 
 # Use WdSniff.exe compiled from parent repo
-$wdScript = Join-Path $rootProjectRoot "WdSniff.cs"
+$wdScript = Join-Path $repoRoot "probes\WdSniff.cs"
 if (-not (Test-Path $wdScript)) {
     Write-Host "[!] WdSniff.cs not found."
     Write-Host "[!] This is critical. Ask user to compile WdSniff.exe manually."
 }
 
-$wdExeFromRepo = Join-Path $rootProjectRoot "WdSniff.exe"
+$wdExeFromRepo = Join-Path $repoRoot "probes\WdSniff.exe"
 
 if (Test-Path $wdExeFromRepo) {
     Write-Host "[+] Found cached WdSniff.exe" -ForegroundColor Green

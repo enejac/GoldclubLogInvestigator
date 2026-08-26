@@ -1,0 +1,19 @@
+{
+  "gameDrive": null,
+  "buildVersionRelativePath": "ruleta\\BuildVersion.txt",
+  "scanRoots": [
+    "config",
+    "bios/etc",
+    "data"
+  ],
+  "includePatterns": [
+    "*.xml",
+    "*.ini",
+    "*.conf",
+    "*.json",
+    "*.dat"
+  ],
+  "parallelWorkers": 8,
+  "snapshotsDir": "snapshots",
+  "reportsDir": "reports"
+}

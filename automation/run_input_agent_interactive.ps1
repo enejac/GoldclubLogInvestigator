@@ -1,4 +1,4 @@
-﻿# Runs InputAgent.exe in the interactive console session via WinRM + schtasks /IT.
+# Runs InputAgent.exe in the interactive console session via WinRM + schtasks /IT.
 param(
     [Parameter(Mandatory)][string]$ExePath,
     [Parameter(Mandatory)][string]$ScriptPath,
@@ -57,14 +57,33 @@ exit `$p.ExitCode
 
 $taskName = 'GCI_InputAgent_' + [guid]::NewGuid().ToString('N').Substring(0, 10)
 $tr = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launchPs1`""
-$st = (Get-Date).AddMinutes(2).ToString('HH:mm')
-$sd = (Get-Date).ToString('MM/dd/yyyy')
+$inv = [System.Globalization.CultureInfo]::InvariantCulture
+$st = (Get-Date).AddMinutes(2).ToString('HH:mm', $inv)
 
-$null = schtasks /Create /TN $taskName /TR $tr /SC ONCE /ST $st /SD $sd /RU $consoleUser /IT /F
-if ($LASTEXITCODE -ne 0) { throw "schtasks /Create failed: $LASTEXITCODE for user $consoleUser" }
+# schtasks /SD locale note: omit /SD by default. Swallow /ST-earlier WARNING on stderr
+# so WinRM does not abort the click as NativeCommandError.
+function Invoke-SchtasksQuiet([string[]]$SchArgs) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $null = & schtasks @SchArgs 2>&1 | Where-Object {
+            $_ -isnot [System.Management.Automation.ErrorRecord] -or
+            $_.ToString() -notmatch 'WARNING:\s*Task may not run'
+        }
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    return $LASTEXITCODE
+}
+$code = Invoke-SchtasksQuiet @('/Create','/TN',$taskName,'/TR',$tr,'/SC','ONCE','/ST',$st,'/RU',$consoleUser,'/IT','/F')
+if ($code -ne 0) {
+    $sd = (Get-Date).ToString((Get-Culture).DateTimeFormat.ShortDatePattern)
+    $code = Invoke-SchtasksQuiet @('/Create','/TN',$taskName,'/TR',$tr,'/SC','ONCE','/ST',$st,'/SD',$sd,'/RU',$consoleUser,'/IT','/F')
+    if ($code -ne 0) { throw "schtasks /Create failed: $code for user $consoleUser sd=$sd st=$st" }
+}
 
-$null = schtasks /Run /TN $taskName
-if ($LASTEXITCODE -ne 0) { throw "schtasks /Run failed: $LASTEXITCODE" }
+$code = Invoke-SchtasksQuiet @('/Run','/TN',$taskName)
+if ($code -ne 0) { throw "schtasks /Run failed: $code" }
 
 $deadline = (Get-Date).AddSeconds($WaitSec)
 while ((Get-Date) -lt $deadline) {

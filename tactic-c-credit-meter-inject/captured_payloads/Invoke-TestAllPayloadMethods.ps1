@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Continue'
 $repo = 'C:\Users\Ezbogar\GoldclubLogInvestigator'
 $capDir = Join-Path $repo 'tactic-c-credit-meter-inject\captured_payloads'
 . (Join-Path $capDir 'Build-CapturedAftPayload.ps1')
-$winDivert = Join-Path $repo 'Invoke-WinDivertAft.ps1'
+$winDivert = Join-Path $repo 'lab\Invoke-WinDivertAft.ps1'
 if (-not $ReportPath) {
     $ReportPath = Join-Path $capDir ("injection_report_{0}.md" -f (Get-Date -Format 'yyyy-MM-dd-HHmmss'))
 }

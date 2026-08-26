@@ -23,6 +23,17 @@ def test_apply_theme_dark_includes_global_stylesheet(qapp: QApplication) -> None
     assert "QWidget" in qapp.styleSheet()
 
 
+def test_apply_theme_dark_tooltip_stylesheet_is_readable(qapp: QApplication) -> None:
+    """Dark QWidget color must not leave pale-yellow tooltips with light text."""
+    apply_theme(qapp, THEME_DARK)
+    sheet = qapp.styleSheet()
+    assert "QToolTip" in sheet
+    tip_base = qapp.palette().color(qapp.palette().ColorRole.ToolTipBase)
+    tip_text = qapp.palette().color(qapp.palette().ColorRole.ToolTipText)
+    assert tip_base.lightness() < 128
+    assert abs(tip_base.lightness() - tip_text.lightness()) > 40
+
+
 def test_apply_theme_system_clears_stylesheet(qapp: QApplication) -> None:
     apply_theme(qapp, THEME_DARK)
     apply_theme(qapp, THEME_SYSTEM)

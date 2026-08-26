@@ -1,4 +1,4 @@
-﻿import re
+import re
 from pathlib import Path
 ip = "10.0.0.90"
 p = Path("//%s/c$/Goldclub/var/state/GoldClub.Aurum.Services/GCMessenger/gm2au/DeviceManagerData.xml_1" % ip)

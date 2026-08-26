@@ -19,7 +19,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-. "$PSScriptRoot\LabAccess.ps1"
+. (Join-Path (Split-Path $PSScriptRoot -Parent) 'LabAccess.ps1')
 $labRemote = Join-Path $PSScriptRoot 'LabRemoteTransport.ps1'
 if (Test-Path -LiteralPath $labRemote) {
     . $labRemote

@@ -12,7 +12,13 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 from config import LIVE_WATCH_ACTIVE_FILES, LIVE_WATCH_DISCOVER_SEC, LIVE_WATCH_POLL_MS, LOG_EXTENSIONS
 from live_tail_io import read_new_bytes
-from parser import Incident, LiveFileParseState, create_live_state_at_eof, feed_live_byte_chunk
+from parser import (
+    Incident,
+    LiveFileParseState,
+    create_live_state_after_rewind,
+    create_live_state_at_eof,
+    feed_live_byte_chunk,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,11 +98,22 @@ class LiveWatchThread(QThread):
                     continue
 
                 if size < state.byte_offset:
-                    # Truncated / rotated log
-                    fresh = create_live_state_at_eof(path)
+                    # Truncated / rotated log: restart from the top of the new
+                    # file, otherwise every line written before this poll is lost.
+                    fresh = create_live_state_after_rewind(path)
                     if fresh is not None:
                         self._states[key] = fresh
-                    continue
+                        state = fresh
+                        logger.debug(
+                            "live tail rewind %s: %s -> %s bytes",
+                            path.name,
+                            size,
+                            fresh.byte_offset,
+                        )
+                    else:
+                        continue
+                    if size <= state.byte_offset:
+                        continue
 
                 if size == state.byte_offset:
                     continue

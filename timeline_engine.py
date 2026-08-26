@@ -38,14 +38,19 @@ RE_CREDIT_CHANGE = re.compile(
 )
 
 
+def _posix_assuming_utc(dt: datetime) -> float:
+    """POSIX seconds, reading a naive timestamp as UTC like the rest of the app."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc).timestamp()
+    return dt.astimezone(timezone.utc).timestamp()
+
+
 def parse_iso_timestamp_sort_key(ts: datetime | str | None) -> float | None:
     """Return POSIX timestamp for sorting / duration, or ``None``."""
     if ts is None:
         return None
     if isinstance(ts, datetime):
-        if ts.tzinfo is None:
-            return ts.replace(tzinfo=timezone.utc).timestamp()
-        return ts.astimezone(timezone.utc).timestamp()
+        return _posix_assuming_utc(ts)
     s = str(ts).strip()
     if not s:
         return None
@@ -54,22 +59,18 @@ def parse_iso_timestamp_sort_key(ts: datetime | str | None) -> float | None:
         m = config.TIMESTAMP_RE.search(s)
         if m:
             frag = m.group(0).replace("Z", "+00:00")
-            try:
-                return datetime.fromisoformat(frag).timestamp()
-            except ValueError:
+            for candidate in (frag, s):
                 try:
-                    return datetime.fromisoformat(s).timestamp()
+                    return _posix_assuming_utc(datetime.fromisoformat(candidate))
                 except ValueError:
-                    pass
+                    continue
     # Space-separated or other layouts not covered by ``config.TIMESTAMP_RE``.
     from parser import extract_datetime_from_line
 
     dt = extract_datetime_from_line(s)
     if dt is None:
         return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc).timestamp()
-    return dt.astimezone(timezone.utc).timestamp()
+    return _posix_assuming_utc(dt)
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +156,7 @@ class StateTimelineBuilder:
         self.nodes: list[StateNode] = []
         self._pending: dict[str, Any] | None = None
         self._recent_triggers: list[str] = []
+        self._last_sort_key: float = 0.0
 
     def on_line(self, lineno: int, line: str, ts: str | None) -> None:
         if RE_GAME_STARTED.search(line):
@@ -172,19 +174,26 @@ class StateTimelineBuilder:
 
         old_s = _clean_state_token(m.group(1))
         new_s = _clean_state_token(m.group(2))
-        sort_key = parse_iso_timestamp_sort_key(ts) or 0.0
+        parsed_sort = parse_iso_timestamp_sort_key(ts)
+        # A transition logged without a timestamp inherits the last known one:
+        # falling back to 0.0 would date it to 1970 and drag the whole segment to
+        # the front of every sorted timeline.
+        sort_key = parsed_sort if parsed_sort is not None else self._last_sort_key
+        if parsed_sort is not None:
+            self._last_sort_key = parsed_sort
 
         if self._pending is not None:
             p = self._pending
             duration: float | None = None
-            if ts and p["start_sort"] and sort_key:
-                duration = max(0.0, sort_key - p["start_sort"])
+            start_sort = p.get("start_sort")
+            if parsed_sort is not None and p.get("start_parsed") and start_sort is not None:
+                duration = max(0.0, parsed_sort - start_sort)
             bonus = _bonus_label_for_state(p["state_name"], self._bonus_rules)
             self.nodes.append(
                 StateNode(
                     timestamp=p["start_ts"],
                     end_timestamp=ts,
-                    timestamp_sort_key=p["start_sort"] or 0.0,
+                    timestamp_sort_key=start_sort if start_sort is not None else sort_key,
                     end_timestamp_sort_key=sort_key,
                     state_name=p["state_name"],
                     previous_state=p.get("prev_from_line"),
@@ -206,6 +215,7 @@ class StateTimelineBuilder:
             "prev_from_line": old_s,
             "start_ts": ts,
             "start_sort": sort_key,
+            "start_parsed": parsed_sort is not None,
             "start_line": lineno,
             "trigger": trigger,
         }
@@ -215,7 +225,8 @@ class StateTimelineBuilder:
             return
         p = self._pending
         bonus = _bonus_label_for_state(p["state_name"], self._bonus_rules)
-        sk = p["start_sort"] or 0.0
+        start_sort = p.get("start_sort")
+        sk = start_sort if start_sort is not None else self._last_sort_key
         self.nodes.append(
             StateNode(
                 timestamp=p["start_ts"],

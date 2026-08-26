@@ -7,7 +7,22 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
-_ATTR_SEGMENT_RE = re.compile(r"^([^[]+)\[@name='([^']+)'\]$")
+_ATTR_SEGMENT_RE = re.compile(r"^([^[]+)\[@name='((?:\\'|[^'])*)'\]$")
+# Indexed list items (GoldClub HW driverssetup item0/item1/…).
+_ITEM_INDEX_RE = re.compile(r"^item(\d+)$", re.IGNORECASE)
+# Identity-keyed item segment produced by flat_xml_map.
+_ITEM_IDENTITY_SEGMENT_RE = re.compile(
+    r"^item\[@(\w+)='((?:\\'|[^'])*)'\]$", re.IGNORECASE
+)
+_ITEM_IDENTITY_LEAF_NAMES: tuple[str, ...] = (
+    "aliasName",
+    "alias",
+    "id",
+    "name",
+)
+_ITEM_PATH_PREFIX_RE = re.compile(
+    r"^(.*?/item\[@\w+='(?:\\'|[^'])*'\])(?:/.*)?$"
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +51,42 @@ def _element_local_name(element: ET.Element) -> str:
     return tag
 
 
+def _unescape_attr_value(raw: str) -> str:
+    return raw.replace("\\'", "'").replace("\\\\", "\\")
+
+
+def _escape_attr_value(raw: str) -> str:
+    return raw.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _item_identity(item_el: ET.Element) -> tuple[str, str] | None:
+    """Pick a stable identity leaf under an indexed ``itemN`` element."""
+    for leaf_name in _ITEM_IDENTITY_LEAF_NAMES:
+        for child in list(item_el):
+            if list(child):
+                continue
+            if _element_local_name(child) != leaf_name:
+                continue
+            value = _element_text_value(child).strip()
+            if value:
+                return leaf_name, value
+    return None
+
+
+def _path_segment_for_element(element: ET.Element) -> str:
+    """Path segment for one element; index items prefer ``item[@aliasName='…']``."""
+    local_name = _element_local_name(element)
+    name_attr = element.attrib.get("name")
+    if name_attr:
+        return f"{local_name}[@name='{_escape_attr_value(name_attr)}']"
+    if _ITEM_INDEX_RE.match(local_name):
+        ident = _item_identity(element)
+        if ident is not None:
+            attr, value = ident
+            return f"item[@{attr}='{_escape_attr_value(value)}']"
+    return local_name
+
+
 def _build_parent_map(root: ET.Element) -> dict[ET.Element, ET.Element]:
     parent_map: dict[ET.Element, ET.Element] = {}
     for parent in root.iter():
@@ -48,12 +99,7 @@ def _element_path_with_map(element: ET.Element, parent_map: dict[ET.Element, ET.
     segments: list[str] = []
     current: ET.Element | None = element
     while current is not None:
-        local_name = _element_local_name(current)
-        name_attr = current.attrib.get("name")
-        if name_attr:
-            segments.insert(0, f"{local_name}[@name='{name_attr}']")
-        else:
-            segments.insert(0, local_name)
+        segments.insert(0, _path_segment_for_element(current))
         current = parent_map.get(current)
     return "/".join(segments)
 
@@ -117,7 +163,93 @@ def compare_keyed_maps(
             changes.append(ContentChange("added", key, None, target_map[key]))
         elif baseline_exists and not target_exists:
             changes.append(ContentChange("removed", key, baseline_map[key], None))
-    return changes
+    return collapse_identity_item_changes(changes)
+
+
+def _item_identity_prefix(path: str) -> str | None:
+    match = _ITEM_PATH_PREFIX_RE.match(path.replace("\\", "/"))
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _summarize_item_leaf_map(leaf_values: dict[str, str]) -> str:
+    """Human summary for a whole HW driver / indexed item entry."""
+    alias = leaf_values.get("aliasName") or leaf_values.get("alias") or leaf_values.get("name")
+    endpoint = leaf_values.get("endpointaddress") or leaf_values.get("endpointAddress")
+    raw = leaf_values.get("driverRawName") or ""
+    driver_short = ""
+    if raw:
+        # …].[GoldClub.HW.Subsys.Driver.FutureLogic.PSA66ST2] → FutureLogic.PSA66ST2
+        parts = [p for p in raw.replace("[", "").replace("]", "").split(".") if p]
+        if parts:
+            # Keep last 2–3 meaningful tokens
+            driver_short = ".".join(parts[-3:]) if len(parts) >= 3 else parts[-1]
+    bits: list[str] = []
+    if alias:
+        bits.append(alias)
+    if driver_short:
+        bits.append(driver_short)
+    if endpoint:
+        bits.append(endpoint)
+    if not bits:
+        return "(entry)"
+    if alias and len(bits) > 1:
+        return f"{alias}: " + ", ".join(bits[1:])
+    return ", ".join(bits)
+
+
+def collapse_identity_item_changes(changes: list[ContentChange]) -> list[ContentChange]:
+    """Collapse whole indexed-item add/remove into one structural row.
+
+    Avoids flooding the UI with every leaf under a removed ``tito`` driver, and
+    prevents ``item1`` path churn from looking like field renames.
+    """
+    by_prefix: dict[str, list[ContentChange]] = {}
+    passthrough: list[ContentChange] = []
+    for change in changes:
+        prefix = _item_identity_prefix(change.path)
+        if prefix is None or prefix == change.path:
+            passthrough.append(change)
+            continue
+        by_prefix.setdefault(prefix, []).append(change)
+
+    collapsed: list[ContentChange] = []
+    for prefix, group in by_prefix.items():
+        types = {c.change_type for c in group}
+        # Only collapse pure add or pure remove groups (whole entry appeared/disappeared).
+        if types == {"removed"} or types == {"added"}:
+            change_type = next(iter(types))
+            leaf_map: dict[str, str] = {}
+            for c in group:
+                leaf = c.path.rsplit("/", 1)[-1]
+                val = c.old_value if change_type == "removed" else c.new_value
+                if val is not None:
+                    leaf_map[leaf] = val
+            summary = _summarize_item_leaf_map(leaf_map)
+            if change_type == "removed":
+                collapsed.append(ContentChange("removed", prefix, summary, None))
+            else:
+                collapsed.append(ContentChange("added", prefix, None, summary))
+        else:
+            collapsed.extend(group)
+
+    # Stable-ish order: structural item rows first (by path), then other changes.
+    structural = [c for c in collapsed if _item_identity_prefix(c.path) == c.path]
+    leaves = [c for c in collapsed if _item_identity_prefix(c.path) != c.path]
+    structural.sort(key=lambda c: c.path)
+    leaves.sort(key=lambda c: c.path)
+    passthrough.sort(key=lambda c: c.path)
+    return structural + leaves + passthrough
+
+
+def is_structural_item_change(change: ContentChange) -> bool:
+    """True for whole ``item[@aliasName=…]`` add/remove (not a single leaf field)."""
+    path = change.path.replace("\\", "/")
+    if _ITEM_IDENTITY_SEGMENT_RE.search(path.rsplit("/", 1)[-1]):
+        # Path ends with identity item segment → whole entry.
+        return change.change_type in {"added", "removed"}
+    return False
 
 
 def line_diff(baseline_lines: list[str], target_lines: list[str]) -> list[ContentChange]:
@@ -352,45 +484,94 @@ def change_summary(file_diffs: list[FileDiff]) -> dict[str, int]:
     }
 
 
+_GENERIC_ATTR_SEGMENT_RE = re.compile(
+    r"^([^[]+)\[@(\w+)='((?:\\'|[^'])*)'\]$"
+)
+
+
+def _child_for_segment(parent: ET.Element, segment: str) -> ET.Element | None:
+    """Resolve one path segment under ``parent`` (name / identity / indexed tag)."""
+    # Identity-keyed HW driverssetup items: item[@aliasName='tito'] → itemN by leaf.
+    id_item = _ITEM_IDENTITY_SEGMENT_RE.match(segment)
+    if id_item:
+        attr_name, attr_value = id_item.group(1), _unescape_attr_value(id_item.group(2))
+        for child in parent:
+            child_local = _element_local_name(child)
+            if not (_ITEM_INDEX_RE.match(child_local) or child_local.casefold() == "item"):
+                continue
+            ident = _item_identity(child)
+            if ident is not None and ident[0] == attr_name and ident[1] == attr_value:
+                return child
+        return None
+
+    gen = _GENERIC_ATTR_SEGMENT_RE.match(segment)
+    if gen:
+        local_name, attr_name, attr_value = (
+            gen.group(1),
+            gen.group(2),
+            _unescape_attr_value(gen.group(3)),
+        )
+        for child in parent:
+            if (
+                _element_local_name(child) == local_name
+                and child.attrib.get(attr_name) == attr_value
+            ):
+                return child
+        return None
+
+    attr_match = _ATTR_SEGMENT_RE.match(segment)
+    if attr_match:
+        local_name, name_attr = attr_match.group(1), _unescape_attr_value(attr_match.group(2))
+        for child in parent:
+            if _element_local_name(child) == local_name and child.attrib.get("name") == name_attr:
+                return child
+        return None
+
+    # GoldClub uses literal tags item0/item1 — match exact local name first.
+    for child in parent:
+        if _element_local_name(child) == segment:
+            return child
+    return None
+
+
+def _root_matches_first_segment(root: ET.Element, segment: str) -> bool:
+    gen = _GENERIC_ATTR_SEGMENT_RE.match(segment)
+    if gen:
+        local_name, attr_name, attr_value = (
+            gen.group(1),
+            gen.group(2),
+            _unescape_attr_value(gen.group(3)),
+        )
+        if _element_local_name(root) != local_name:
+            return False
+        if root.attrib.get(attr_name) == attr_value:
+            return True
+        if attr_name == "name" and root.attrib.get("name") == attr_value:
+            return True
+        return False
+    attr_match = _ATTR_SEGMENT_RE.match(segment)
+    if attr_match:
+        local_name, name_attr = attr_match.group(1), _unescape_attr_value(attr_match.group(2))
+        return (
+            _element_local_name(root) == local_name
+            and root.attrib.get("name") == name_attr
+        )
+    return _element_local_name(root) == segment
+
+
 def find_element_for_flat_path(root: ET.Element, path: str) -> ET.Element | None:
-    """Navigate slash-separated flat_xml_map paths, including [@name='x'] segments."""
+    """Navigate slash-separated flat_xml_map paths (name / identity / indexed)."""
     if not path:
         return None
     segments = path.split("/")
     current: ET.Element = root
     start_index = 0
-    if segments:
-        first = segments[0]
-        first_match = _ATTR_SEGMENT_RE.match(first)
-        if first_match:
-            local_name, name_attr = first_match.group(1), first_match.group(2)
-            if (
-                _element_local_name(current) == local_name
-                and current.attrib.get("name") == name_attr
-            ):
-                start_index = 1
-        elif _element_local_name(current) == first:
-            start_index = 1
+    if segments and _root_matches_first_segment(current, segments[0]):
+        start_index = 1
     if start_index == len(segments):
         return current
     for segment in segments[start_index:]:
-        match = _ATTR_SEGMENT_RE.match(segment)
-        if match:
-            local_name, name_attr = match.group(1), match.group(2)
-            found: ET.Element | None = None
-            for child in current:
-                if _element_local_name(child) == local_name and child.attrib.get("name") == name_attr:
-                    found = child
-                    break
-            if found is None:
-                return None
-            current = found
-            continue
-        found = None
-        for child in current:
-            if _element_local_name(child) == segment:
-                found = child
-                break
+        found = _child_for_segment(current, segment)
         if found is None:
             return None
         current = found
@@ -398,7 +579,17 @@ def find_element_for_flat_path(root: ET.Element, path: str) -> ET.Element | None
 
 
 def apply_xml_value_at_path(file_path: Path, flat_path: str, value: str | None) -> None:
-    """Set a leaf element's text at a flat_xml_map path and write the file back."""
+    """Set a leaf element's text at a flat_xml_map path and write the file back.
+
+    Whole ``item[@aliasName=…]`` driver rows are structural — refuse leaf Write.
+    """
+    item_prefix = _item_identity_prefix(flat_path)
+    if item_prefix is not None and item_prefix == flat_path.replace("\\", "/"):
+        raise ValueError(
+            f"Cannot Write a whole HW driver/item block via leaf apply: {flat_path}. "
+            "Restore the full configuration.xml from a known-good backup instead."
+        )
+
     try:
         tree = ET.parse(file_path)
     except ET.ParseError as exc:

@@ -41,11 +41,14 @@ param(
     [string] $Rom          = '01D68A721B000019',
     [string] $TargetProcess= '',   # force a specific consumer process name (optional)
     [string] $WinDivertDir = 'C:\Tools\WinDivert\extracted\WinDivert-2.2.2-A\x64',
-    [string] $ExePath      = 'C:\Users\Ezbogar\GoldclubLogInvestigator\DallasSplice.exe'
+    [string] $ExePath      = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$RepoRoot = Split-Path $PSScriptRoot -Parent
+if (-not $ExePath) { $ExePath = Join-Path $RepoRoot 'probes\DallasSplice.exe' }
 
 $dll = Join-Path $WinDivertDir 'WinDivert.dll'
 $sys = Join-Path $WinDivertDir 'WinDivert64.sys'

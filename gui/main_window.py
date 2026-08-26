@@ -83,7 +83,7 @@ from PySide6.QtWidgets import (
 )
 
 from diag_logging import fleet_timesync_logger
-from database.manager import format_machine_label
+from database.format_label import format_machine_label
 from config import (
     DEFAULT_LOCAL_LOG_ROOT,
     DEFAULT_REMOTE_IP,
@@ -95,53 +95,29 @@ from config import (
 )
 from config_manager import SettingsManager
 from product_version import PRODUCT_VERSION_PLACEHOLDER
-from gui.db_worker import (
-    DbCountEmitter,
-    DbPersistEmitter,
-    DbQueryEmitter,
-    schedule_db_count,
-    schedule_db_persist,
-    schedule_db_query,
+from gui.db_emitters import DbCountEmitter, DbPersistEmitter, DbQueryEmitter
+from gui.fleet_emitters import FleetEmitter, TimeSyncEmitter
+from gui.path_resolve_worker import (
+    PathResolveEmitter,
+    StartupDiscoveryEmitter,
+    schedule_path_resolve,
+    schedule_startup_discovery,
 )
-from gui.fleet_tab import FleetTabWidget
-from gui.fleet_heartbeat import FleetHeartbeatWorker
-from gui.fleet_worker import (
-    FleetEmitter,
-    TimeSyncEmitter,
-    schedule_fleet_refresh,
-    schedule_fleet_subnet_scan,
-    schedule_remote_time_sync,
-    schedule_single_host_drift_refresh,
-)
-from gui.history_tab import HistoryTabWidget
-from gui.automation_tab import AutomationTabWidget
-from gui.config_scanner_tab import ConfigScannerTabWidget
-from gui.path_resolve_worker import PathResolveEmitter, schedule_path_resolve
-from gui.bookmark_dialog import BookmarkDialog
-from gui.context_dialog import IncidentContextDialog
 from gui.timeline_widget import SessionTimelineWidget
 from gui.incident_table_model import IncidentTableModel
 from gui.filter_chips import FilterChipsBar
 from gui.live_watch_thread import LiveWatchThread
 from gui.log_highlighter import LogSyntaxHighlighter
-from gui.rule_editor_dialog import RuleEditorDialog
 from gui.accounting_scan_worker import AccountingScanEmitter, schedule_accounting_scan
-from gui.sas_dialog import SASVerificationReportDialog
-from gui.sas_verify_dialog import SasVerifyDialog
 from gui.network_case_pack_worker import (
     _CasePackWorkerSignals,
     _NetworkCasePackWorker,
 )
 from gui.screen_capture_worker import ScreenCaptureEmitter, schedule_remote_screen_capture
 from gui.ram_clear_worker import RamClearEmitter, schedule_ram_clear
-from gui.screenshot_preview_dialog import ScreenshotPreviewDialog
 from gui.notepad_pp import attach_open_with_npp_menu, extend_menu_with_npp_action, open_with_notepad_pp
 from gui.scan_worker import ScanWorker
-from gui.help_dialog import HelpDialog
-from gui.settings_dialog import SettingsDialog
-from gui.time_range_dialog import TimeRangeScanDialog
 from gui.theme_utils import apply_theme
-from gui.analytics_widget import GameAnalyticsWidget
 from gui.state_timeline_widget import build_timeline_scroll_area
 from gui.severity_delegate import SeverityDelegate
 from gui.table_smart_stretch import TableSmartStretchFilter
@@ -152,27 +128,20 @@ from gui.palette_adapt import (
     syntax_warning,
     text_danger,
     text_success,
+    time_filter_active_stylesheet,
 )
 from gui.ui_feedback import install_disabled_click_warner
 from gui.view_model import IncidentViewModel
-from network.case_packer import suggest_case_pack_zip_name
-from network.meter_comparator import compare_sas_and_xml
-from network.sas_decoder import parse_sas_log_file
-from network.log_janitor import LogJanitorWorker
 from network.notifier import (
     format_live_toast,
     notification_ignore_fingerprint,
     should_notify,
     show_toast,
 )
+from network.scanner_utils import is_dir_reachable
 from parser import Incident
-from rules_engine import reload_rules_manager
-from analytics_engine import calculate_session_analytics
 from timeline_engine import StateNode
-from gui.ai_enhance_worker import AiEnhanceEmitter, schedule_ai_enhance
-from gui.ai_jira_dialog import CopyableFieldWidget, parse_ai_response, strip_markdown_bolding
 from gui.known_issues_panel import KnownIssuesPanel
-from gui.full_audit_worker import FullAuditEmitter, schedule_full_audit
 from parser_rules import count_known_issue_matches, related_tracking_for_incident
 
 logger = logging.getLogger(__name__)
@@ -264,6 +233,8 @@ class MainWindow(QMainWindow):
         self._table_model = IncidentTableModel(self._vm, self)
         self._worker: ScanWorker | None = None
         self._live_thread: LiveWatchThread | None = None
+        # Built in _post_show_startup; a live CRITICAL can arrive before that.
+        self._tray: QSystemTrayIcon | None = None
         self._scan_started_monotonic: float | None = None
         self._live_watch_started_monotonic: float | None = None
         self._stack_seq = 0
@@ -280,6 +251,12 @@ class MainWindow(QMainWindow):
         self._palette_refresh_busy = False
         self._shutdown_save_emitter: _SessionSaveEmitter | None = None
         self._probe_seq = 0
+        self._startup_discovery_seq = 0
+        self._session_connection_restored = False
+        self._startup_discovery_emitter = StartupDiscoveryEmitter(self)
+        self._startup_discovery_emitter.finished.connect(
+            self._on_startup_discovery_finished
+        )
         self._prescan_seq = 0
         self._version_fetch_seq = 0
         self._version_fetch_timer = QTimer(self)
@@ -299,6 +276,7 @@ class MainWindow(QMainWindow):
         self._screen_capture_emitter.finished.connect(self._on_screen_capture_finished)
         self._remote_capture_busy = False
         self._ram_clear_emitter = RamClearEmitter(self)
+        self._ram_clear_emitter.progress.connect(self._on_ram_clear_progress)
         self._ram_clear_emitter.finished.connect(self._on_ram_clear_finished)
         self._ram_clear_busy = False
         self._last_remote_screenshot_path: str | None = None
@@ -322,11 +300,13 @@ class MainWindow(QMainWindow):
         self._db_count_emitter.finished.connect(self._on_db_count_finished)
 
         self._fleet_op_active = False
-        self._janitor_worker: LogJanitorWorker | None = None
+        self._janitor_worker = None
         self._janitor_busy_ip: str | None = None
         self._pending_parse_results: list[object] = []
         self._parse_drain_scheduled = False
         self._scan_complete_pending = False
+        self._scan_generation = 0
+        self._active_scan_generation = 0
         self._scan_total_files = 0
         self._scan_done_files = 0
         self._path_led_state: str = "muted"
@@ -334,29 +314,25 @@ class MainWindow(QMainWindow):
         self._incident_table_column_fit_scheduled = False
         self._incident_table_header_restored_from_settings = False
         self._window_geometry_restored = False
+        self._shutdown_save_timed_out = False
+        self._shutdown_save_completed = False
 
         self._global_scan_start: datetime | None = None
         self._global_scan_end: datetime | None = None
+        self._config_scanner_window: QMainWindow | None = None
+        self._config_scanner_creating = False
+        self._ai_helper_window: QMainWindow | None = None
+        self._ai_helper_creating = False
+        self._lazy_tab_placeholders: dict[str, QWidget] = {}
+        self._lazy_tab_title: dict[str, str] = {}
+        self._lazy_tab_widgets: dict[str, QWidget] = {}
+        self._lazy_tab_materialized: set[str] = set()
+        self._game_analytics_widget = None
+        self._fleet_heartbeat_started = False
 
         self._build_ui()
         self._apply_theme_styles()
-        bar = self.menuBar()
-        m_file = bar.addMenu("&File")
-        act_settings = QAction("Settings…", self)
-        act_settings.setShortcut(QKeySequence("Ctrl+,"))
-        act_settings.triggered.connect(self._on_settings_clicked)
-        m_file.addAction(act_settings)
-        m_file.addSeparator()
-        act_exit = QAction("Exit", self)
-        act_exit.setShortcut(QKeySequence("Alt+F4"))
-        act_exit.triggered.connect(self.close)
-        m_file.addAction(act_exit)
-        m_help = bar.addMenu("&Help")
-        act_help = QAction("User Guide…", self)
-        act_help.setShortcut(QKeySequence("F1"))
-        act_help.setStatusTip("Open the Log Investigator user guide")
-        act_help.triggered.connect(self._on_help_clicked)
-        m_help.addAction(act_help)
+        self._build_menus()
         self._apply_path_led_style()
         self._apply_rec_label_style()
         _app = QApplication.instance()
@@ -367,7 +343,6 @@ class MainWindow(QMainWindow):
             self._on_fleet_finished,
             Qt.ConnectionType.QueuedConnection,
         )
-        self._fleet_emitter.scan_progress.connect(self._fleet_tab.set_scan_progress)
         self._fleet_drift_emitter = FleetEmitter(self)
         self._fleet_drift_emitter.finished.connect(
             self._on_fleet_drift_refresh_finished,
@@ -379,23 +354,204 @@ class MainWindow(QMainWindow):
             Qt.ConnectionType.QueuedConnection,
         )
 
-        self._fleet_heartbeat: FleetHeartbeatWorker | None = None
-        if FLEET_HEARTBEAT_ENABLED:
-            self._fleet_heartbeat = FleetHeartbeatWorker(self._fleet_tab.database_manager(), self)
-            self._fleet_heartbeat.fleet_updated.connect(self._on_heartbeat_fleet)
-            self._fleet_heartbeat.heartbeat_failed.connect(self._on_heartbeat_failed)
-            self._fleet_heartbeat.start()
+        self._fleet_heartbeat = None
 
         self._load_connection_settings()
         self._wire_vm()
         self._try_restore_last_session_snapshot()
-        self._refresh_game_analytics_dashboard()
         self._update_secondary_actions()
+        QTimer.singleShot(0, self._post_show_startup)
+
+    def _post_show_startup(self) -> None:
         self._schedule_path_probe()
         self._setup_tray_icon()
         QTimer.singleShot(400, self._refresh_history_db_count)
-        QTimer.singleShot(450, self._fleet_load_from_db_sync)
-        QTimer.singleShot(600, self._schedule_fleet_startup_refresh)
+        QTimer.singleShot(450, self._deferred_fleet_bootstrap)
+        QTimer.singleShot(2500, self._schedule_fleet_startup_refresh)
+
+    def _deferred_fleet_bootstrap(self) -> None:
+        self._materialize_lazy_tab("fleet")
+        self._fleet_load_from_db_sync()
+        self._start_fleet_heartbeat_if_enabled()
+
+    def _start_fleet_heartbeat_if_enabled(self) -> None:
+        if self._fleet_heartbeat_started or not FLEET_HEARTBEAT_ENABLED:
+            return
+        from gui.fleet_heartbeat import FleetHeartbeatWorker
+
+        self._fleet_heartbeat_started = True
+        self._fleet_heartbeat = FleetHeartbeatWorker(self._fleet_tab.database_manager(), self)
+        self._fleet_heartbeat.fleet_updated.connect(self._on_heartbeat_fleet)
+        self._fleet_heartbeat.heartbeat_failed.connect(self._on_heartbeat_failed)
+        self._fleet_heartbeat.start()
+
+    def _lazy_key_for_tab_index(self, index: int) -> str | None:
+        widget = self._tabs.widget(index)
+        if widget is None:
+            return None
+        key = widget.property("lazy_tab_key")
+        if isinstance(key, str) and key:
+            return key
+        for k, placeholder in self._lazy_tab_placeholders.items():
+            if widget is placeholder:
+                return k
+        return None
+
+    def _on_main_tab_changed(self, index: int) -> None:
+        key = self._lazy_key_for_tab_index(index)
+        if key:
+            self._materialize_lazy_tab(key)
+
+    def _materialize_lazy_tab(self, key: str) -> QWidget:
+        if key in self._lazy_tab_materialized:
+            return self._lazy_tab_widgets[key]
+        placeholder = self._lazy_tab_placeholders.get(key)
+        if placeholder is None:
+            existing = self._lazy_tab_widgets.get(key)
+            if existing is not None:
+                return existing
+            raise KeyError(key)
+        idx = self._tabs.indexOf(placeholder)
+        if idx < 0:
+            existing = self._lazy_tab_widgets.get(key)
+            if existing is not None:
+                return existing
+            raise KeyError(f"lazy tab placeholder missing from tab bar: {key}")
+        title = self._lazy_tab_title[key]
+        logger.info("Materializing lazy tab %s (%s)", key, title)
+        try:
+            widget = self._build_lazy_tab_widget(key)
+        except Exception as exc:
+            import traceback
+
+            detail = traceback.format_exc()
+            logger.exception("Failed to load lazy tab %s: %s", key, exc)
+            widget = self._lazy_tab_error_widget(title, exc, detail)
+            QMessageBox.critical(
+                self,
+                title,
+                f"Could not open {title}:\n\n{exc}\n\n"
+                "Details were written to LogInvestigator.log next to the program.",
+            )
+        self._tabs.blockSignals(True)
+        try:
+            self._tabs.removeTab(idx)
+            self._tabs.insertTab(idx, widget, title)
+            self._tabs.setCurrentIndex(idx)
+        finally:
+            self._tabs.blockSignals(False)
+        del self._lazy_tab_placeholders[key]
+        self._lazy_tab_widgets[key] = widget
+        self._lazy_tab_materialized.add(key)
+        try:
+            self._wire_lazy_tab(key, widget)
+        except Exception:
+            logger.exception("Failed to wire lazy tab %s", key)
+        if key == "analytics":
+            try:
+                self._refresh_game_analytics_dashboard()
+            except Exception:
+                logger.exception("Failed to refresh game analytics after materialize")
+        return widget
+
+    def _lazy_tab_error_widget(self, title: str, exc: BaseException, detail: str) -> QWidget:
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(24, 24, 24, 24)
+        msg = QLabel(
+            f"<b>{title} failed to load</b><br><br>"
+            f"{exc}<br><br>"
+            "<span style='color:#888'>See LogInvestigator.log for the full traceback.</span>"
+        )
+        msg.setWordWrap(True)
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(msg)
+        detail_box = QPlainTextEdit()
+        detail_box.setReadOnly(True)
+        detail_box.setPlainText(detail)
+        detail_box.setMaximumBlockCount(500)
+        layout.addWidget(detail_box, stretch=1)
+        return host
+
+    def _build_lazy_tab_widget(self, key: str) -> QWidget:
+        if key == "analytics":
+            tab = QWidget()
+            v = QVBoxLayout(tab)
+            v.setContentsMargins(8, 8, 8, 8)
+            from gui.analytics_widget import GameAnalyticsWidget
+
+            self._game_analytics_widget = GameAnalyticsWidget(tab)
+            v.addWidget(self._game_analytics_widget, stretch=1)
+            return tab
+        if key == "automation":
+            from gui.automation_tab import AutomationTabWidget
+
+            return AutomationTabWidget()
+        if key == "software_version":
+            from gui.software_version_tab import SoftwareVersionTabWidget
+
+            w = SoftwareVersionTabWidget()
+            w.set_cabinet_ip(self._ip_edit.text())
+            return w
+        if key == "history":
+            from gui.history_tab import HistoryTabWidget
+
+            return HistoryTabWidget()
+        if key == "bug_detector":
+            from gui.bug_detector_tab import BugDetectorTabWidget
+
+            w = BugDetectorTabWidget()
+            w.set_cabinet_ip(self._ip_edit.text())
+            return w
+        if key == "fleet":
+            from gui.fleet_tab import FleetTabWidget
+
+            return FleetTabWidget()
+        raise KeyError(key)
+
+    def _wire_lazy_tab(self, key: str, widget: QWidget) -> None:
+        if key == "history":
+            widget.sync_scan_requested.connect(self._on_history_sync_scan)
+            widget.search_requested.connect(self._on_history_search)
+            widget.count_refresh_requested.connect(self._on_history_count_refresh)
+        elif key == "fleet":
+            self._fleet_emitter.scan_progress.connect(widget.set_scan_progress)
+            widget.request_subnet_scan.connect(self._on_fleet_subnet_scan)
+            widget.request_refresh.connect(self._on_fleet_manual_refresh)
+            widget.cabinet_added.connect(self._on_fleet_cabinet_added)
+            widget.card_action.connect(self._on_fleet_card_action)
+
+    def _sync_cabinet_ip_to_lazy_tabs(self, _text: str = "") -> None:
+        ip = self._ip_edit.text()
+        if "software_version" in self._lazy_tab_materialized:
+            self._lazy_tab_widgets["software_version"].set_cabinet_ip(ip)
+        if "bug_detector" in self._lazy_tab_materialized:
+            self._lazy_tab_widgets["bug_detector"].set_cabinet_ip(ip)
+        if "automation" in self._lazy_tab_materialized:
+            tab = self._lazy_tab_widgets["automation"]
+            if hasattr(tab, "set_cabinet_ip"):
+                tab.set_cabinet_ip(ip)
+
+    @property
+    def _history_tab(self):
+        return self._materialize_lazy_tab("history")
+
+    @property
+    def _fleet_tab(self):
+        return self._materialize_lazy_tab("fleet")
+
+    @property
+    def _automation_tab(self):
+        return self._materialize_lazy_tab("automation")
+
+    @property
+    def _software_version_tab(self):
+        return self._materialize_lazy_tab("software_version")
+
+    @property
+    def _bug_detector_tab(self):
+        return self._materialize_lazy_tab("bug_detector")
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -429,25 +585,32 @@ class MainWindow(QMainWindow):
         conn_row.addWidget(self._led)
         self._led_status = QLabel("Not checked")
         conn_row.addWidget(self._led_status)
-        conn_row.addSpacing(12)
-        self._incidents_capture_btn = QPushButton("\U0001f4f8 Capture Screen")
-        self._incidents_capture_btn.setToolTip(
-            "Capture the remote cabinet display (PsExec + admin c$ share). "
-            "Use Remote IP mode with a reachable host."
-        )
-        self._incidents_capture_btn.clicked.connect(self._on_incidents_capture_screen_clicked)
-        conn_row.addWidget(self._incidents_capture_btn)
-        self._ram_clear_btn = QPushButton("RAM Clear")
-        self._ram_clear_btn.setToolTip(
-            "Stop the running game and GoldClub processes, then run the maintenance "
-            "RAM-clear chain immediately (slot or roulette). Requires local game "
-            "install or Remote IP with PsExec access."
-        )
-        self._ram_clear_btn.clicked.connect(self._on_ram_clear_clicked)
-        conn_row.addWidget(self._ram_clear_btn)
         conn_row.addStretch(1)
+        self._btn_verify_sas = QPushButton("Verify SAS Accounting")
+        self._btn_verify_sas.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+        )
+        self._btn_verify_sas_default_text = self._btn_verify_sas.text()
+        self._btn_verify_sas.setToolTip(
+            "Choose a SAS traffic log (.dat), fetch gm2au from the remote host when configured, "
+            "and compare extended meters to cabinet XML and SlotLog accounting lines.\n"
+            "Set Scan root to the cabinet log folder for SlotLog comparison."
+        )
+        self._btn_verify_sas.clicked.connect(self._on_verify_sas_clicked)
+        conn_row.addWidget(self._btn_verify_sas)
+        self._tools_btn = QToolButton()
+        self._tools_btn.setObjectName("toolsButton")
+        self._tools_btn.setText("Tools")
+        self._tools_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self._tools_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._tools_btn.setToolTip(
+            "Capture Screen, RAM Clear, Config Scanner, AI Helper and custom signatures."
+        )
+        conn_row.addWidget(self._tools_btn)
         conn_outer.addLayout(conn_row)
 
+        # Live Watch shares the row with the search box: both act on results
+        # produced from the scan root above them.
         live_row = QHBoxLayout()
         self._live_toggle = QPushButton("Live Watch")
         self._live_toggle.setCheckable(True)
@@ -469,6 +632,7 @@ class MainWindow(QMainWindow):
         )
         self._live_elapsed_lbl.setForegroundRole(QPalette.ColorRole.PlaceholderText)
         self._live_elapsed_lbl.setStyleSheet("font-family: monospace; min-width: 11em;")
+        self._live_elapsed_lbl.setVisible(False)
         live_row.addWidget(self._live_elapsed_lbl)
         live_row.addSpacing(14)
         live_row.addWidget(self._autoscroll_chk)
@@ -481,55 +645,6 @@ class MainWindow(QMainWindow):
         self._notif_bell_btn.toggled.connect(self._on_notifications_bell_toggled)
         self._update_notif_bell_tooltip()
         live_row.addWidget(self._notif_bell_btn)
-        live_row.addSpacing(20)
-        live_row.addWidget(QLabel("Session:"))
-        self._session_btn = QPushButton("Start Session")
-        self._session_btn.setToolTip(
-            "Start / stop recording session (Ctrl+R). "
-            "Show only incidents at or after session start; with Live Watch on, tail jumps to EOF."
-        )
-        _rec_pix = getattr(
-            QStyle.StandardPixmap,
-            "SP_MediaRecord",
-            QStyle.StandardPixmap.SP_MediaPlay,
-        )
-        self._session_btn.setIcon(self.style().standardIcon(_rec_pix))
-        self._session_btn.clicked.connect(self._on_session_toggle_clicked)
-        live_row.addWidget(self._session_btn)
-        self._session_elapsed_lbl = QLabel("[--:--:--]")
-        self._session_elapsed_lbl.setToolTip(
-            "Session recording duration (Start Session / Ctrl+R). Independent of Live Watch."
-        )
-        self._session_elapsed_lbl.setForegroundRole(QPalette.ColorRole.PlaceholderText)
-        self._session_elapsed_lbl.setStyleSheet("font-family: monospace; min-width: 9em;")
-        live_row.addWidget(self._session_elapsed_lbl)
-        self._session_clear_on_start_chk = QCheckBox("Clear UI on Start")
-        self._session_clear_on_start_chk.setToolTip(
-            "When starting a session, clear the incident table and state timeline first."
-        )
-        live_row.addWidget(self._session_clear_on_start_chk)
-        live_row.addSpacing(16)
-        self._custom_rules_btn = QPushButton("Custom Signatures")
-        self._custom_rules_btn.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogListView)
-        )
-        self._custom_rules_btn.setToolTip(
-            "Edit user-defined regex signatures (saved under Local AppData)."
-        )
-        self._custom_rules_btn.clicked.connect(self._on_custom_signatures)
-        live_row.addWidget(self._custom_rules_btn)
-        self._settings_btn = QPushButton("\u2699 Settings")
-        self._settings_btn.setToolTip(
-            "Log janitor retention, fleet clock drift threshold, and other preferences."
-        )
-        self._settings_btn.clicked.connect(self._on_settings_clicked)
-        live_row.addWidget(self._settings_btn)
-        live_row.addStretch(1)
-        conn_outer.addLayout(live_row)
-
-        self._session_timer = QTimer(self)
-        self._session_timer.setInterval(1000)
-        self._session_timer.timeout.connect(self._tick_session_elapsed)
 
         self._live_watch_timer = QTimer(self)
         self._live_watch_timer.setInterval(1000)
@@ -555,10 +670,9 @@ class MainWindow(QMainWindow):
         self._browse_btn.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
         )
-        self._open_file_btn = QPushButton("Open file…")
-        self._open_file_btn.setToolTip(
-            "Choose a single .log / .txt file (local path). Use ⏱ Time Filter to limit "
-            "parse range (applies to Scan and open file)."
+        self._browse_btn.setToolTip(
+            "Choose the log folder to scan (Ctrl+O). A single .log / .txt file can be "
+            "opened from File ▸ Open log file…, or by dropping it on the window."
         )
         self._btn_time_filter = QPushButton("⏱ Time Filter: Off")
         self._btn_time_filter.setToolTip(
@@ -567,32 +681,34 @@ class MainWindow(QMainWindow):
         )
         self._scan_btn = QPushButton("Scan")
         self._scan_btn.setObjectName("primary")
+        self._scan_btn.setToolTip("Scan the Scan root for incidents (F5).")
         self._stop_btn = QPushButton("Stop")
         self._stop_btn.setEnabled(False)
+        self._stop_btn.setToolTip("Stop the running scan (Shift+F5).")
+        self._clear_btn = QPushButton("Clear")
+        self._clear_btn.setEnabled(False)
+        self._clear_btn.setToolTip(
+            "Clear the current results: incident table, filters, timeline, bookmarks "
+            "and dashboard counters (Ctrl+Shift+Del). The log files are not touched."
+        )
         bar.addWidget(self._path_edit, stretch=1)
         bar.addWidget(self._browse_btn)
-        bar.addWidget(self._open_file_btn)
-        self._btn_verify_sas = QPushButton("Verify SAS Accounting")
-        self._btn_verify_sas.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
-        )
-        self._btn_verify_sas_default_text = self._btn_verify_sas.text()
-        self._btn_verify_sas.setToolTip(
-            "Choose a SAS traffic log (.dat), fetch gm2au from the remote host when configured, "
-            "and compare extended meters to cabinet XML and SlotLog accounting lines.\n"
-            "Set Scan root to the cabinet log folder for SlotLog comparison."
-        )
-        self._btn_verify_sas.clicked.connect(self._on_verify_sas_clicked)
-        bar.addWidget(self._btn_verify_sas)
         bar.addWidget(self._btn_time_filter)
         bar.addWidget(self._scan_btn)
         bar.addWidget(self._stop_btn)
+        bar.addWidget(self._clear_btn)
         root.addLayout(bar)
 
-        # --- search / filter ---
-        filt = QHBoxLayout()
-        filt.addWidget(QLabel("Filter:"))
+        # --- live watch + search / filter ---
+        live_row.addSpacing(18)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        live_row.addWidget(sep)
+        live_row.addSpacing(12)
+        live_row.addWidget(QLabel("Filter:"))
         self._filter_edit = QLineEdit()
+        self._filter_edit.setClearButtonEnabled(True)
         self._filter_edit.setPlaceholderText(
             "Search logs… (Ctrl+F) — Exception, SlotMachine, theme, path, …"
         )
@@ -601,9 +717,9 @@ class MainWindow(QMainWindow):
         )
         self._filter_busy = QLabel("")
         self._filter_busy.setForegroundRole(QPalette.ColorRole.PlaceholderText)
-        filt.addWidget(self._filter_edit, stretch=1)
-        filt.addWidget(self._filter_busy)
-        root.addLayout(filt)
+        live_row.addWidget(self._filter_edit, stretch=1)
+        live_row.addWidget(self._filter_busy)
+        root.addLayout(live_row)
 
         # --- dashboard ---
         dash = QHBoxLayout()
@@ -838,31 +954,18 @@ class MainWindow(QMainWindow):
         btn_clear_tl.clicked.connect(self._vm.clear_timeline_filter)
         tl_v.addWidget(btn_clear_tl)
 
-        self._history_tab = HistoryTabWidget()
-        self._fleet_tab = FleetTabWidget()
-        self._automation_tab = AutomationTabWidget()
-        self._config_scanner_tab = ConfigScannerTabWidget()
         self._tabs.addTab(tab_incidents, "Incidents")
         self._tabs.addTab(tab_timeline, "State Timeline")
-        tab_analytics = QWidget()
-        analytics_v = QVBoxLayout(tab_analytics)
-        analytics_v.setContentsMargins(8, 8, 8, 8)
-        self._game_analytics_widget = GameAnalyticsWidget(tab_analytics)
-        analytics_v.addWidget(self._game_analytics_widget, stretch=1)
-        self._tabs.addTab(tab_analytics, "Game Analytics")
-        self._tabs.addTab(self._automation_tab, "Automated Tests")
-        self._tabs.addTab(self._config_scanner_tab, "Config Scanner")
-        self._tabs.addTab(self._history_tab, "History")
-        self._tabs.addTab(self._fleet_tab, "Fleet Overview")
-        root.addWidget(self._tabs, stretch=1)
+        from gui.lazy_tab_placeholder import LAZY_MAIN_TAB_SPECS, lazy_tab_placeholder
 
-        self._history_tab.sync_scan_requested.connect(self._on_history_sync_scan)
-        self._history_tab.search_requested.connect(self._on_history_search)
-        self._history_tab.count_refresh_requested.connect(self._on_history_count_refresh)
-        self._fleet_tab.request_subnet_scan.connect(self._on_fleet_subnet_scan)
-        self._fleet_tab.request_refresh.connect(self._on_fleet_manual_refresh)
-        self._fleet_tab.cabinet_added.connect(self._on_fleet_cabinet_added)
-        self._fleet_tab.card_action.connect(self._on_fleet_card_action)
+        for key, title in LAZY_MAIN_TAB_SPECS:
+            placeholder = lazy_tab_placeholder(title)
+            placeholder.setProperty("lazy_tab_key", key)
+            self._tabs.addTab(placeholder, title)
+            self._lazy_tab_placeholders[key] = placeholder
+            self._lazy_tab_title[key] = title
+        root.addWidget(self._tabs, stretch=1)
+        self._tabs.currentChanged.connect(self._on_main_tab_changed)
 
         sb = QStatusBar()
         self.setStatusBar(sb)
@@ -882,12 +985,12 @@ class MainWindow(QMainWindow):
         sb.addWidget(self._status, stretch=1)
 
         self._browse_btn.clicked.connect(self._pick_directory)
-        self._open_file_btn.clicked.connect(self._on_open_log_file_clicked)
         # Drag a .log/.txt/.dat file (or a log folder) anywhere onto the window to analyze it.
         self.setAcceptDrops(True)
         self._btn_time_filter.clicked.connect(self._on_time_filter_clicked)
         self._scan_btn.clicked.connect(self._start_scan)
         self._stop_btn.clicked.connect(self._stop_scan)
+        self._clear_btn.clicked.connect(self._on_clear_results_clicked)
         self._filter_edit.textChanged.connect(self._vm.set_filter_text)
 
         self._live_toggle.toggled.connect(self._on_live_watch_toggled)
@@ -897,6 +1000,7 @@ class MainWindow(QMainWindow):
         self._ip_edit.textChanged.connect(self._schedule_path_probe)
         self._ip_edit.textChanged.connect(self._sync_remote_ram_target_ip)
         self._ip_edit.textChanged.connect(lambda _t: self._update_ram_clear_button_enabled())
+        self._ip_edit.textChanged.connect(self._sync_cabinet_ip_to_lazy_tabs)
         self._path_edit.textChanged.connect(self._on_path_text_changed)
 
         sel = self._table.selectionModel()
@@ -909,6 +1013,210 @@ class MainWindow(QMainWindow):
 
         self._setup_keyboard_shortcuts()
         self._install_disabled_button_feedback()
+
+    def _build_menus(self) -> None:
+        """Menu bar for everything that is not part of the scan workflow."""
+        bar = self.menuBar()
+
+        m_file = bar.addMenu("&File")
+        act_open_dir = QAction("Open log folder…", self)
+        act_open_dir.setShortcut(QKeySequence("Ctrl+O"))
+        act_open_dir.setStatusTip("Choose the folder to scan")
+        act_open_dir.triggered.connect(self._pick_directory)
+        m_file.addAction(act_open_dir)
+        act_open_file = QAction("Open log file…", self)
+        act_open_file.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        act_open_file.setStatusTip("Parse a single .log / .txt file")
+        act_open_file.triggered.connect(self._on_open_log_file_clicked)
+        m_file.addAction(act_open_file)
+        m_file.addSeparator()
+        self._act_scan = QAction("Scan", self)
+        self._act_scan.setShortcut(QKeySequence("F5"))
+        self._act_scan.triggered.connect(self._start_scan)
+        m_file.addAction(self._act_scan)
+        self._act_stop_scan = QAction("Stop scan", self)
+        self._act_stop_scan.setShortcut(QKeySequence("Shift+F5"))
+        self._act_stop_scan.triggered.connect(self._stop_scan)
+        m_file.addAction(self._act_stop_scan)
+        self._act_clear_results = QAction("Clear results", self)
+        self._act_clear_results.setShortcut(QKeySequence("Ctrl+Shift+Del"))
+        self._act_clear_results.setStatusTip(
+            "Clear incidents, filters, timeline and bookmarks (log files are untouched)"
+        )
+        self._act_clear_results.triggered.connect(self._on_clear_results_clicked)
+        m_file.addAction(self._act_clear_results)
+        m_file.addSeparator()
+        act_time_filter = QAction("Time filter…", self)
+        act_time_filter.triggered.connect(self._on_time_filter_clicked)
+        m_file.addAction(act_time_filter)
+        act_settings = QAction("Settings…", self)
+        act_settings.setShortcut(QKeySequence("Ctrl+,"))
+        act_settings.triggered.connect(self._on_settings_clicked)
+        m_file.addAction(act_settings)
+        m_file.addSeparator()
+        act_exit = QAction("Exit", self)
+        act_exit.setShortcut(QKeySequence("Alt+F4"))
+        act_exit.triggered.connect(self.close)
+        m_file.addAction(act_exit)
+
+        m_tools = bar.addMenu("&Tools")
+        act_verify_sas = QAction("Verify SAS Accounting…", self)
+        act_verify_sas.triggered.connect(self._on_verify_sas_clicked)
+        m_tools.addAction(act_verify_sas)
+        m_tools.addSeparator()
+        self._act_capture_screen = QAction("\U0001f4f8 Capture Screen", self)
+        self._act_capture_screen.setToolTip(
+            "Capture the remote cabinet display (PsExec + admin c$ share). "
+            "Use Remote IP mode with a reachable host."
+        )
+        self._act_capture_screen.triggered.connect(self._on_incidents_capture_screen_clicked)
+        m_tools.addAction(self._act_capture_screen)
+        self._act_ram_clear = QAction("RAM Clear…", self)
+        self._act_ram_clear.setToolTip(
+            "Stop game + GoldClub services, wipe official state, stamp LogDaemonRamClear "
+            "(SAS soft meters / 0x7A), then restart services and Ruleta/OneHand. "
+            "Works for slot and roulette — Local or Remote IP."
+        )
+        self._act_ram_clear.triggered.connect(self._on_ram_clear_clicked)
+        m_tools.addAction(self._act_ram_clear)
+        m_tools.addSeparator()
+        act_config_scanner = QAction("Config Scanner", self)
+        act_config_scanner.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        act_config_scanner.triggered.connect(self._open_config_scanner_window)
+        m_tools.addAction(act_config_scanner)
+        act_ai_helper = QAction("AI Helper", self)
+        act_ai_helper.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        act_ai_helper.triggered.connect(self._open_ai_helper_window)
+        m_tools.addAction(act_ai_helper)
+        m_tools.addSeparator()
+        act_custom_rules = QAction("Custom Signatures…", self)
+        act_custom_rules.setToolTip(
+            "Edit user-defined regex signatures (saved under Local AppData)."
+        )
+        act_custom_rules.triggered.connect(self._on_custom_signatures)
+        m_tools.addAction(act_custom_rules)
+        m_tools.setToolTipsVisible(True)
+        self._tools_btn.setMenu(m_tools)
+
+        m_help = bar.addMenu("&Help")
+        act_help = QAction("User Guide…", self)
+        act_help.setShortcut(QKeySequence("F1"))
+        act_help.setStatusTip("Open the Log Investigator user guide")
+        act_help.triggered.connect(self._on_help_clicked)
+        m_help.addAction(act_help)
+
+        self._sync_scan_menu_actions()
+
+    def _sync_scan_menu_actions(self) -> None:
+        """Mirror the scan toolbar button states onto their menu entries."""
+        if not hasattr(self, "_act_scan"):
+            return
+        self._act_scan.setEnabled(self._scan_btn.isEnabled())
+        self._act_stop_scan.setEnabled(self._stop_btn.isEnabled())
+        self._act_clear_results.setEnabled(self._clear_btn.isEnabled())
+
+    def _open_config_scanner_window(self) -> None:
+        from gui.config_scanner_window import ConfigScannerWindow
+
+        log = logger
+        log.info("Config Scanner open requested")
+
+        win = self._config_scanner_window
+        if win is not None and Shiboken.isValid(win):
+            log.info("Config Scanner reusing existing window")
+            win.show()
+            win.raise_()
+            win.activateWindow()
+            return
+        if self._config_scanner_creating:
+            log.warning("Config Scanner open ignored — creation already in progress")
+            return
+        self._config_scanner_creating = True
+        try:
+            log.info("Config Scanner creating ConfigScannerWindow()")
+            win = ConfigScannerWindow()
+            log.info("Config Scanner window constructed")
+            win.destroyed.connect(
+                lambda *_: setattr(self, "_config_scanner_window", None)
+            )
+            self._config_scanner_window = win
+            win.show()
+            win.raise_()
+            win.activateWindow()
+            log.info("Config Scanner window shown visible=%s", win.isVisible())
+        except Exception as exc:
+            import traceback
+
+            log.exception("Config Scanner failed to open: %s", exc)
+            self._config_scanner_window = None
+            QMessageBox.critical(
+                self,
+                "Config Scanner",
+                f"Could not open Config Scanner window:\n\n{exc}\n\n"
+                f"Details were written to LogInvestigator.log next to the program.\n\n"
+                f"{traceback.format_exc()}",
+            )
+        finally:
+            self._config_scanner_creating = False
+
+    def _ai_helper_search_roots(self):
+        from ai_helper.agent import resolve_search_roots
+
+        log_root = self._path_edit.text().strip()
+        scan_target = SettingsManager.get_config_scanner_game_drive()
+        extra: list[str] = []
+        if getattr(self, "_last_scan_roots", None):
+            extra.extend(self._last_scan_roots)
+        return resolve_search_roots(
+            log_root=log_root or None,
+            scan_target=scan_target or None,
+            extra=extra,
+        )
+
+    def _open_ai_helper_window(self) -> None:
+        from gui.ai_helper_window import AiHelperWindow
+
+        log = logger
+        log.info("AI Helper open requested")
+        diag = self._ai_helper_search_roots()
+        roots = list(diag.roots)
+        notes = list(diag.notes)
+
+        win = self._ai_helper_window
+        if win is not None and Shiboken.isValid(win):
+            log.info("AI Helper reusing existing window")
+            if hasattr(win, "set_search_roots"):
+                win.set_search_roots(roots, notes=notes)
+            win.show()
+            win.raise_()
+            win.activateWindow()
+            return
+        if self._ai_helper_creating:
+            log.warning("AI Helper open ignored — creation already in progress")
+            return
+        self._ai_helper_creating = True
+        try:
+            win = AiHelperWindow(search_roots=roots, roots_notes=notes)
+            win.destroyed.connect(lambda *_: setattr(self, "_ai_helper_window", None))
+            self._ai_helper_window = win
+            win.show()
+            win.raise_()
+            win.activateWindow()
+            log.info("AI Helper window shown visible=%s roots=%s", win.isVisible(), roots)
+        except Exception as exc:
+            import traceback
+
+            log.exception("AI Helper failed to open: %s", exc)
+            self._ai_helper_window = None
+            QMessageBox.critical(
+                self,
+                "AI Helper",
+                f"Could not open AI Helper window:\n\n{exc}\n\n"
+                f"Details were written to LogInvestigator.log next to the program.\n\n"
+                f"{traceback.format_exc()}",
+            )
+        finally:
+            self._ai_helper_creating = False
 
     def _sync_incident_table_validation_ram_columns(self) -> None:
         m = self._table_model
@@ -1011,7 +1319,6 @@ class MainWindow(QMainWindow):
         self._vm.scan_state_changed.connect(self._update_secondary_actions)
         self._vm.state_nodes_changed.connect(self._refresh_timeline_canvas)
         self._vm.state_nodes_changed.connect(self._refresh_game_analytics_dashboard)
-        self._vm.session_state_changed.connect(self._on_session_state_changed)
         self._vm.version_identified.connect(self._on_version_found)
         self._timeline_canvas.nodeClicked.connect(self._on_timeline_node_clicked)
 
@@ -1022,9 +1329,8 @@ class MainWindow(QMainWindow):
             "_stop_btn": "No scan is running right now, so there is nothing to stop.",
             "_open_notepad_btn": "Select an incident row first — then you can open its log file.",
             "_ai_enhance_btn": "Select an incident row first to generate a technical summary.",
-            "_incidents_capture_btn": "Switch to ‘Remote IP’ mode and enter the cabinet IP to capture the screen.",
-            "_ram_clear_btn": "Enable Local mode with a detected slot/roulette install, or Remote IP with a host address.",
             "_live_toggle": "Live Watch isn’t available while a scan is in progress.",
+            "_clear_btn": "There are no scan results to clear yet.",
             "_case_pack_btn": "A case pack is already being created — please wait for it to finish.",
             "_full_audit_btn": "A session audit is already running — please wait for it to finish.",
             "_btn_verify_sas": "A SAS verification is already running — please wait for it to finish.",
@@ -1057,8 +1363,10 @@ class MainWindow(QMainWindow):
         self._timeline_canvas.set_nodes(ordered, source_total=total)
 
     def _refresh_game_analytics_dashboard(self) -> None:
-        if not hasattr(self, "_game_analytics_widget"):
+        if self._game_analytics_widget is None:
             return
+        from analytics_engine import calculate_session_analytics
+
         nodes = self._vm.state_nodes_for_timeline()
         stats = calculate_session_analytics(nodes)
         self._game_analytics_widget.update_dashboard(stats)
@@ -1086,11 +1394,16 @@ class MainWindow(QMainWindow):
         self._filter_busy.setText("Filtering…" if busy else "")
 
     def _on_custom_signatures(self) -> None:
+        from gui.rule_editor_dialog import RuleEditorDialog
+        from rules_engine import reload_rules_manager
+
         dlg = RuleEditorDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             reload_rules_manager()
 
     def _on_settings_clicked(self) -> None:
+        from gui.settings_dialog import SettingsDialog
+
         dlg = SettingsDialog(self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1100,6 +1413,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._apply_saved_settings)
 
     def _on_help_clicked(self) -> None:
+        from gui.help_dialog import HelpDialog
+
         HelpDialog(self).exec()
 
     def _apply_saved_settings(self) -> None:
@@ -1119,6 +1434,8 @@ class MainWindow(QMainWindow):
             return
         self._begin_fleet_op()
         self._fleet_tab.set_busy_text("Refreshing fleet after settings…")
+        from gui.fleet_worker import schedule_fleet_refresh
+
         schedule_fleet_refresh(
             self._vm.thread_pool(),
             self._fleet_tab.database_manager(),
@@ -1126,52 +1443,52 @@ class MainWindow(QMainWindow):
             emitter=self._fleet_emitter,
         )
 
-    def _on_session_toggle_clicked(self) -> None:
-        if self._vm.is_session_active():
-            self._vm.stop_session()
-            return
-        if self._session_clear_on_start_chk.isChecked():
-            self._vm.clear()
-            self._reset_incident_table_column_fit_state()
-            self._table.clearSelection()
-            sm = self._table.selectionModel()
-            if sm is not None:
-                sm.clearCurrentIndex()
-            self._inspector_meta.clear()
-            self._inspector_log.clear()
-        self._vm.start_session()
-        lt = self._live_thread
-        if lt is not None and lt.isRunning():
-            lt.request_align_tracked_files_to_eof()
-
-    def _on_session_state_changed(self) -> None:
-        _rec_pix = getattr(
-            QStyle.StandardPixmap,
-            "SP_MediaRecord",
-            QStyle.StandardPixmap.SP_MediaPlay,
-        )
-        if self._vm.is_session_active():
-            self._session_btn.setText("Stop Session")
-            self._session_btn.setIcon(
-                self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+    def _on_clear_results_clicked(self) -> None:
+        """Reset the analysis view to an empty state without touching any log file."""
+        if self._vm.is_scanning():
+            self._warn_status_message(
+                "A scan is running — press Stop before clearing the results."
             )
-            self._session_timer.start()
-            self._tick_session_elapsed()
-        else:
-            self._session_btn.setText("Start Session")
-            self._session_btn.setIcon(self.style().standardIcon(_rec_pix))
-            self._session_timer.stop()
-            self._session_elapsed_lbl.setText("[--:--:--]")
-
-    def _tick_session_elapsed(self) -> None:
-        st = self._vm.session_start_time()
-        if st is None:
             return
-        secs = int((datetime.now(timezone.utc) - st).total_seconds())
-        secs = max(0, secs)
-        h, rem = divmod(secs, 3600)
-        m, s = divmod(rem, 60)
-        self._session_elapsed_lbl.setText(f"[{h:02d}:{m:02d}:{s:02d}]")
+        if not self._has_clearable_results():
+            self._warn_status_message("Nothing to clear — there are no scan results yet.")
+            return
+        if self._vm.bookmark_notes_map():
+            reply = QMessageBox.question(
+                self,
+                "Clear results",
+                "Clearing removes the current incidents, filters, timeline and the "
+                "bookmarks you added.\n\nClear anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self._vm.clear()
+        self._reset_incident_table_column_fit_state()
+        self._table.clearSelection()
+        sm = self._table.selectionModel()
+        if sm is not None:
+            sm.clearCurrentIndex()
+        self._inspector_meta.clear()
+        self._inspector_log.clear()
+        self._filter_edit.clear()
+        self._progress.setVisible(False)
+        self._scan_last_duration_lbl.setText("Last scan: —")
+        self._status.setText("Results cleared.")
+        self.statusBar().showMessage("Results cleared — press Scan to analyze again.", 6000)
+        self._update_clear_action_enabled()
+
+    def _has_clearable_results(self) -> bool:
+        return bool(self._vm.all_incidents) or self._vm.files_scanned() > 0
+
+    def _update_clear_action_enabled(self) -> None:
+        if not hasattr(self, "_clear_btn"):
+            return
+        self._clear_btn.setEnabled(
+            not self._vm.is_scanning() and self._has_clearable_results()
+        )
+        self._sync_scan_menu_actions()
 
     def _tick_live_watch_elapsed(self) -> None:
         if self._live_watch_started_monotonic is None:
@@ -1183,6 +1500,7 @@ class MainWindow(QMainWindow):
         self._live_watch_timer.stop()
         self._live_watch_started_monotonic = None
         self._live_elapsed_lbl.setText("Live [--:--:--]")
+        self._live_elapsed_lbl.setVisible(False)
 
     def _refresh_dashboard(self) -> None:
         done = self._vm.files_scanned()
@@ -1211,6 +1529,7 @@ class MainWindow(QMainWindow):
         self._game_value.setText(self._vm.last_active_game())
 
         self._on_version_found(self._vm.software_version_for_ai())
+        self._update_clear_action_enabled()
 
     def _on_version_found(self, version_str: str) -> None:
         if (
@@ -1270,8 +1589,8 @@ class MainWindow(QMainWindow):
             self._trigger_background_version_fetch(root)
 
     def _setup_tray_icon(self) -> None:
-        self._tray = None
         if not QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray = None
             return
         from gui.app_branding import app_icon
 
@@ -1318,10 +1637,7 @@ class MainWindow(QMainWindow):
                 self._update_live_watch_button_label()
                 return
             p = Path(root)
-            try:
-                ok = p.exists() and p.is_dir()
-            except OSError:
-                ok = False
+            ok = is_dir_reachable(root)
             if not ok:
                 QMessageBox.warning(
                     self,
@@ -1340,6 +1656,7 @@ class MainWindow(QMainWindow):
             self._live_thread.status_message.connect(self._status.setText)
             self._live_thread.start()
             self._live_watch_started_monotonic = time.monotonic()
+            self._live_elapsed_lbl.setVisible(True)
             self._live_watch_timer.start()
             self._tick_live_watch_elapsed()
             self._status.setText("Live watch running…")
@@ -1393,51 +1710,153 @@ class MainWindow(QMainWindow):
             )
 
     def _default_local_scan_root(self) -> str:
-        from network.goldclub_paths import discover_startup_scan_target
+        from network.app_runtime import get_app_runtime
+        from network.goldclub_paths import is_game_image_drive_path
 
-        remote_ip = str(
-            self._settings.value("connection/remote_ip", DEFAULT_REMOTE_IP)
-        )
-        discovery = discover_startup_scan_target(remote_ip=remote_ip)
-        if discovery.mode == "local":
-            return discovery.scan_root
+        ctx = get_app_runtime()
+        # Never auto-pick the G:\ game-image drive — that XML is optional and
+        # needs an explicit user choice (same policy as SasVerifyMeters).
+        if (
+            ctx.local_scan_root
+            and Path(ctx.local_scan_root).is_dir()
+            and not is_game_image_drive_path(ctx.local_scan_root)
+        ):
+            return ctx.local_scan_root
         saved = str(
             self._settings.value("connection/local_log_path", DEFAULT_LOCAL_LOG_ROOT)
-        )
-        return saved if Path(saved).is_dir() else DEFAULT_LOCAL_LOG_ROOT
+        ).strip()
+        if (
+            saved
+            and Path(saved).is_dir()
+            and not is_game_image_drive_path(saved)
+        ):
+            return saved
+        if Path(DEFAULT_LOCAL_LOG_ROOT).is_dir():
+            return DEFAULT_LOCAL_LOG_ROOT
+        return saved or DEFAULT_LOCAL_LOG_ROOT
 
     def _load_connection_settings(self) -> None:
-        from network.goldclub_paths import discover_startup_scan_target
+        from network.app_runtime import get_app_runtime, prefer_local_connection_at_launch
+        from network.goldclub_paths import is_game_image_drive_path
 
         remote_ip = str(
             self._settings.value("connection/remote_ip", DEFAULT_REMOTE_IP)
-        )
-        discovery = discover_startup_scan_target(remote_ip=remote_ip)
+        ).strip() or DEFAULT_REMOTE_IP
+        saved_mode = str(self._settings.value("connection/mode", "")).strip().lower()
+        saved_local = str(
+            self._settings.value("connection/local_log_path", DEFAULT_LOCAL_LOG_ROOT)
+        ).strip()
+
+        # On a cabinet, ignore saved Remote that points at this machine.
+        if prefer_local_connection_at_launch(
+            saved_mode=saved_mode,
+            saved_remote_ip=remote_ip,
+        ):
+            saved_mode = "local"
+            ctx = get_app_runtime()
+            if ctx.local_scan_root and not is_game_image_drive_path(ctx.local_scan_root):
+                saved_local = ctx.local_scan_root
+
+        # Drop a previously remembered G:\ path so Local mode does not reopen it.
+        if is_game_image_drive_path(saved_local):
+            saved_local = self._default_local_scan_root()
+
         self._radio_local.blockSignals(True)
         self._radio_remote.blockSignals(True)
-        if discovery.mode == "remote":
+        self._ip_edit.setText(remote_ip)
+        if saved_mode == "remote":
             self._radio_remote.setChecked(True)
             self._radio_local.setChecked(False)
-            self._ip_edit.setText(discovery.remote_ip or DEFAULT_REMOTE_IP)
+            self._path_edit.setText(format_unc_log_root(remote_ip))
+        else:
+            self._radio_local.setChecked(True)
+            self._radio_remote.setChecked(False)
+            self._path_edit.setText(saved_local or DEFAULT_LOCAL_LOG_ROOT)
+        self._radio_local.blockSignals(False)
+        self._radio_remote.blockSignals(False)
+        self._apply_mode_to_widgets()
+        self._autoscroll_chk.setChecked(
+            bool(self._settings.value("live/autoscroll", False))
+        )
+        ctx = get_app_runtime()
+        if ctx.on_local_egm:
+            kind = ctx.game_kind or "cabinet"
+            self._status.setText(
+                f"Running on local EGM ({kind}) — remote tools stay local "
+                "unless you target another host"
+            )
+        else:
+            self._status.setText("Detecting log path…")
+        self._update_ram_clear_button_enabled()
+        self._schedule_startup_discovery()
+
+    def _schedule_startup_discovery(self) -> None:
+        remote_ip = str(
+            self._settings.value("connection/remote_ip", DEFAULT_REMOTE_IP)
+        ).strip() or DEFAULT_REMOTE_IP
+        self._startup_discovery_seq += 1
+        schedule_startup_discovery(
+            self._vm.thread_pool(),
+            remote_ip,
+            self._startup_discovery_seq,
+            self._startup_discovery_emitter,
+        )
+
+    def _on_startup_discovery_finished(self, discovery: object, seq: int) -> None:
+        if seq != self._startup_discovery_seq or self._session_connection_restored:
+            return
+        from network.app_runtime import get_app_runtime, prefer_local_connection_at_launch
+        from network.goldclub_paths import StartupScanDiscovery
+
+        if not isinstance(discovery, StartupScanDiscovery):
+            return
+
+        mode = discovery.mode
+        scan_root = discovery.scan_root
+        remote_ip = discovery.remote_ip or DEFAULT_REMOTE_IP
+        # Never auto-select Remote for this cabinet when Investigator runs on it.
+        if prefer_local_connection_at_launch(
+            saved_mode=mode,
+            saved_remote_ip=remote_ip,
+        ):
+            mode = "local"
+            ctx = get_app_runtime()
+            if ctx.local_scan_root:
+                scan_root = ctx.local_scan_root
+            elif (scan_root or "").startswith("\\\\"):
+                scan_root = self._default_local_scan_root()
+
+        self._radio_local.blockSignals(True)
+        self._radio_remote.blockSignals(True)
+        if mode == "remote":
+            self._radio_remote.setChecked(True)
+            self._radio_local.setChecked(False)
+            self._ip_edit.setText(remote_ip)
         else:
             self._radio_local.setChecked(True)
             self._radio_remote.setChecked(False)
         self._radio_local.blockSignals(False)
         self._radio_remote.blockSignals(False)
-        self._path_edit.setText(discovery.scan_root)
+        self._path_edit.setText(scan_root)
         self._apply_mode_to_widgets()
-        self._autoscroll_chk.setChecked(
-            bool(self._settings.value("live/autoscroll", False))
-        )
+        ctx = get_app_runtime()
         if discovery.game_kind in ("slot", "roulette"):
+            prefix = "Running on local EGM — " if ctx.on_local_egm else ""
             self._status.setText(
-                f"Auto-detected {discovery.game_kind} logs at {discovery.scan_root}"
+                f"{prefix}Auto-detected {discovery.game_kind} logs at {scan_root}"
             )
-        elif discovery.mode == "remote":
+        elif mode == "remote":
             self._status.setText(
-                f"No local game found — using remote logs at {discovery.scan_root}"
+                f"No local game found — using remote logs at {scan_root}"
             )
+        elif ctx.on_local_egm:
+            self._status.setText(
+                f"Running on local EGM — logs at {scan_root}"
+            )
+        else:
+            self._status.setText("Ready")
         self._update_ram_clear_button_enabled()
+        self._schedule_path_probe()
 
     def _save_connection_settings(self) -> None:
         self._settings.setValue(
@@ -1458,9 +1877,8 @@ class MainWindow(QMainWindow):
         # Operators frequently need to paste a UNC path manually, even in Remote mode.
         # Keep the field editable; remote mode just *suggests* a resolved UNC value.
         self._path_edit.setReadOnly(False)
-        # Keep these enabled in both modes so users can browse UNC shares manually.
+        # Keep this enabled in both modes so users can browse UNC shares manually.
         self._browse_btn.setEnabled(True)
-        self._open_file_btn.setEnabled(True)
         if remote:
             self._path_edit.setPlaceholderText(r"Enter root directory or UNC path...")
         else:
@@ -1470,32 +1888,48 @@ class MainWindow(QMainWindow):
         self._sync_remote_ram_target_ip()
 
     def _sync_remote_ram_target_ip(self) -> None:
-        if self._radio_remote.isChecked():
-            self._vm.set_remote_ram_target_ip(self._ip_edit.text())
-        else:
-            self._vm.set_remote_ram_target_ip(None)
+        # Only expose a remote RAM target when ops would actually go off-box.
+        self._vm.set_remote_ram_target_ip(self._get_remote_ip())
 
     def _update_incidents_capture_button_enabled(self) -> None:
-        if not hasattr(self, "_incidents_capture_btn"):
+        if not hasattr(self, "_act_capture_screen"):
             return
-        remote = self._radio_remote.isChecked()
-        self._incidents_capture_btn.setEnabled(remote and not self._remote_capture_busy)
+        tip = self._get_remote_ip()
+        enabled = bool(tip) and not self._remote_capture_busy
+        self._act_capture_screen.setEnabled(enabled)
+        if enabled:
+            self._act_capture_screen.setStatusTip(f"Capture the display of {tip}")
+        else:
+            self._act_capture_screen.setStatusTip(
+                "Switch to ‘Remote IP’ mode and enter the cabinet IP to capture the screen."
+            )
 
     def _update_ram_clear_button_enabled(self) -> None:
-        if not hasattr(self, "_ram_clear_btn"):
+        if not hasattr(self, "_act_ram_clear"):
             return
         if self._ram_clear_busy:
-            self._ram_clear_btn.setEnabled(False)
+            self._act_ram_clear.setEnabled(False)
             return
         if os.name != "nt":
-            self._ram_clear_btn.setEnabled(False)
+            self._act_ram_clear.setEnabled(False)
+            self._act_ram_clear.setStatusTip("RAM Clear is only available on Windows.")
             return
-        if self._radio_remote.isChecked():
-            self._ram_clear_btn.setEnabled(bool((self._ip_edit.text() or "").strip()))
-            return
-        from network.ram_clear import resolve_ram_clear_plan
+        from network.app_runtime import wants_remote_operations
 
-        self._ram_clear_btn.setEnabled(resolve_ram_clear_plan() is not None)
+        tip = (self._ip_edit.text() or "").strip()
+        if wants_remote_operations(
+            ui_remote=self._radio_remote.isChecked(),
+            target_ip=tip,
+        ):
+            self._act_ram_clear.setEnabled(bool(tip))
+            if not tip:
+                self._act_ram_clear.setStatusTip(
+                    "Enter the cabinet IP in Remote IP mode to run RAM Clear."
+                )
+            return
+        # Local mode, or Remote pointed at this machine / local EGM.
+        self._act_ram_clear.setEnabled(True)
+        self._act_ram_clear.setStatusTip("Run the maintenance RAM-clear chain on this machine")
 
     def _on_mode_toggled(self) -> None:
         self._apply_mode_to_widgets()
@@ -1516,9 +1950,15 @@ class MainWindow(QMainWindow):
             self._queue_version_fetch(self._path_edit.text())
 
     def _gather_path_resolve_args(self) -> tuple[str | None, str | None, bool]:
-        remote = self._radio_remote.isChecked()
-        if remote:
-            return self._ip_edit.text().strip(), None, True
+        from network.app_runtime import effective_remote_ip
+
+        tip = (self._ip_edit.text() or "").strip()
+        remote_ip = effective_remote_ip(
+            ui_remote=self._radio_remote.isChecked(),
+            target_ip=tip,
+        )
+        if remote_ip:
+            return remote_ip, None, True
         return None, self._path_edit.text().strip(), False
 
     def _schedule_path_probe(self) -> None:
@@ -1548,6 +1988,39 @@ class MainWindow(QMainWindow):
                     background-color: #005a9e;
                     color: #ffffff;
                     font-weight: bold;
+                }
+                QPushButton#primary {
+                    background-color: #0078d4;
+                    color: #ffffff;
+                    font-weight: bold;
+                    border: 1px solid #4cc2ff;
+                }
+                QPushButton#primary:hover {
+                    background-color: #1a86d9;
+                    border: 1px solid #7ad0ff;
+                }
+                QPushButton#primary:pressed {
+                    background-color: #005a9e;
+                }
+                QPushButton#primary:disabled {
+                    background-color: #2d4a66;
+                    color: #9ab;
+                    border: 1px solid #3d5a76;
+                }
+
+                QToolButton#toolsButton {
+                    background-color: #3d3d3d;
+                    color: #ffffff;
+                    border: 1px solid #555555;
+                    border-radius: 4px;
+                    padding: 5px 22px 5px 12px;
+                    min-height: 25px;
+                }
+                QToolButton#toolsButton:hover { background-color: #505050; border: 1px solid #0078d4; }
+                QToolButton#toolsButton::menu-indicator {
+                    subcontrol-origin: padding;
+                    subcontrol-position: center right;
+                    right: 6px;
                 }
 
                 QToolButton[filter_chip="true"], QPushButton[filter_chip="true"] {
@@ -1615,6 +2088,39 @@ class MainWindow(QMainWindow):
                     color: #ffffff;
                     font-weight: bold;
                 }
+                QPushButton#primary {
+                    background-color: #0078d4;
+                    color: #ffffff;
+                    font-weight: bold;
+                    border: 1px solid #005a9e;
+                }
+                QPushButton#primary:hover {
+                    background-color: #106ebe;
+                    border: 1px solid #004578;
+                }
+                QPushButton#primary:pressed {
+                    background-color: #005a9e;
+                }
+                QPushButton#primary:disabled {
+                    background-color: #9ec3e6;
+                    color: #f0f7ff;
+                    border: 1px solid #7aa8d4;
+                }
+
+                QToolButton#toolsButton {
+                    background-color: #f0f0f0;
+                    color: #000000;
+                    border: 1px solid #cccccc;
+                    border-radius: 4px;
+                    padding: 5px 22px 5px 12px;
+                    min-height: 25px;
+                }
+                QToolButton#toolsButton:hover { background-color: #e5e5e5; border: 1px solid #0078d4; }
+                QToolButton#toolsButton::menu-indicator {
+                    subcontrol-origin: padding;
+                    subcontrol-position: center right;
+                    right: 6px;
+                }
 
                 QToolButton[filter_chip="true"], QPushButton[filter_chip="true"] {
                     background-color: #ffffff;
@@ -1664,6 +2170,14 @@ class MainWindow(QMainWindow):
             """
 
         self.setStyleSheet(stylesheet)
+        # setStyleSheet can recreate the native HWND and reset the Windows caption
+        # to light — re-apply immersive dark/light after every theme polish.
+        try:
+            from gui.win_title_bar import schedule_title_bar_theme
+
+            schedule_title_bar_theme(self, SettingsManager.get_theme())
+        except Exception:
+            pass
 
     def _apply_path_led_style(self) -> None:
         p = QApplication.palette()
@@ -1712,6 +2226,7 @@ class MainWindow(QMainWindow):
             self._inspector_meta_highlighter.reapply_formats(p)
             self._inspector_log_highlighter.reapply_formats(p)
             self._refresh_timeline_legend()
+            self._sync_time_filter_button()
         finally:
             self._palette_refresh_busy = False
 
@@ -1760,6 +2275,7 @@ class MainWindow(QMainWindow):
             return
         r = result
         self._scan_btn.setEnabled(True)
+        self._sync_scan_menu_actions()
         self._status.setText("Ready")
         if not r.path:
             QMessageBox.warning(
@@ -1785,13 +2301,15 @@ class MainWindow(QMainWindow):
         if active:
             self._btn_time_filter.setText("⏱ Time Filter: Active")
             self._btn_time_filter.setStyleSheet(
-                "background-color: #e6ffe6; font-weight: 600; padding: 4px 8px;"
+                time_filter_active_stylesheet(self.palette())
             )
         else:
             self._btn_time_filter.setText("⏱ Time Filter: Off")
             self._btn_time_filter.setStyleSheet("")
 
     def _on_time_filter_clicked(self) -> None:
+        from gui.time_range_dialog import TimeRangeScanDialog
+
         dlg = TimeRangeScanDialog(
             self,
             current_start=self._global_scan_start,
@@ -1914,11 +2432,16 @@ class MainWindow(QMainWindow):
     def _start_scan(self, persist_to_db: bool = False) -> None:
         if self._worker and self._worker.isRunning():
             return
+        # Block while previous scan results are still draining into the UI.
+        if self._parse_drain_scheduled or self._pending_parse_results or self._scan_complete_pending:
+            self._status.setText("Previous scan still finishing — wait a moment…")
+            return
         self._persist_db_after_scan = persist_to_db
         self._prescan_seq += 1
         seq = self._prescan_seq
         tip, lp, remote = self._gather_path_resolve_args()
         self._scan_btn.setEnabled(False)
+        self._sync_scan_menu_actions()
         self._status.setText("Validating path…")
         schedule_path_resolve(
             self._vm.thread_pool(),
@@ -1930,6 +2453,9 @@ class MainWindow(QMainWindow):
         )
 
     def _begin_scan_worker(self, roots: list[str]) -> None:
+        self._scan_generation += 1
+        self._active_scan_generation = self._scan_generation
+        scan_gen = self._active_scan_generation
         self._last_scan_roots = list(roots)
         self._stop_live_watch_ui()
         self._live_toggle.setEnabled(False)
@@ -1947,6 +2473,7 @@ class MainWindow(QMainWindow):
         self._vm.set_scanning(True)
         self._scan_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
+        self._sync_scan_menu_actions()
         self._progress.setVisible(True)
         self._progress.setRange(0, 0)  # busy/indeterminate until enumeration completes
         self._scan_total_files = 0
@@ -1966,9 +2493,15 @@ class MainWindow(QMainWindow):
         )
         self._worker.enumeration_done.connect(self._on_enum_done)
         self._worker.file_progress.connect(self._on_file_progress)
-        self._worker.file_parsed.connect(self._on_file_parsed_yielding)
-        self._worker.scan_finished.connect(self._on_scan_finished)
-        self._worker.scan_failed.connect(self._on_scan_failed)
+        self._worker.file_parsed.connect(
+            lambda result, g=scan_gen: self._on_file_parsed_yielding(result, g)
+        )
+        self._worker.scan_finished.connect(
+            lambda g=scan_gen: self._on_scan_finished(g)
+        )
+        self._worker.scan_failed.connect(
+            lambda msg, g=scan_gen: self._on_scan_failed(msg, g)
+        )
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
@@ -1990,14 +2523,22 @@ class MainWindow(QMainWindow):
         name = Path(path).name or path
         self._status.setText(f"Scanning [{index}/{total}] {name}…")
 
-    def _on_file_parsed_yielding(self, result: object) -> None:
+    def _on_file_parsed_yielding(self, result: object, scan_gen: int | None = None) -> None:
         """Apply one file at a time with a short gap so the UI thread can repaint (UNC scans)."""
+        if scan_gen is not None and scan_gen != self._active_scan_generation:
+            return
         self._pending_parse_results.append(result)
         if not self._parse_drain_scheduled:
             self._parse_drain_scheduled = True
-            QTimer.singleShot(SCAN_UI_YIELD_MS, self._drain_one_parsed_file)
+            QTimer.singleShot(
+                SCAN_UI_YIELD_MS,
+                lambda g=self._active_scan_generation: self._drain_one_parsed_file(g),
+            )
 
-    def _drain_one_parsed_file(self) -> None:
+    def _drain_one_parsed_file(self, scan_gen: int | None = None) -> None:
+        if scan_gen is not None and scan_gen != self._active_scan_generation:
+            self._parse_drain_scheduled = False
+            return
         if self._pending_parse_results:
             self._vm.append_file_results(self._pending_parse_results.pop(0))
             self._scan_done_files += 1
@@ -2006,14 +2547,19 @@ class MainWindow(QMainWindow):
                     min(self._scan_done_files, self._scan_total_files)
                 )
         if self._pending_parse_results:
-            QTimer.singleShot(SCAN_UI_YIELD_MS, self._drain_one_parsed_file)
+            QTimer.singleShot(
+                SCAN_UI_YIELD_MS,
+                lambda g=self._active_scan_generation: self._drain_one_parsed_file(g),
+            )
         else:
             self._parse_drain_scheduled = False
             if self._scan_complete_pending:
                 self._scan_complete_pending = False
                 self._finalize_scan_ui()
 
-    def _on_scan_finished(self) -> None:
+    def _on_scan_finished(self, scan_gen: int | None = None) -> None:
+        if scan_gen is not None and scan_gen != self._active_scan_generation:
+            return
         self._scan_complete_pending = True
         if not self._pending_parse_results and not self._parse_drain_scheduled:
             self._scan_complete_pending = False
@@ -2023,6 +2569,7 @@ class MainWindow(QMainWindow):
         self._vm.set_scanning(False)
         self._scan_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
+        self._update_clear_action_enabled()
         self._progress.setVisible(False)
         self._live_toggle.setEnabled(True)
         # One bounded, log-only CLR/OS lookup per scan (LogDaemon truncates the banner).
@@ -2048,13 +2595,16 @@ class MainWindow(QMainWindow):
             self._persist_db_after_scan = False
             self._schedule_persist_scan_to_db()
 
-    def _on_scan_failed(self, msg: str) -> None:
+    def _on_scan_failed(self, msg: str, scan_gen: int | None = None) -> None:
+        if scan_gen is not None and scan_gen != self._active_scan_generation:
+            return
         self._pending_parse_results.clear()
         self._parse_drain_scheduled = False
         self._scan_complete_pending = False
         self._vm.set_scanning(False)
         self._scan_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
+        self._update_clear_action_enabled()
         self._progress.setVisible(False)
         self._live_toggle.setEnabled(True)
         dur = ""
@@ -2077,9 +2627,6 @@ class MainWindow(QMainWindow):
     def _setup_keyboard_shortcuts(self) -> None:
         self._sc_focus_filter = QShortcut(QKeySequence("Ctrl+F"), self)
         self._sc_focus_filter.activated.connect(self._on_shortcut_focus_filter)
-
-        self._sc_session_toggle = QShortcut(QKeySequence("Ctrl+R"), self)
-        self._sc_session_toggle.activated.connect(self._on_session_toggle_clicked)
 
         self._sc_create_case_pack = QShortcut(QKeySequence("Ctrl+S"), self)
         self._sc_create_case_pack.activated.connect(self._on_shortcut_create_case_pack)
@@ -2169,6 +2716,8 @@ class MainWindow(QMainWindow):
                 "This incident is not in the current scan buffer.",
             )
             return
+        from gui.context_dialog import IncidentContextDialog
+
         IncidentContextDialog(inc, unfiltered, self).exec()
 
     def _update_notif_bell_tooltip(self) -> None:
@@ -2213,6 +2762,8 @@ class MainWindow(QMainWindow):
 
     def _bookmark_add_edit(self, inc: Incident) -> None:
         prev = self._vm.get_bookmark_note(inc.id) or ""
+        from gui.bookmark_dialog import BookmarkDialog
+
         dlg = BookmarkDialog(self, initial_note=prev)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -2476,6 +3027,11 @@ class MainWindow(QMainWindow):
         groq_api_key = SettingsManager.get_groq_api_key()
         openrouter_api_key = SettingsManager.get_openrouter_api_key()
         venice_api_key = SettingsManager.get_venice_api_key()
+        if getattr(self, "_last_scan_roots", None):
+            try:
+                self._vm.refresh_current_software_version(self._last_scan_roots[0])
+            except Exception:
+                pass
         software_version = self._vm.software_version_for_ai()
         # Error details: current inspector meta + loaded stack/context view.
         inspector_log_text = self._inspector_log.toPlainText()
@@ -2487,21 +3043,6 @@ class MainWindow(QMainWindow):
                 + error_details
             )
 
-        # Include the first 10 lines of the log file so analysis can extract SlotMachine version headers.
-        header_lines: list[str] = []
-        log_path_raw = (getattr(inc, "log_file_path", "") or "").strip()
-        if log_path_raw:
-            try:
-                p = Path(os.path.normpath(log_path_raw))
-                with p.open("r", encoding="utf-8", errors="replace") as f:
-                    for _ in range(10):
-                        line = f.readline()
-                        if not line:
-                            break
-                        header_lines.append(line.rstrip("\n\r"))
-            except Exception:
-                header_lines = []
-
         # Preceding timeline events: take up to N state nodes strictly before the incident timestamp.
         nodes = self._vm.state_nodes_for_timeline()
         target = getattr(inc, "timestamp_sort_key", None)
@@ -2512,7 +3053,6 @@ class MainWindow(QMainWindow):
                 target = None
         preceding: list[str] = []
         if target is not None:
-            # Walk from the end (nodes are already chronologically sorted)
             for n in reversed(nodes):
                 try:
                     sk = float(getattr(n, "timestamp_sort_key", 0.0) or 0.0)
@@ -2529,21 +3069,17 @@ class MainWindow(QMainWindow):
                     break
             preceding.reverse()
 
-        # Keep payload bounded.
         if len(error_details) > 9000:
             error_details = error_details[:9000] + "\n…(truncated)…"
         if preceding:
             preceding = [x[:500] for x in preceding]
 
-        # "Context" lines: use the loaded log context view (typically contains ~50 lines around incident).
+        # Near-incident context only (inspector lines around the fault).
+        # Do NOT prepend file-start headers — LogDaemon Spawning at boot pollutes LOG SEQUENCE.
         context_lines = [ln.rstrip() for ln in inspector_log_text.splitlines() if ln.strip()]
-        context_lines = context_lines[-60:]  # keep bounded; emphasis is "immediately preceding"
+        context_lines = context_lines[-80:]
 
-        # Combine: header + gap + context + gap + state timeline (if any)
         context_for_ai: list[str] = []
-        if header_lines:
-            context_for_ai.extend(header_lines)
-            context_for_ai.append("... [gap] ...")
         if context_lines:
             context_for_ai.extend(context_lines)
         if preceding:
@@ -2553,6 +3089,9 @@ class MainWindow(QMainWindow):
         self._ai_enhance_btn.setEnabled(False)
         self._ai_enhance_btn.setText("Processing…")
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        from gui.ai_jira_dialog import CopyableFieldWidget, parse_ai_response, strip_markdown_bolding
+        from gui.ai_enhance_worker import AiEnhanceEmitter, schedule_ai_enhance
+
         dlg = QDialog(self)
         dlg.setWindowTitle("Defect Ticket")
         dlg.resize(900, 680)
@@ -2599,9 +3138,18 @@ class MainWindow(QMainWindow):
                 if not Shiboken.isValid(dlg):
                     return
                 raw = strip_markdown_bolding(text or "").strip()
-                parts = parse_ai_response(raw)
+                from network.ai_summarizer import (
+                    ensure_defect_title_has_version,
+                    rewrite_defect_ticket_software_version,
+                )
 
-                # Clear existing widgets (including stretch)
+                raw = rewrite_defect_ticket_software_version(raw, software_version)
+                parts = parse_ai_response(raw)
+                if parts.get("Title"):
+                    parts["Title"] = ensure_defect_title_has_version(
+                        parts["Title"], software_version
+                    )
+
                 while fields_layout.count():
                     item = fields_layout.takeAt(0)
                     w = item.widget()
@@ -2616,7 +3164,31 @@ class MainWindow(QMainWindow):
                 ]
                 any_content = any((c or "").strip() for _, c in ordered)
                 if not any_content:
-                    ordered = [("Technical Summary", raw)]
+                    from network.ai_summarizer import (
+                        _is_low_quality_ai_response,
+                        _offline_incident_summary,
+                    )
+
+                    if _is_low_quality_ai_response(raw) or not raw.strip():
+                        raw = _offline_incident_summary(
+                            error_details,
+                            context_for_ai,
+                            software_version,
+                            ai_fallback=bool(raw.strip()),
+                        )
+                        parts = parse_ai_response(raw)
+                        if parts.get("Title"):
+                            parts["Title"] = ensure_defect_title_has_version(
+                                parts["Title"], software_version
+                            )
+                        ordered = [
+                            ("Title", parts.get("Title", "")),
+                            ("Key details", parts.get("Key details", "")),
+                            ("Actual result", parts.get("Actual result", "")),
+                            ("Expected result", parts.get("Expected result", "")),
+                        ]
+                    if not any((c or "").strip() for _, c in ordered):
+                        ordered = [("Technical Summary", raw)]
 
                 tracking = _collect_related_tracking([inc])
                 if tracking.strip():
@@ -2688,6 +3260,8 @@ class MainWindow(QMainWindow):
         self._full_audit_btn.setText("\u23f3 Processing Session Data…")
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
+        from gui.ai_jira_dialog import CopyableFieldWidget
+        from gui.full_audit_worker import FullAuditEmitter, schedule_full_audit
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Defect Ticket")
@@ -2735,7 +3309,17 @@ class MainWindow(QMainWindow):
                 if not Shiboken.isValid(dlg):
                     return
                 raw = strip_markdown_bolding(text or "").strip()
+                from network.ai_summarizer import (
+                    ensure_defect_title_has_version,
+                    rewrite_defect_ticket_software_version,
+                )
+
+                raw = rewrite_defect_ticket_software_version(raw, software_version)
                 parts = parse_ai_response(raw)
+                if parts.get("Title"):
+                    parts["Title"] = ensure_defect_title_has_version(
+                        parts["Title"], software_version
+                    )
 
                 while fields_layout.count():
                     item = fields_layout.takeAt(0)
@@ -2814,6 +3398,8 @@ class MainWindow(QMainWindow):
                 "There are no incidents in the current filtered view.",
             )
             return
+        from network.case_packer import suggest_case_pack_zip_name
+
         default_name = suggest_case_pack_zip_name(self._vm.logged_machine_id())
         desk = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.DesktopLocation
@@ -2903,6 +3489,8 @@ class MainWindow(QMainWindow):
 
     def _on_history_search(self) -> None:
         self._history_tab.set_busy("Searching database…")
+        from gui.db_worker import schedule_db_query
+
         schedule_db_query(
             self._vm.thread_pool(),
             self._history_tab.database_manager(),
@@ -2915,6 +3503,8 @@ class MainWindow(QMainWindow):
         self._history_tab.apply_query_results(rows)
 
     def _on_history_count_refresh(self) -> None:
+        from gui.db_worker import schedule_db_count
+
         schedule_db_count(
             self._vm.thread_pool(),
             self._history_tab.database_manager(),
@@ -2922,6 +3512,7 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_history_db_count(self) -> None:
+        self._materialize_lazy_tab("history")
         self._on_history_count_refresh()
 
     def _on_db_count_finished(self, n: int) -> None:
@@ -2938,6 +3529,8 @@ class MainWindow(QMainWindow):
             except OSError:
                 name = None
         self._status.setText("Saving scan to database…")
+        from gui.db_worker import schedule_db_persist
+
         schedule_db_persist(
             self._vm.thread_pool(),
             self._history_tab.database_manager(),
@@ -2963,6 +3556,7 @@ class MainWindow(QMainWindow):
         self._history_tab.set_sync_enabled(not scanning)
         busy = scanning or self._fleet_op_active
         self._fleet_tab.set_discovery_enabled(not busy)
+        self._update_clear_action_enabled()
 
     def _begin_fleet_op(self) -> None:
         self._fleet_op_active = True
@@ -2990,6 +3584,8 @@ class MainWindow(QMainWindow):
             return
         self._begin_fleet_op()
         self._fleet_tab.set_busy_text("Refreshing host reachability…")
+        from gui.fleet_worker import schedule_fleet_refresh
+
         schedule_fleet_refresh(
             self._vm.thread_pool(),
             self._fleet_tab.database_manager(),
@@ -3003,6 +3599,8 @@ class MainWindow(QMainWindow):
             return
         self._begin_fleet_op()
         self._fleet_tab.set_busy_text("Scanning subnet…")
+        from gui.fleet_worker import schedule_fleet_subnet_scan
+
         schedule_fleet_subnet_scan(
             self._vm.thread_pool(),
             self._fleet_tab.database_manager(),
@@ -3017,6 +3615,8 @@ class MainWindow(QMainWindow):
             return
         self._begin_fleet_op()
         self._fleet_tab.set_busy_text("Refreshing known hosts…")
+        from gui.fleet_worker import schedule_fleet_refresh
+
         schedule_fleet_refresh(
             self._vm.thread_pool(),
             self._fleet_tab.database_manager(),
@@ -3030,6 +3630,8 @@ class MainWindow(QMainWindow):
             return
         self._begin_fleet_op()
         self._fleet_tab.set_busy_text("Probing new cabinet…")
+        from gui.fleet_worker import schedule_fleet_refresh
+
         schedule_fleet_refresh(
             self._vm.thread_pool(),
             self._fleet_tab.database_manager(),
@@ -3080,27 +3682,47 @@ class MainWindow(QMainWindow):
             )
             logger.exception("Fleet grid refresh failed after drift or heartbeat update")
 
-    def _on_remote_time_sync_finished(self, ip: str, ok: bool, msg: str) -> None:
-        """PsExec completed on a worker thread; re-enable the card and show result on the GUI thread."""
+    def _on_remote_time_sync_finished(
+        self,
+        ip: str,
+        ok: bool,
+        msg: str,
+        post_sync_drift: object = None,
+    ) -> None:
+        """Sync finished on a worker thread; re-enable the card and refresh fleet drift UI."""
         self._fleet_tab.set_sync_time_busy(ip, False)
         fleet_timesync_logger().info(
-            "time_sync UI: worker finished ip=%s ok=%s msg_preview=%r",
+            "time_sync UI: worker finished ip=%s ok=%s drift=%r msg_preview=%r",
             ip,
             ok,
+            post_sync_drift,
             (msg or "")[:240],
         )
         if ok:
             QMessageBox.information(self, "Sync Time", msg)
         else:
             QMessageBox.warning(self, "Sync Time", msg)
+        if not ok:
+            return
+        # Use wall-clock drift from Sync Time — log-line drift stays skewed until new logs.
+        drift_val: float | None
+        try:
+            drift_val = float(post_sync_drift) if post_sync_drift is not None else 0.0
+        except (TypeError, ValueError):
+            drift_val = 0.0
         fleet_timesync_logger().info(
-            "time_sync UI: after message box, scheduling drift_refresh ip=%s", ip
+            "time_sync UI: applying post-sync wall-clock drift ip=%s drift=%s",
+            ip,
+            drift_val,
         )
+        from gui.fleet_worker import schedule_single_host_drift_refresh
+
         schedule_single_host_drift_refresh(
             self._vm.thread_pool(),
             self._fleet_tab.database_manager(),
             ip,
             emitter=self._fleet_drift_emitter,
+            drift_override=drift_val,
         )
 
     def _on_heartbeat_fleet(self, data: object) -> None:
@@ -3148,6 +3770,8 @@ class MainWindow(QMainWindow):
             fleet_timesync_logger().info(
                 "scheduling single-host drift_refresh thread for ip=%s", ip
             )
+            from gui.fleet_worker import schedule_single_host_drift_refresh
+
             schedule_single_host_drift_refresh(
                 self._vm.thread_pool(),
                 self._fleet_tab.database_manager(),
@@ -3158,6 +3782,8 @@ class MainWindow(QMainWindow):
             fleet_timesync_logger().info(
                 "scheduling remote time sync (background) for ip=%s", ip
             )
+            from gui.fleet_worker import schedule_remote_time_sync
+
             schedule_remote_time_sync(
                 self._vm.thread_pool(),
                 ip,
@@ -3169,19 +3795,30 @@ class MainWindow(QMainWindow):
             self._begin_remote_screen_capture(ip)
 
     def _on_incidents_capture_screen_clicked(self) -> None:
-        ip = (self._ip_edit.text() or "").strip()
+        ip = self._get_remote_ip()
         if not ip:
             QMessageBox.information(
                 self,
                 "Capture Screen",
-                "Enter a remote host IP in Connection settings first.",
+                "Enter a different remote host IP (not this machine) in "
+                "Connection settings first.",
             )
             return
         self._begin_remote_screen_capture(ip)
 
     def _begin_remote_screen_capture(self, ip: str) -> None:
+        from network.app_runtime import is_this_host
+
         ip = (ip or "").strip()
         if not ip:
+            return
+        if is_this_host(ip):
+            QMessageBox.information(
+                self,
+                "Capture Screen",
+                "Remote screen capture targets another cabinet. "
+                "This host is the local machine — use Remote IP for a different EGM.",
+            )
             return
         if self._remote_capture_busy:
             return
@@ -3218,6 +3855,8 @@ class MainWindow(QMainWindow):
         self._status.setText("Ready")
         if ok:
             self._last_remote_screenshot_path = msg
+            from gui.screenshot_preview_dialog import ScreenshotPreviewDialog
+
             ScreenshotPreviewDialog(msg, self).exec()
         else:
             QMessageBox.warning(self, "Capture Screen", msg)
@@ -3233,42 +3872,28 @@ class MainWindow(QMainWindow):
             )
             return
 
-        from network.ram_clear import (
-            ram_clear_summary_for_confirm,
-            resolve_ram_clear_plan,
+        from gui.ram_clear_ui import ram_clear_confirm_text, resolve_ram_clear_run
+
+        tip = (self._ip_edit.text() or "").strip()
+        remote, ip, plan, run_label = resolve_ram_clear_run(
+            ui_remote=self._radio_remote.isChecked(),
+            target_ip=tip,
         )
-
-        remote = self._radio_remote.isChecked()
-        ip = (self._ip_edit.text() or "").strip()
-        plan = None if remote else resolve_ram_clear_plan()
-
-        if remote:
-            if not ip:
-                QMessageBox.information(
-                    self,
-                    "RAM Clear",
-                    "Enter a remote host IP in Connection settings first.",
-                )
-                return
-            confirm_text = (
-                f"Remote host: {ip}\n\n"
-                "The cabinet will be scanned for slot or roulette RAM-clear layout.\n\n"
-                "This will:\n"
-                "• Close the running game (Ruleta / OneHand / game-start)\n"
-                "• Stop all GoldClub services and related processes\n"
-                "• Run the RAM-clear maintenance chain (backup + cleanup)\n"
-                "• Restart GoldClub services and auto-start the game (Ruleta / OneHand)\n\n"
-                "State folders may be wiped after backup. This cannot be undone easily."
+        cabinet_label = (
+            self._fleet_machine_display_name(ip) if remote and ip else "this EGM"
+        )
+        if remote and not ip:
+            QMessageBox.information(
+                self,
+                "RAM Clear",
+                "Enter a remote host IP in Connection settings first.",
             )
-        else:
-            if plan is None:
-                QMessageBox.information(
-                    self,
-                    "RAM Clear",
-                    "No slot or roulette RAM-clear layout found on this machine.",
-                )
-                return
-            confirm_text = ram_clear_summary_for_confirm(plan)
+            return
+        confirm_text = ram_clear_confirm_text(
+            remote=remote,
+            cabinet_label=cabinet_label,
+            plan=plan,
+        )
 
         reply = QMessageBox.warning(
             self,
@@ -3284,10 +3909,10 @@ class MainWindow(QMainWindow):
             self._live_toggle.setChecked(False)
 
         self._ram_clear_busy = True
-        self._ram_clear_btn.setEnabled(False)
-        self._ram_clear_btn.setText("RAM Clear…")
+        self._ram_clear_target_label = cabinet_label if remote else run_label
+        self._act_ram_clear.setEnabled(False)
         sb = self.statusBar()
-        target = ip if remote else (plan.game_kind if plan else "local")
+        target = self._ram_clear_target_label
         sb.showMessage(f"RAM Clear running ({target})…", 0)
         self._status.setText(f"RAM Clear running ({target})…")
         QApplication.processEvents()
@@ -3296,32 +3921,48 @@ class MainWindow(QMainWindow):
             local=not remote,
             ip=ip if remote else None,
             plan=plan,
+            cabinet_label=cabinet_label if remote else None,
             emitter=self._ram_clear_emitter,
         )
 
+    def _on_ram_clear_progress(self, message: str) -> None:
+        text = (message or "").strip() or "RAM Clear running…"
+        label = getattr(self, "_ram_clear_target_label", "") or ""
+        if label and label not in text and not text.startswith(label):
+            text = f"{label}: {text}"
+        if len(text) > 140:
+            text = text[:137] + "…"
+        sb = self.statusBar()
+        sb.showMessage(text, 0)
+        self._status.setText(text)
+
     def _on_ram_clear_finished(self, ok: bool, msg: str) -> None:
+        from gui.ram_clear_ui import format_ram_clear_finished_dialog
+
         self._ram_clear_busy = False
-        self._ram_clear_btn.setText("RAM Clear")
         self._update_ram_clear_button_enabled()
         sb = self.statusBar()
         sb.clearMessage()
         self._status.setText("Ready")
-        if ok:
-            QMessageBox.information(self, "RAM Clear", msg)
+        label = getattr(self, "_ram_clear_target_label", "") or ""
+        display_ok, body = format_ram_clear_finished_dialog(
+            ok=ok, msg=msg, label=label
+        )
+        if display_ok:
+            QMessageBox.information(self, "RAM Clear", body)
         else:
-            QMessageBox.critical(self, "RAM Clear", msg)
+            QMessageBox.critical(self, "RAM Clear", body)
 
     def _on_verify_sas_clicked(self) -> None:
         path = (self._path_edit.text() or "").strip()
         if not path:
             QMessageBox.warning(self, "Path Required", "Please set a Scan Root path first.")
             return
-        from network.goldclub_paths import extract_ip_from_path, portable_app_dir, resolve_log_scan_root
+        from network.goldclub_paths import extract_ip_from_path, portable_app_dir, resolve_sas_verify_scan_root
 
-        remote_ip = None
-        if self._radio_remote.isChecked():
-            remote_ip = self._ip_edit.text().strip() or None
-        discovery = resolve_log_scan_root(
+        # None when Local, or Remote pointed at this machine (on-cabinet run).
+        remote_ip = self._get_remote_ip()
+        discovery = resolve_sas_verify_scan_root(
             path,
             remote_ip=remote_ip or extract_ip_from_path(path),
             exe_dir=portable_app_dir(),
@@ -3331,6 +3972,8 @@ class MainWindow(QMainWindow):
             self._status.setText(
                 f"SAS verify: auto-detected {discovery.game_kind} logs at {resolved}"
             )
+        from gui.sas_verify_dialog import SasVerifyDialog
+
         dlg = SasVerifyDialog(
             self._vm,
             self._vm.thread_pool(),
@@ -3355,6 +3998,9 @@ class MainWindow(QMainWindow):
         _ = qr_text
         self._btn_verify_sas.setEnabled(True)
         self._btn_verify_sas.setText(self._btn_verify_sas_default_text)
+        from network.meter_comparator import compare_sas_and_xml
+        from network.sas_decoder import parse_sas_log_file
+
         comparison = compare_sas_and_xml(self._pending_sas_file, state_text)
         raw_sas = parse_sas_log_file(self._pending_sas_file)
         try:
@@ -3367,6 +4013,8 @@ class MainWindow(QMainWindow):
             sas_body,
             log_root=self._path_edit.text().strip(),
         )
+        from gui.sas_dialog import SASVerificationReportDialog
+
         dlg = SASVerificationReportDialog(
             gm2au_report_plain=comparison,
             slotlog_report_plain=slot_report,
@@ -3414,6 +4062,8 @@ class MainWindow(QMainWindow):
             return
         self._begin_fleet_op()
         self._fleet_tab.set_busy_text("Refreshing fleet…")
+        from gui.fleet_worker import schedule_fleet_refresh
+
         schedule_fleet_refresh(
             self._vm.thread_pool(),
             self._fleet_tab.database_manager(),
@@ -3435,13 +4085,35 @@ class MainWindow(QMainWindow):
         ip = (ip or "").strip()
         if not ip:
             return "—"
+        from network.fleet_scanner import is_resolved_cabinet_name, resolve_cabinet_name
+
+        # Always prefer live cabinet identity (ProductSerialNumber / DNS) over a
+        # stale fleet-DB label left from a previous product on the same IP.
+        live = resolve_cabinet_name(ip)
+        if is_resolved_cabinet_name(live):
+            mgr = self._fleet_tab.database_manager()
+            eng = mgr.create_engine()
+            try:
+                sf = mgr.session_factory(eng)
+                with sf() as session:
+                    m = mgr.get_machine_by_ip(session, ip)
+                    if m is not None and (m.name or "").strip().casefold() != live.casefold():
+                        m.name = live
+                        m.enrollment_status = None
+                        session.commit()
+            except OSError:
+                pass
+            finally:
+                eng.dispose()
+            return format_machine_label(live, ip)
+
         mgr = self._fleet_tab.database_manager()
         eng = mgr.create_engine()
         try:
             sf = mgr.session_factory(eng)
             with sf() as session:
                 m = mgr.get_machine_by_ip(session, ip)
-                if m is not None:
+                if m is not None and (m.name or "").strip():
                     return format_machine_label(m.name, m.ip_address)
         except OSError:
             pass
@@ -3465,11 +4137,7 @@ class MainWindow(QMainWindow):
         except ValueError as e:
             QMessageBox.warning(self, "Log Janitor", str(e))
             return
-        try:
-            reachable = Path(root).is_dir()
-        except OSError:
-            reachable = False
-        if not reachable:
+        if not is_dir_reachable(root):
             QMessageBox.warning(
                 self,
                 "Log Janitor",
@@ -3492,6 +4160,8 @@ class MainWindow(QMainWindow):
         )
         if ans != QMessageBox.StandardButton.Yes:
             return
+        from network.log_janitor import LogJanitorWorker
+
         worker = LogJanitorWorker(root, self)
         self._janitor_worker = worker
         self._janitor_busy_ip = ip
@@ -3526,11 +4196,7 @@ class MainWindow(QMainWindow):
         if not root:
             QMessageBox.warning(self, "Live Watch", "Could not set scan root for this host.")
             return
-        try:
-            ok = Path(root).exists()
-        except OSError:
-            ok = False
-        if not ok:
+        if not is_dir_reachable(root):
             QMessageBox.warning(self, "Live Watch", f"Scan root is not reachable:\n{root}")
             return
         if not self._live_toggle.isChecked():
@@ -3575,16 +4241,22 @@ class MainWindow(QMainWindow):
         return None
 
     def _get_remote_ip(self) -> str | None:
-        """Host IP when Remote IP mode is active; ``None`` for local file scan."""
-        if not self._radio_remote.isChecked():
-            return None
-        tip = (self._ip_edit.text() or "").strip()
-        return tip or None
+        """Host IP for remote tools, or ``None`` when ops should stay local.
+
+        Remote UI pointed at this machine (Investigator on that EGM) returns
+        ``None`` so sub-tools never try PsExec/UNC against self.
+        """
+        from network.app_runtime import effective_remote_ip
+
+        return effective_remote_ip(
+            ui_remote=self._radio_remote.isChecked(),
+            target_ip=(self._ip_edit.text() or "").strip(),
+        )
 
     def _machine_info_for_case_pack(self) -> dict:
         vm = self._vm.get_current_machine_info()
-        remote = self._radio_remote.isChecked()
-        tip = (self._ip_edit.text() or "").strip() if remote else ""
+        tip = self._get_remote_ip() or ""
+        remote = bool(tip)
         hostname_remote: str | None = None
         drift: float | None = None
         if remote and tip:
@@ -3614,18 +4286,37 @@ class MainWindow(QMainWindow):
         self._restore_window_geometry()
 
     def _try_restore_last_session_snapshot(self) -> None:
+        from network.app_runtime import get_app_runtime, prefer_local_connection_at_launch
+
         meta = self._vm.load_session_state()
         if not meta:
             return
+        self._session_connection_restored = True
         ld = (meta.get("log_directory") or "").strip()
         if ld:
             self._last_scan_roots = [ld]
         cm = (meta.get("connection_mode") or "local").strip().lower()
+        rip = str(meta.get("remote_ip") or "").strip()
+        if prefer_local_connection_at_launch(saved_mode=cm, saved_remote_ip=rip):
+            cm = "local"
+            ctx = get_app_runtime()
+            from network.goldclub_paths import is_game_image_drive_path
+
+            if (
+                ld.startswith("\\\\")
+                and ctx.local_scan_root
+                and not is_game_image_drive_path(ctx.local_scan_root)
+            ):
+                ld = ctx.local_scan_root
+                self._last_scan_roots = [ld]
+            elif is_game_image_drive_path(ld):
+                # Session snapshot remembered G:\ — drop it; ask/pick a real root.
+                ld = self._default_local_scan_root()
+                self._last_scan_roots = [ld] if ld else []
         if cm == "remote":
             self._radio_remote.setChecked(True)
-            rip = meta.get("remote_ip")
             if rip:
-                self._ip_edit.setText(str(rip).strip())
+                self._ip_edit.setText(rip)
         else:
             self._radio_local.setChecked(True)
             if ld:
@@ -3634,8 +4325,20 @@ class MainWindow(QMainWindow):
                 self._path_edit.blockSignals(False)
         self._apply_mode_to_widgets()
         self._refresh_dashboard()
+        ctx = get_app_runtime()
         if ld:
             self._queue_version_fetch(ld)
+            prefix = "Running on local EGM — " if ctx.on_local_egm else ""
+            self._status.setText(f"{prefix}Restored session — logs at {ld}")
+        elif cm == "remote":
+            ip = self._ip_edit.text().strip() or DEFAULT_REMOTE_IP
+            self._status.setText(f"Restored session — remote logs at {format_unc_log_root(ip)}")
+        else:
+            self._status.setText(
+                "Running on local EGM — restored session"
+                if ctx.on_local_egm
+                else "Restored session"
+            )
 
     def _refresh_forensic_status_if_busy(self) -> None:
         sb = self.statusBar()
@@ -3709,19 +4412,28 @@ class MainWindow(QMainWindow):
         self._settings.sync()
 
     def _start_async_session_save(self) -> None:
-        remote = self._radio_remote.isChecked()
+        tip = self._get_remote_ip()
+        remote = tip is not None
         emitter = _SessionSaveEmitter(self)
         self._shutdown_save_emitter = emitter
-        emitter.finished.connect(self._complete_async_shutdown)
+        self._shutdown_save_completed = False
+        self._shutdown_save_timed_out = False
+        emitter.finished.connect(self._on_session_save_finished)
         self._vm.thread_pool().start(
             _SessionSaveRunnable(
                 self._vm,
                 log_directory=(self._path_edit.text() or "").strip(),
                 connection_mode="remote" if remote else "local",
-                remote_ip=(self._ip_edit.text() or "").strip() if remote else None,
+                remote_ip=tip,
                 emitter=emitter,
             )
         )
+
+    def _on_session_save_finished(self) -> None:
+        if self._shutdown_save_completed:
+            return
+        self._shutdown_save_completed = True
+        self._complete_async_shutdown()
 
     def _begin_app_shutdown(self) -> None:
         """Tear down workers and exit the process (title-bar X, taskbar Close, Alt+F4)."""
@@ -3759,18 +4471,24 @@ class MainWindow(QMainWindow):
         self._save_connection_settings()
         self._start_async_session_save()
 
-        app = QApplication.instance()
-        if app is not None:
-            app.setQuitOnLastWindowClosed(True)
-            app.quit()
-        QTimer.singleShot(750, lambda: os._exit(0))
+        # Wait for session save to finish before quitting. Keep a bounded
+        # emergency exit so a hung DB write cannot block forever.
+        QTimer.singleShot(15_000, self._on_shutdown_save_timeout)
+
+    def _on_shutdown_save_timeout(self) -> None:
+        if self._shutdown_save_completed:
+            return
+        self._shutdown_save_timed_out = True
+        self._complete_async_shutdown()
 
     def _complete_async_shutdown(self) -> None:
         self._shutdown_save_emitter = None
         app = QApplication.instance()
         if app is not None:
+            app.setQuitOnLastWindowClosed(True)
             app.quit()
-        QTimer.singleShot(100, lambda: os._exit(0))
+        # Short grace for Qt teardown; do not race the session save.
+        QTimer.singleShot(250, lambda: os._exit(0))
 
     def nativeEvent(self, eventType, message):  # type: ignore[override]
         # Hidden windows may not receive a second closeEvent; hard-exit on WM_CLOSE.
@@ -3801,6 +4519,12 @@ class MainWindow(QMainWindow):
 
 
 def run_app() -> int:
+    from gui.app_logging import configure_app_logging, get_logger
+
+    log_path = configure_app_logging()
+    log = get_logger(__name__)
+    log.info("run_app starting log_file=%s", log_path)
+
     fleet_timesync_logger()
     app = QApplication.instance() or QApplication([])
     app.setApplicationName("Log Investigator")
@@ -3808,7 +4532,7 @@ def run_app() -> int:
     app.setQuitOnLastWindowClosed(True)
     app.setStyle("Fusion")
     from gui.app_branding import apply_app_icon
-    from gui.win_title_bar import apply_title_bar_theme, install_title_bar_theme_filter
+    from gui.win_title_bar import install_title_bar_theme_filter, schedule_title_bar_theme
 
     apply_app_icon(app)
 
@@ -3817,6 +4541,7 @@ def run_app() -> int:
 
     win = MainWindow()
     win.show()
-    # Native HWND is reliable after the first event-loop tick.
-    QTimer.singleShot(0, lambda: apply_title_bar_theme(win, SettingsManager.get_theme()))
+    # Native HWND is reliable after the first event-loop tick; setStyleSheet may
+    # recreate it again shortly after show — schedule a few retries.
+    schedule_title_bar_theme(win, SettingsManager.get_theme())
     return app.exec()

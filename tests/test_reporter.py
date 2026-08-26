@@ -1,4 +1,4 @@
-﻿"""Reporter signature and collapse grouping helpers."""
+"""Reporter signature and collapse grouping helpers."""
 
 from datetime import datetime, timezone
 

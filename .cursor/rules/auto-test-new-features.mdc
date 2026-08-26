@@ -1,0 +1,39 @@
+---
+description: After implementing features/fixes, add and run automated tests (no auto exe build)
+alwaysApply: true
+---
+
+# Test new work after finishing (no auto exe build)
+
+Do **not** run `.\build_exe.ps1` or rebuild `LogInvestigator.exe` unless the user explicitly asks.
+
+When the user asks for a **feature, fix, or other implementation** and you finish that work, **add or update automated tests** for the new behavior and **run them** before ending your response.
+
+## What to do
+
+1. Prefer pytest under `tests/` (or the package’s existing test module, e.g. `tests/test_config_scanner.py`).
+2. Cover the new/changed behavior with focused unit or integration tests — not an unrelated full-suite dump when a narrow file is enough.
+3. Run the relevant tests from repo root, e.g.:
+
+```powershell
+python -m pytest tests/test_<area>.py -q
+```
+
+Or a single node when appropriate:
+
+```powershell
+python -m pytest tests/test_<area>.py::test_<name> -q
+```
+
+4. Report pass/fail briefly. If tests fail, fix the product or the test before claiming done.
+
+## Skip automated tests when
+
+- The user only asked a question or review (no code changes).
+- Changes are docs/rules-only with no runtime behavior.
+- The user explicitly says not to test.
+- Pure lab one-off scripts with no test harness and no library API to assert (say so; still prefer extracting a testable helper when practical).
+
+## Exe build
+
+Only build the exe when the user requests it (`.\build_exe.ps1`).

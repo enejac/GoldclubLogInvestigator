@@ -30,6 +30,23 @@ def test_critical_chip() -> None:
     assert quick_filter_match(_inc(severity="CRITICAL"), q)
     assert not quick_filter_match(_inc(severity="MEDIUM"), q)
     assert quick_filter_match(_inc(severity="LOW", line_snippet="something FATAL x"), q)
+    # "Error" in the message / error_type must not pull MEDIUM into Critical.
+    assert not quick_filter_match(
+        _inc(
+            severity="MEDIUM",
+            error_type="Error Log Line",
+            line_snippet="2026-07-23T21:06:49.078+00:00 INFO  [LogDaemon] Spawning error path check",
+        ),
+        q,
+    )
+    assert not quick_filter_match(
+        _inc(
+            severity="MEDIUM",
+            error_type="Error Log Line",
+            line_snippet="2026-07-23T21:06:49.078+00:00 WARN  [:] Proxy error: channel_name=switch0",
+        ),
+        q,
+    )
 
 
 def test_warn_chip() -> None:

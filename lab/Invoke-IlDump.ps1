@@ -18,8 +18,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$here = $PSScriptRoot
-$sourceCs = Join-Path $here 'IlDump.cs'
+$RepoRoot = Split-Path $PSScriptRoot -Parent
+$sourceCs = Join-Path $RepoRoot 'probes\IlDump.cs'
 if (-not (Test-Path -LiteralPath $sourceCs)) { throw "Missing $sourceCs" }
 
 $remoteDirUnc = "\\$ComputerName\c`$\Windows\Temp\ildump"

@@ -104,9 +104,29 @@ def test_settings_manager_theme_roundtrip(isolated_settings: None) -> None:
     assert SettingsManager.get_theme() == THEME_DARK
 
 
+def test_config_scanner_auto_start_stack_default_on(isolated_settings: None) -> None:
+    assert SettingsManager.get_config_scanner_auto_start_stack() is True
+    SettingsManager.set_config_scanner_auto_start_stack(False)
+    assert SettingsManager.get_config_scanner_auto_start_stack() is False
+    SettingsManager.set_config_scanner_auto_start_stack(True)
+    assert SettingsManager.get_config_scanner_auto_start_stack() is True
+
+
 def test_settings_manager_theme_invalid_reverts_on_set(isolated_settings: None) -> None:
     SettingsManager.set_theme("NotATheme")
     assert SettingsManager.get_theme() == THEME_SYSTEM
+
+
+def _geometry_that_fits(fraction: float) -> tuple[int, int, int, int]:
+    """Pick a window rect inside the current screen so the WM cannot clamp it."""
+    from PySide6.QtGui import QGuiApplication
+
+    avail = QGuiApplication.primaryScreen().availableGeometry()
+    w = max(320, int(avail.width() * fraction))
+    h = max(240, int(avail.height() * fraction))
+    x = avail.x() + (avail.width() - w) // 4
+    y = avail.y() + (avail.height() - h) // 4
+    return x, y, w, h
 
 
 def test_main_window_geometry_roundtrip(isolated_settings: None) -> None:
@@ -115,16 +135,14 @@ def test_main_window_geometry_roundtrip(isolated_settings: None) -> None:
     from PySide6.QtWidgets import QApplication, QMainWindow
 
     app = QApplication.instance() or QApplication(sys.argv)
+    x, y, w, h = _geometry_that_fits(0.5)
     win = QMainWindow()
-    win.setGeometry(120, 80, 960, 640)
+    win.setGeometry(x, y, w, h)
     SettingsManager.save_main_window_geometry(win)
-    win.setGeometry(0, 0, 800, 600)
+    win.setGeometry(0, 0, 320, 240)
     assert SettingsManager.restore_main_window_geometry(win)
     geo = win.geometry()
-    assert geo.x() == 120
-    assert geo.y() == 80
-    assert geo.width() == 960
-    assert geo.height() == 640
+    assert (geo.x(), geo.y(), geo.width(), geo.height()) == (x, y, w, h)
     app.processEvents()
 
 
@@ -134,14 +152,12 @@ def test_sas_verify_dialog_geometry_roundtrip(isolated_settings: None) -> None:
     from PySide6.QtWidgets import QApplication, QDialog
 
     app = QApplication.instance() or QApplication(sys.argv)
+    x, y, w, h = _geometry_that_fits(0.6)
     dlg = QDialog()
-    dlg.setGeometry(220, 140, 1180, 780)
+    dlg.setGeometry(x, y, w, h)
     SettingsManager.save_sas_verify_dialog_geometry(dlg)
-    dlg.setGeometry(0, 0, 800, 600)
+    dlg.setGeometry(0, 0, 320, 240)
     assert SettingsManager.restore_sas_verify_dialog_geometry(dlg)
     geo = dlg.geometry()
-    assert geo.x() == 220
-    assert geo.y() == 140
-    assert geo.width() == 1180
-    assert geo.height() == 780
+    assert (geo.x(), geo.y(), geo.width(), geo.height()) == (x, y, w, h)
     app.processEvents()

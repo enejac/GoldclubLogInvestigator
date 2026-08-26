@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 import re
 
 ip = "10.0.0.90"

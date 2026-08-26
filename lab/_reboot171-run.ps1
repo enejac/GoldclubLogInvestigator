@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 $ErrorActionPreference = 'Continue'
 $Repo = 'c:\Users\Ezbogar\GoldclubLogInvestigator'
 $IP = '10.0.0.171'
@@ -99,7 +99,7 @@ $bridge.Samples | ForEach-Object { Write-Host "  $_" }
 $wakeRan = $false
 if ($bridge.COM11 -and -not $bridge.Port31150) {
     Write-Host "=== Running Invoke-WakeSasBridge (partial bridge) ===" -ForegroundColor Cyan
-    & "$Repo\Invoke-WakeSasBridge.ps1" -ComputerName $IP -SkipClearPendingAft
+    & "$Repo\lab\Invoke-WakeSasBridge.ps1" -ComputerName $IP -SkipClearPendingAft
     $wakeRan = $true
     Start-Sleep -Seconds 30
     if (Test-Path $logFile) {
@@ -111,7 +111,7 @@ if ($bridge.COM11 -and -not $bridge.Port31150) {
 }
 
 Write-Host "=== Capture-CabinetSasState -Label after ===" -ForegroundColor Cyan
-& "$Repo\Capture-CabinetSasState.ps1" -IP $IP -Label after
+& "$Repo\lab\Capture-CabinetSasState.ps1" -IP $IP -Label after
 
 Write-Host "=== SUMMARY ===" -ForegroundColor Cyan
 Write-Host "RebootConfirmed: $rebootConfirmed"

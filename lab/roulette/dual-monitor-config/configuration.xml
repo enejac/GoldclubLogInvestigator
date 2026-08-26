@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<config generator="GoldClub.Settings.XML, GoldClub.Settings, Version=2.5.2.6108, Culture=neutral, PublicKeyToken=null" content-type="gcxml" xmlns="config">
+  <bindings>
+    <binding0>
+      <DisplayId>PCIROOT(0)#PCI(0100)#PCI(0000)#PCI(0800)#PCI(0000):348160</DisplayId>
+      <hints>
+        <height>1080</height>
+        <width>1920</width>
+        <x>0</x>
+        <y>0</y>
+      </hints>
+      <layout>
+        <right>ruleta:player2</right>
+      </layout>
+      <Screen>ruleta:player1</Screen>
+    </binding0>
+    <binding1>
+      <DisplayId>PCIROOT(0)#PCI(0100)#PCI(0000)#PCI(0800)#PCI(0000):348163</DisplayId>
+      <hints>
+        <height>1080</height>
+        <width>1920</width>
+        <x>1920</x>
+        <y>0</y>
+      </hints>
+      <layout>
+        <left>ruleta:player1</left>
+      </layout>
+      <Screen>ruleta:player2</Screen>
+    </binding1>
+  </bindings>
+</config>

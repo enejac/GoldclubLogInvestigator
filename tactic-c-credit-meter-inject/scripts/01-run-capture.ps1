@@ -31,7 +31,7 @@ $ErrorActionPreference = 'Stop'
 # ------------------------------------------------------------------
 
 $repoRoot = (Get-Item $PSScriptRoot).Parent.Parent.FullName
-$wdSniff = Join-Path $repoRoot 'WdSniff.cs'
+$wdSniff = Join-Path $repoRoot 'probes\WdSniff.cs'
 $wdNetdump = Join-Path $repRoot 'WdNetdump.exe'  # Need to check if this exists
 
 if (-not (Test-Path $PsExecPath)) {

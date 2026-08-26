@@ -2,8 +2,8 @@
   "version": 1,
   "description": "Known bug patterns for Log Investigator auto-triage. Swap TBD-GC-* keys for real Jira issue keys when available.",
   "jira": {
-    "baseUrl": "https://your-domain.atlassian.net",
-    "projectKey": "GC"
+    "baseUrl": "https://winsytemsintl.atlassian.net",
+    "projectKey": "RSW"
   },
   "issues": [
     {
@@ -21,7 +21,10 @@
       "severityFilter": null,
       "probableCause": "Known issue GCI-AFT-001: AFT transfer bucket labels differ across sasmsgr, Aurum, OneHand (promo:0 / cashable:0 pool tags), SlotLog, and WAT meters. Use aft_transfer.correlate_aft_transfer or issues/GCI-AFT-001-transfer-type-naming.md. :0 is pool index, not amount.",
       "jiraBugKey": "TBD-GC-XXXX",
-      "jiraTestKeys": ["TBD-GC-TC-XXXX", "TBD-GC-TC-YYYY"],
+      "jiraTestKeys": [
+        "TBD-GC-TC-XXXX",
+        "TBD-GC-TC-YYYY"
+      ],
       "localTicket": "issues/GCI-AFT-001-transfer-type-naming.md"
     },
     {
@@ -87,6 +90,33 @@
       "localTicket": null
     },
     {
+      "id": "GCI-ROULETTE-006",
+      "name": "Roulette number on screen mismatch",
+      "triggerPatterns": [
+        "ERR:\\s*number on screen\\s*:\\s*\\d+"
+      ],
+      "severityFilter": "CRITICAL",
+      "probableCause": "Known issue GCI-ROULETTE-006: Wheel/sensor result disagrees with on-screen number (ruleta Roulette ERRO). Correlate READBALL / HIT / STOP ON INDEX in the same second and check RNG/wheel hardware.",
+      "jiraBugKey": "TBD-GC-ROULETTE-006",
+      "jiraTestKeys": [],
+      "localTicket": null
+    },
+    {
+      "id": "GCI-ROULETTE-007",
+      "name": "Roulette ERROR N screen (Godot UI closed)",
+      "triggerPatterns": [
+        "<TRIAL\\s+error\\s*=\\s*[\"']\\d+[\"']\\s+type\\s*=\\s*[\"']DISPLAYED[\"']",
+        "\\bTrial\\s+expired!!!",
+        "\\bTRIAL\\s+EXPIRED\\s+ON\\b",
+        "\\bDongle mismatch!!!"
+      ],
+      "severityFilter": "CRITICAL",
+      "probableCause": "Known issue GCI-ROULETTE-007: Classic Roulette ERROR N window interrupted the game (Godot UI closed). ERROR 30 after RAM clear is leftover ruleta/persistent (RouletteActivate.dat), not DataBase.db and not leftover Aurum XML. ERROR 99 is a fresh LLAVE bind (Dongle mismatch). See data/roulette_error_catalog.json.",
+      "jiraBugKey": "TBD-GC-ROULETTE-007",
+      "jiraTestKeys": [],
+      "localTicket": null
+    },
+    {
       "id": "GCI-GODOT-001",
       "name": "Godot unhandled GUI exception",
       "triggerPatterns": [
@@ -124,6 +154,37 @@
       "jiraBugKey": "TBD-GC-GODOT-003",
       "jiraTestKeys": [],
       "localTicket": null
+    },
+    {
+      "id": "GCI-RSW-6452",
+      "name": "Unable to bet/cashout until chip selected (denom vs chip index)",
+      "triggerPatterns": [
+        "Unable to bet and cashout until you select a chip",
+        "cannot place bets.*select.*chip",
+        "denominations selector"
+      ],
+      "severityFilter": null,
+      "probableCause": "Known issue RSW-6452 / Xray RSW-6534: chip GUI position higher than enabled denomination count leaves betting stuck until another chip is selected. Reproduce with automation/xray_recipes/RSW-6534.yaml (bill inject + mapped clicks).",
+      "jiraBugKey": "RSW-6452",
+      "jiraTestKeys": [
+        "RSW-6534"
+      ],
+      "localTicket": null
+    },
+    {
+      "id": "GCI-ROULETTE-008",
+      "name": "Wrong trial serial shows ERROR 30 with CABINET_DOOR text",
+      "triggerPatterns": [
+        "ERROR:\\s*30",
+        "logicaldoormapping:CABINET_DOOR",
+        "<TRIAL\\s+error\\s*=\\s*[\"']30[\"']",
+        "MONITOR,\\s*position:1\\s+ABIERTA"
+      ],
+      "severityFilter": "CRITICAL",
+      "probableCause": "Known bug GCI-ROULETTE-008 (lab .90, 2026-07-27): entering a wrong trial/serial on the licence ERROR 30 (LLAVE) screen shows door-open text MONITOR position:1 ABIERTA / CABINET_DOOR instead of a serial-validation failure. Evidence: _tmp_logs/bug_evidence/wrong_serial_error30/. ERROR 30 is the trial UI (RSW-2473); door wording normally belongs to ERROR 31 switch family.",
+      "jiraBugKey": "TBD-GC-ROULETTE-008",
+      "jiraTestKeys": [],
+      "localTicket": "_tmp_logs/bug_evidence/wrong_serial_error30/NOTES.txt"
     }
   ]
 }

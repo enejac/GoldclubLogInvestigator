@@ -109,14 +109,40 @@ class RestoreResult:
     written_count: int
     missing_count: int
     errors: tuple[str, ...]
+    skipped_count: int = 0
+    written_paths: tuple[str, ...] = ()
 
 
 def restore_manifest_files(
     snapshot_dir: Path,
     manifest: Manifest,
     game_drive: str,
+    *,
+    relative_path_allow: frozenset[str] | set[str] | None = None,
 ) -> RestoreResult:
-    """Copy archived snapshot files back to the live scan target (overwrite-only)."""
+    """Copy archived snapshot files back to the live scan target (overwrite-only).
+
+    When ``relative_path_allow`` is set, only those relative paths are written
+    (used for hardware/software write scopes).
+
+    Always skips serialport COM maps and non-licence machine-identity files
+    even if they appear in the allow-list. Live licence XML is never
+    overwritten. A different dongle is never written. A missing licence is
+    restored only when the snapshot serial matches this cabinet.
+    """
+    from config_scanner.build_version import read_machine_serial_from_target
+    from config_scanner.machine_identity import (
+        decide_licence_write,
+        is_licence_dll_path,
+        is_licence_path,
+        licensee_id_from_licence_bytes,
+        live_has_licence,
+        live_licence_licensee_id,
+        prepare_restore_bytes_preserving_identity,
+        serial_from_licence_bytes,
+    )
+    from config_scanner.write_scope import is_protected_write_path
+
     content_root = snapshot_content_root(snapshot_dir)
     if content_root is None:
         raise FileNotFoundError(
@@ -125,11 +151,34 @@ def restore_manifest_files(
         )
 
     dest_root = scan_target_path(game_drive)
+    live_had_licence = live_has_licence(dest_root)
+    live_licensee_id = live_licence_licensee_id(dest_root)
+    live_serial = read_machine_serial_from_target(game_drive)
+    snapshot_serial: str | None = None
+    try:
+        snapshot_serial = load_build_info(snapshot_dir).machine_serial
+    except (OSError, ValueError, TypeError, KeyError):
+        snapshot_serial = None
+
     written = 0
     missing: list[str] = []
     errors: list[str] = []
+    skipped = 0
+    written_paths: list[str] = []
+
+    allow_norm: set[str] | None = None
+    if relative_path_allow is not None:
+        allow_norm = {p.replace("\\", "/").strip("/") for p in relative_path_allow}
 
     for entry in manifest.files:
+        rel = entry.relative_path.replace("\\", "/").strip("/")
+        if allow_norm is not None and rel not in allow_norm:
+            skipped += 1
+            continue
+        licence = is_licence_path(rel)
+        if not licence and is_protected_write_path(rel):
+            skipped += 1
+            continue
         try:
             dest = safe_join_under(dest_root, entry.relative_path)
             source = safe_join_under(content_root, entry.relative_path)
@@ -139,15 +188,37 @@ def restore_manifest_files(
         if not source.is_file():
             missing.append(entry.relative_path)
             continue
+        if licence:
+            try:
+                dest_exists = dest.is_file()
+            except OSError:
+                dest_exists = False
+            incoming_raw = source.read_bytes()
+            allow, _reason = decide_licence_write(
+                dest_exists=dest_exists,
+                live_has_any=live_had_licence,
+                live_serial=live_serial,
+                snapshot_serial=snapshot_serial,
+                incoming_licence_serial=serial_from_licence_bytes(incoming_raw),
+                incoming_licensee_id=licensee_id_from_licence_bytes(incoming_raw),
+                live_licensee_id=live_licensee_id,
+                is_dll=is_licence_dll_path(rel),
+            )
+            if not allow:
+                skipped += 1
+                continue
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             raw = source.read_bytes()
+            if dest.is_file() and not licence:
+                raw = prepare_restore_bytes_preserving_identity(dest, raw, rel)
             if not _restore_archived_bytes(dest, raw):
                 errors.append(
                     f"{entry.relative_path}: failed to re-encrypt plain setup.xml for live write-back"
                 )
                 continue
             written += 1
+            written_paths.append(entry.relative_path)
         except OSError as exc:
             errors.append(f"{entry.relative_path}: {exc}")
 
@@ -155,6 +226,8 @@ def restore_manifest_files(
         written_count=written,
         missing_count=len(missing),
         errors=tuple(errors),
+        skipped_count=skipped,
+        written_paths=tuple(written_paths),
     )
 
 
@@ -166,7 +239,26 @@ def restore_single_archived_file(
     """Copy one archived snapshot file to the live scan target (create parents).
 
     Plain archived ruleta setup.xml is re-encrypted on write-back.
+    Serialport COM maps and non-licence identity files are refused. Live
+    licence XML is never overwritten. Other XML merges live identity leaves.
     """
+    from config_scanner.build_version import read_machine_serial_from_target
+    from config_scanner.machine_identity import (
+        decide_licence_write,
+        is_licence_dll_path,
+        is_licence_path,
+        licensee_id_from_licence_bytes,
+        live_has_licence,
+        live_licence_licensee_id,
+        prepare_restore_bytes_preserving_identity,
+        serial_from_licence_bytes,
+    )
+    from config_scanner.write_scope import (
+        is_protected_write_path,
+        protected_write_block_reason,
+    )
+
+    rel = relative_path.replace("\\", "/").strip("/")
     content_root = snapshot_content_root(snapshot_dir)
     if content_root is None:
         raise FileNotFoundError(
@@ -180,8 +272,41 @@ def restore_single_archived_file(
         raise FileNotFoundError(
             f"Archived file not found in snapshot:\n{relative_path}"
         )
+
+    if is_licence_path(rel):
+        snapshot_serial = None
+        try:
+            snapshot_serial = load_build_info(snapshot_dir).machine_serial
+        except (OSError, ValueError, TypeError, KeyError):
+            snapshot_serial = None
+        try:
+            dest_exists = dest.is_file()
+        except OSError:
+            dest_exists = False
+        incoming_raw = source.read_bytes()
+        live_had = live_has_licence(dest_root)
+        allow, reason = decide_licence_write(
+            dest_exists=dest_exists,
+            live_has_any=live_had,
+            live_serial=read_machine_serial_from_target(game_drive),
+            snapshot_serial=snapshot_serial,
+            incoming_licence_serial=serial_from_licence_bytes(incoming_raw),
+            incoming_licensee_id=licensee_id_from_licence_bytes(incoming_raw),
+            live_licensee_id=live_licence_licensee_id(dest_root),
+            is_dll=is_licence_dll_path(rel),
+        )
+        if not allow:
+            raise ValueError(reason)
+    elif is_protected_write_path(rel):
+        raise ValueError(
+            protected_write_block_reason(rel)
+            or "Refusing to write protected path from Config Scanner."
+        )
+
     dest.parent.mkdir(parents=True, exist_ok=True)
     raw = source.read_bytes()
+    if dest.is_file() and not is_licence_path(rel):
+        raw = prepare_restore_bytes_preserving_identity(dest, raw, rel)
     if not _restore_archived_bytes(dest, raw):
         raise OSError(
             f"{relative_path}: failed to write/re-encrypt file to live target"
@@ -418,6 +543,7 @@ def merge_build_info_versions(target: BuildInfo, donor: BuildInfo) -> BuildInfo:
         exe_product_version=target.exe_product_version or donor.exe_product_version,
         exe_file_version=target.exe_file_version or donor.exe_file_version,
         exe_product_name=target.exe_product_name or donor.exe_product_name,
+        machine_serial=target.machine_serial or donor.machine_serial,
     )
 
 
@@ -472,6 +598,7 @@ def enrich_snapshot_build_info(
         exe_product_version=merged.exe_product_version,
         exe_file_version=merged.exe_file_version,
         exe_product_name=merged.exe_product_name,
+        machine_serial=existing.machine_serial or refreshed.machine_serial,
     )
     if persist and not build_info_version_fields_missing(merged):
         save_json(snapshot_dir / "build-info.json", build_info_to_dict(merged))
@@ -494,6 +621,7 @@ def build_info_to_dict(info: BuildInfo) -> dict[str, str | None]:
         "exeProductVersion": info.exe_product_version,
         "exeFileVersion": info.exe_file_version,
         "exeProductName": info.exe_product_name,
+        "machineSerial": info.machine_serial,
     }
 
 
@@ -563,4 +691,5 @@ def load_build_info(snapshot_dir: Path) -> BuildInfo:
         exe_product_version=data.get("exeProductVersion") or data.get("exe_product_version"),
         exe_file_version=data.get("exeFileVersion") or data.get("exe_file_version"),
         exe_product_name=data.get("exeProductName") or data.get("exe_product_name"),
+        machine_serial=data.get("machineSerial") or data.get("machine_serial"),
     )

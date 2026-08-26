@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Fetch SAS 6F meter polls over COM (IGT SAS tester batches)."""
 
 from __future__ import annotations

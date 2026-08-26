@@ -12,6 +12,7 @@ config-scanner/          (next to LogInvestigator.exe on USB, or repo root in de
   templates/report.html  seeded on first run
   snapshots/             SHA1 manifests + archived files per scan
   reports/               HTML diff reports
+  browser/               portable Chrome for Testing (Open Report)
   baseline.json          optional baseline snapshot name (set from GUI)
 ```
 
@@ -24,6 +25,9 @@ config-scanner/          (next to LogInvestigator.exe on USB, or repo root in de
 On USB, copy `dist\LogInvestigator.exe` beside a `config-scanner\` folder (created automatically on first use).
 
 Deploy helpers: `.\deploy_usb.ps1`, `.\deploy_egm.ps1` (lab EGM, e.g. `.90`).
+
+HTML reports open in `browser\chrome-win64\chrome.exe` when present, else Chrome/Edge.
+Fetch: `python scripts/fetch_config_scanner_browser.py`
 
 ## Roulette notes
 

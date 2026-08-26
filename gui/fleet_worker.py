@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 import threading
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QRunnable, QThreadPool
 
 from config import FLEET_SNAPSHOT_EXCLUDE_IPV4, format_unc_log_root
 from diag_logging import fleet_timesync_logger
 from database.manager import DatabaseManager, run_sqlite_write_with_retry
+from gui.fleet_emitters import FleetEmitter, TimeSyncEmitter
 from network.fleet_scanner import (
     NetworkScanner,
     check_clock_drift,
@@ -17,21 +18,6 @@ from network.fleet_scanner import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class FleetEmitter(QObject):
-    """Emits serialized fleet rows for the UI thread."""
-
-    scan_progress = Signal(int, int)
-    finished = Signal(object)
-    """``list[dict]`` fleet snapshots, or ``{"__error__": str}``."""
-
-
-class TimeSyncEmitter(QObject):
-    """Remote PsExec time sync finished on a worker thread."""
-
-    finished = Signal(str, bool, str)
-    """``ip``, ``success``, ``message``."""
 
 
 class _FleetSubnetScanRunnable(QRunnable):
@@ -166,19 +152,27 @@ class _FleetRefreshRunnable(QRunnable):
 
 
 class _SingleHostDriftRefreshRunnable(QRunnable):
-    """Re-read newest log timestamp drift for one machine and refresh fleet dicts."""
+    """Update one machine's clock drift in the DB and refresh fleet dicts.
+
+    When ``drift_override`` is set (post Sync Time), write that wall-clock drift
+    instead of re-measuring from log line timestamps (those stay skewed until
+    new logs are written).
+    """
 
     def __init__(
         self,
         manager: DatabaseManager,
         ip_address: str,
         emitter: FleetEmitter,
+        *,
+        drift_override: float | None = None,
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._manager = manager
         self._ip = (ip_address or "").strip()
         self._emitter = emitter
+        self._drift_override = drift_override
 
     def run(self) -> None:
         if not self._ip:
@@ -186,29 +180,38 @@ class _SingleHostDriftRefreshRunnable(QRunnable):
             self._emitter.finished.emit({"__error__": "Empty IP for drift refresh."})
             return
         fleet_timesync_logger().info(
-            "drift worker: begin ip=%s thread=%s",
+            "drift worker: begin ip=%s thread=%s override=%r",
             self._ip,
             threading.current_thread().name,
+            self._drift_override,
         )
         engine = self._manager.create_engine()
         try:
-            try:
-                unc = format_unc_log_root(self._ip)
-            except ValueError as e:
-                fleet_timesync_logger().warning(
-                    "drift worker: bad UNC for ip=%s: %s", self._ip, e
+            if self._drift_override is not None:
+                drift = float(self._drift_override)
+                fleet_timesync_logger().info(
+                    "drift worker: using post-sync wall-clock drift ip=%s drift_seconds=%r",
+                    self._ip,
+                    drift,
                 )
-                self._emitter.finished.emit({"__error__": str(e)})
-                return
-            fleet_timesync_logger().debug(
-                "drift worker: calling check_clock_drift unc=%s", unc
-            )
-            drift = check_clock_drift(unc)
-            fleet_timesync_logger().info(
-                "drift worker: check_clock_drift done ip=%s drift_seconds=%r",
-                self._ip,
-                drift,
-            )
+            else:
+                try:
+                    unc = format_unc_log_root(self._ip)
+                except ValueError as e:
+                    fleet_timesync_logger().warning(
+                        "drift worker: bad UNC for ip=%s: %s", self._ip, e
+                    )
+                    self._emitter.finished.emit({"__error__": str(e)})
+                    return
+                fleet_timesync_logger().debug(
+                    "drift worker: calling check_clock_drift unc=%s", unc
+                )
+                drift = check_clock_drift(unc)
+                fleet_timesync_logger().info(
+                    "drift worker: check_clock_drift done ip=%s drift_seconds=%r",
+                    self._ip,
+                    drift,
+                )
 
             def _write() -> list[dict]:
                 sf = self._manager.session_factory(engine)
@@ -239,7 +242,7 @@ class _SingleHostDriftRefreshRunnable(QRunnable):
 
 
 class _RemoteTimeSyncRunnable(QRunnable):
-    """Runs ``force_remote_time_sync`` off the GUI thread (PsExec can block a long time)."""
+    """Runs ``force_remote_time_sync`` off the GUI thread (WinRM/PsExec can block)."""
 
     def __init__(self, ip: str, emitter: TimeSyncEmitter) -> None:
         super().__init__()
@@ -251,21 +254,21 @@ class _RemoteTimeSyncRunnable(QRunnable):
         from network.time_sync import force_remote_time_sync
 
         fleet_timesync_logger().info(
-            "time_sync worker: PsExec begin ip=%s thread=%s",
+            "time_sync worker: begin ip=%s thread=%s",
             self._ip,
             threading.current_thread().name,
         )
         try:
-            ok, msg = force_remote_time_sync(self._ip)
+            ok, msg, drift = force_remote_time_sync(self._ip)
         except Exception as e:  # noqa: BLE001
             fleet_timesync_logger().exception(
                 "time_sync worker: unexpected error ip=%s", self._ip
             )
-            ok, msg = False, str(e)
+            ok, msg, drift = False, str(e), None
         fleet_timesync_logger().info(
-            "time_sync worker: PsExec end ip=%s ok=%s", self._ip, ok
+            "time_sync worker: end ip=%s ok=%s drift=%r", self._ip, ok, drift
         )
-        self._emitter.finished.emit(self._ip, ok, msg)
+        self._emitter.finished.emit(self._ip, ok, msg, drift)
 
 
 def schedule_remote_time_sync(
@@ -285,15 +288,23 @@ def schedule_single_host_drift_refresh(
     ip_address: str,
     *,
     emitter: FleetEmitter,
+    drift_override: float | None = None,
 ) -> None:
     fleet_timesync_logger().debug(
-        "schedule_single_host_drift_refresh: pool active=%s max=%s ip=%s",
+        "schedule_single_host_drift_refresh: pool active=%s max=%s ip=%s override=%r",
         pool.activeThreadCount(),
         pool.maxThreadCount(),
         (ip_address or "").strip(),
+        drift_override,
     )
-    pool.start(_SingleHostDriftRefreshRunnable(manager, ip_address, emitter))
-
+    pool.start(
+        _SingleHostDriftRefreshRunnable(
+            manager,
+            ip_address,
+            emitter,
+            drift_override=drift_override,
+        )
+    )
 
 def schedule_fleet_subnet_scan(
     pool: QThreadPool,

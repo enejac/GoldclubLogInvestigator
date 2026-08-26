@@ -67,7 +67,7 @@ if (-not $StateRoot) {
     $StateRoot = "\\$ComputerName\c`$\Goldclub\var\state\goldclub.aurum.services\GCMessenger\SASControler1"
 }
 if (-not $OutputDir) {
-    $OutputDir = Join-Path $PSScriptRoot 'aft\report'
+    $OutputDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'aft\report'
 }
 if (-not (Test-Path -LiteralPath $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir | Out-Null

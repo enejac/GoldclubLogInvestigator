@@ -178,7 +178,7 @@ bytes). Two independent $1,000 promo credits landed this way, SAS host connected
 2026-06-15T15:00:30.722+01:00 INFO  [GM2AU_aurumExecute] OneHand.AurumEGM - Cashless In: $1,000.00
 ```
 
-Source: `../../Invoke-WinDivertAft.ps1` / `../../WdInject.cs` (build + inject + verify);
+Source: `../../lab/Invoke-WinDivertAft.ps1` / `../../probes/WdInject.cs` (build + inject + verify);
 full method and evidence in `../RUNBOOK.md`.
 
 ---
@@ -226,7 +226,7 @@ evidence in `../RUNBOOK.md`.
 
 | Approach | Feasibility on this hop | Notes |
 |---|---|---|
-| Inject a segment INTO the existing `31150 → ephemeral` flow at `SEQ+payloadLen` via WinDivert | **Works (proven)** | 2026-06-15: two $1,000 promo credits, SAS host connected. Aurum accepts it as next in-order SAS bytes. `../../Invoke-WinDivertAft.ps1` / `../../WdInject.cs` |
+| Inject a segment INTO the existing `31150 → ephemeral` flow at `SEQ+payloadLen` via WinDivert | **Works (proven)** | 2026-06-15: two $1,000 promo credits, SAS host connected. Aurum accepts it as next in-order SAS bytes. `../../lab/Invoke-WinDivertAft.ps1` / `../../probes/WdInject.cs` |
 | Open a new TCP socket to `31100`/`31150` and write a framed `0x72` | **Fails (proven)** | TCP write OK, no `qGMID1:` line, not merged into live stream (§3b-i, `Findings` #6) |
 | Find a third/alternate SAS socket to ride | **Not available** | Only `31100`/`31150` exist; Aurum binds exactly those (`Findings` #6) |
 | Be the actual serial peer on `COM11` | Possible but out of scope | Replacing the IGT tester on the physical SAS link (this is hop 1, upstream) |

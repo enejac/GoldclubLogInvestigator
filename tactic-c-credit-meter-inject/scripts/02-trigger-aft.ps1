@@ -28,8 +28,8 @@ Write-Host "Cabinet     : $ComputerName"
 Write-Host "Amount      : \$$([int]($AmountCents / 100)).00"
 Write-Host ""
 
-$parentProject = 'C:\Users\Ezbogar\GoldclubLogInvestigator'
-$sendScript = Join-Path $parentProject "Send-TestAft1000.ps1"
+$parentProject = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$sendScript = Join-Path $parentProject "lab\Send-TestAft1000.ps1"
 
 if (-not (Test-Path $sendScript)) {
     Write-Host "[!] Send-TestAft1000.ps1 not found at: $sendScript"

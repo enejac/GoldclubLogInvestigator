@@ -1,2 +1,2 @@
-﻿"""Automation: cabinet-driven test runner + parsers."""
+"""Automation: cabinet-driven test runner + parsers."""
 

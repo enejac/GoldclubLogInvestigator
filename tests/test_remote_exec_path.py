@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from automation.remote_exec import resolve_psexec_path
 

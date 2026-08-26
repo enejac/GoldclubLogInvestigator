@@ -70,6 +70,7 @@ def _run_psexec_powershell(ip: str, psexec_path: str, ps_command: str) -> tuple[
     run_kw: dict = {
         "capture_output": True,
         "text": True,
+        "errors": "replace",
         "timeout": _PSEXEC_TIMEOUT_SEC,
     }
     if os.name == "nt":
@@ -93,7 +94,12 @@ def _run_psexec_cmd(ip: str, psexec_path: str, inner_cmd: str) -> None:
         "/c",
         inner_cmd,
     ]
-    run_kw: dict = {"capture_output": True, "text": True, "timeout": 60}
+    run_kw: dict = {
+        "capture_output": True,
+        "text": True,
+        "errors": "replace",
+        "timeout": 60,
+    }
     if os.name == "nt":
         run_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:

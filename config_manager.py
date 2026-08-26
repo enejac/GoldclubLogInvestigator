@@ -28,6 +28,10 @@ _KEY_VENICE_MODEL = "ai/venice_model"
 _KEY_AI_PROVIDER = "ai/provider"
 _KEY_CONFIG_SCANNER_GAME_DRIVE = "config_scanner/game_drive"
 _KEY_CONFIG_SCANNER_PROFILE = "config_scanner/profile_id"
+_KEY_CONFIG_SCANNER_AUTO_START_STACK = "config_scanner/auto_start_stack"
+_KEY_AI_HELPER_MODEL_PATH = "ai_helper/model_path"
+_KEY_BOT_PROFILE = "automation/bot_profile"
+_KEY_BOT_CONFIG_PATH = "automation/bot_config_path"
 
 # Venice AI model ids (OpenAI-compatible chat/completions).
 VENICE_MODEL_DEFAULT = "qwen-3-6-plus"
@@ -172,6 +176,32 @@ class SettingsManager:
     def set_config_scanner_profile_id(profile_id: str) -> None:
         s = SettingsManager._s()
         s.setValue(_KEY_CONFIG_SCANNER_PROFILE, str(profile_id).strip())
+        s.sync()
+
+    @staticmethod
+    def get_config_scanner_auto_start_stack() -> bool:
+        """True: Run-FullStack after a cabinet restore/revert (default)."""
+        v = SettingsManager._s().value(_KEY_CONFIG_SCANNER_AUTO_START_STACK, True)
+        if isinstance(v, bool):
+            return v
+        text = str(v).strip().casefold()
+        return text not in {"0", "false", "no", "off"}
+
+    @staticmethod
+    def set_config_scanner_auto_start_stack(enabled: bool) -> None:
+        s = SettingsManager._s()
+        s.setValue(_KEY_CONFIG_SCANNER_AUTO_START_STACK, bool(enabled))
+        s.sync()
+
+    @staticmethod
+    def get_ai_helper_model_path() -> str:
+        v = SettingsManager._s().value(_KEY_AI_HELPER_MODEL_PATH, "")
+        return str(v).strip() if v is not None else ""
+
+    @staticmethod
+    def set_ai_helper_model_path(path: str) -> None:
+        s = SettingsManager._s()
+        s.setValue(_KEY_AI_HELPER_MODEL_PATH, str(path or "").strip())
         s.sync()
 
     @staticmethod
@@ -523,3 +553,26 @@ class SettingsManager:
             s.remove(_KEY_TABLE_HEADER_STATE)
             s.setValue(_KEY_TABLE_HEADER_SCHEMA, _TABLE_HEADER_SCHEMA_CURRENT)
             s.sync()
+
+    @staticmethod
+    def get_bot_profile() -> str:
+        v = SettingsManager._s().value(_KEY_BOT_PROFILE, "emulation")
+        name = str(v).strip() if v is not None else "emulation"
+        return name or "emulation"
+
+    @staticmethod
+    def set_bot_profile(profile: str) -> None:
+        s = SettingsManager._s()
+        s.setValue(_KEY_BOT_PROFILE, str(profile or "emulation").strip() or "emulation")
+        s.sync()
+
+    @staticmethod
+    def get_bot_config_path() -> str:
+        v = SettingsManager._s().value(_KEY_BOT_CONFIG_PATH, "")
+        return str(v).strip() if v is not None else ""
+
+    @staticmethod
+    def set_bot_config_path(path: str) -> None:
+        s = SettingsManager._s()
+        s.setValue(_KEY_BOT_CONFIG_PATH, str(path or "").strip())
+        s.sync()

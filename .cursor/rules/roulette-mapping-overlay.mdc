@@ -1,0 +1,414 @@
+---
+description: Always regenerate and show the roulette hitbox overlay PNG after mapping changes
+alwaysApply: true
+---
+
+# Roulette mapping: always produce the overlay PNG
+
+Whenever you add, move, or re-measure a roulette click target (hitbox area, click
+center, UI button, bet cell), you **must** regenerate the visual overlay and show it
+in your reply. Never report a mapping change with coordinates alone.
+
+## Run after every mapping change
+
+```powershell
+python -m automation.roulette_map_overlay --ip 10.0.0.90
+```
+
+Use `--input <screenshot.png>` when the cabinet is busy or unreachable, and
+`--mode ui|board|stats|all` to limit the view.
+
+`stats` maps the modal statistics screen, so it needs a capture taken while that
+panel is open:
+
+```powershell
+python -m automation.roulette_map_overlay --input _tmp_logs/map_overlay/verify_topleft/stats_closed.png --mode stats
+```
+
+## Outputs (always overwritten)
+
+- `_tmp_logs/map_overlay/overlay_all.png` — bets + UI
+- `_tmp_logs/map_overlay/overlay_ui.png` — UI chrome only
+- `_tmp_logs/map_overlay/overlay_board.png` — bet cloth only
+- `_tmp_logs/map_overlay/overlay_stats.png` — statistics modal
+- `_tmp_logs/map_overlay/overlay_verified.png` — live pass/fail per bet spot
+- `_tmp_logs/map_overlay/overlay_anchors.png` — inside-bet anchors from the registry
+- `_tmp_logs/map_overlay/screen_base.png` — raw capture used
+
+## Two skins, one toolchain
+
+Every tool takes `--layout layout1|layout2` and the cabinet must already be showing
+that skin, because the scripts click real pixels.
+
+| | layout1 `futura_doublezero` | layout2 `futura_doublezeroCrycle` |
+|---|---|---|
+| dozens | above the numbers | **below** the numbers |
+| spin | countdown disc, top centre | `START` button, bottom right |
+| opacity | top centre, next to the disc | under `CRÉDITO`, top left |
+| skin selector | `LAYOUT_SWITCH` (cards+dice, top right) | `PANO` (top right) |
+| square ↔ race | `CHANGE_VIEW`, bottom right of cloth | `CAMBIAR VISTA`, right rail |
+| history strip | chevrons at both ends | plain capsule, no chevrons |
+| extras | `LOCK`, `LLAMAR`, `CALIENTE_FRIO` | `MENU`, `SERIES` / `SERIES EXTRA` rails |
+| statistics | hold the history strip | tap the `JUGADOR` badge (`PLAYER`) |
+
+Geometry lives in one module per skin — `automation/roulette_ui_areas.py` (layout1)
+and `automation/roulette_layout2_areas.py` (layout2) — each registering a
+`Surface` in `automation/roulette_surface.py`. Never reuse one skin's boxes for
+the other; nothing transfers except the 12-column grid shape.
+
+layout1 keeps the paths above; other skins render into a subfolder, e.g.
+`_tmp_logs/map_overlay/layout2/overlay_all.png`. Rebuild a registry with:
+
+```powershell
+python -m automation.roulette_layout2_full_map
+```
+
+## Sub-screens are part of the map
+
+A skin is not mapped when the cloth is mapped. Controls that only exist after a
+click live in that skin's `UI_OVERLAYS`, keyed by screen, and `Surface` folds
+them into the same registry with an `overlay` field. layout2 has five, and none
+of the panels close with Escape:
+
+| screen | opened by | closed by |
+|---|---|---|
+| `statistics` | `PLAYER` (JUGADOR badge) | `STATS_EXIT` (SALIR) |
+| `language` | `IDIOMA` | `LANG_ES` / `LANG_EN` (no cancel) |
+| `help` | `AYUDA` | `HELP_EXIT` (SALIR) |
+| `menu` | `MENU` | a second tap on `MENU` |
+| `racetrack` | `CHANGE_VIEW` (window open) | a second tap on `CHANGE_VIEW` |
+
+Render one with a capture of it open:
+
+```powershell
+python -m automation.roulette_map_overlay --layout layout2 --input shot.png --mode screen:help
+```
+
+The racetrack is a *view*, not a modal, and it carries two betting surfaces:
+
+- the oval's 38 pockets, `race_<number>`, found by masking the band, taking the
+  enclosed non-white patches as pockets, filling the numerals with
+  `binary_fill_holes`, then inscribing the largest square in each — the pockets
+  are slanted quads, so their bounding boxes overlap while the inscribed squares
+  do not. Numbers come from wheel order pinned to the two green pockets
+  (`_tmp_logs/layout2/measure_race.py`).
+- a complete small cloth inside the oval, `mini_<id>` for every id the big cloth
+  has — 38 numbers, dozens, evens, `2 a 1` (`_tmp_logs/layout2/measure_mini.py`).
+  Its `2 a 1` column has no drawn right border; the fill ends one column width
+  past the grid.
+
+**Read the help book before guessing.** `AYUDA` opens `INFORMACIÓN DEL JUEGO`,
+whose legend names every control in the game's own words — that is where
+`MUESTRA GANANCIAS` turned out to be a max-win toggle rather than a panel, and
+where `DENOMINACIÓN` and `STANDARD 36X` turned out to be choosers that this
+cabinet has nothing to populate (both are inert on `.90`, in or out of a betting
+window).
+
+## Re-map the screen that is open, when the software team moves something
+
+The **Map current screen** button on the Roulette tab (and
+`automation/roulette_screen_map.py`) maps whatever the cabinet is showing rather
+than a fixed target list. Use it when a drop moves controls or adds a screen.
+
+```powershell
+python -m automation.roulette_screen_map --ip 10.0.0.90 --layout layout2 --list
+python -m automation.roulette_screen_map --ip 10.0.0.90 --layout layout2 --detect
+python -m automation.roulette_screen_map --ip 10.0.0.90 --layout layout2 --screen help --apply
+python -m automation.roulette_screen_map --ip 10.0.0.90 --layout layout2 --new-screen "history v2" --apply
+```
+
+It captures the screen (twice, until two frames agree — panels arrive a second or two
+after the click and a single shot photographs the screen you just left), names the
+screen it matches, then re-finds each mapped box by searching for its baseline crop
+nearby. Verdicts per control: `unchanged`, `moved` (registry updated), `covered`
+(something is drawn over it, box kept), `lost`, `featureless` (not drawn right now).
+Verification is hybrid — cloth screens go through the three-role middleware session,
+panels through `roulette_verify_ui` probes.
+
+Baselines live next to the overlay captures (`screen_<key>.png`, with `base` and
+`race` keeping their existing names) and `--apply` refreshes them — except a cloth
+baseline while a panel is open over it, which would bake the panel into the cloth. A
+baseline that depicts something else loses every control at once, and the tool says so
+instead of rewriting geometry. After any `--apply` that moved boxes, regenerate the
+overlay as below.
+
+What the live runs on `.90` taught it, each of which had first gone wrong:
+
+- **Check the skin before the screen.** Layout coordinates clicked on the other skin
+  land on whatever *that* skin draws there; a layout2 sweep on a layout1 cloth pressed
+  the skin selector and swapped the cabinet mid-session, then saved the wrong baseline.
+  The number grid's own borders identify the skin with no baseline at all (2.3 for the
+  skin that is up, 0.6 for the other), and the tool refuses on a clear mismatch. With a
+  full-screen panel up there is no cloth to measure, so it says so and carries on.
+- **Judge identity on edges, not pixels.** "No más apuestas" dims everything: the cloth
+  measured 0.64 *changed* against its own baseline, worse than a capture of another
+  skin. Correlated gradients ignore the dim; the same rescaling is applied before
+  relocation, or every control reads as having moved.
+- **Ask each screen separately whether it is up.** More than one is: the menu rail is
+  drawn over the cloth, and the language chooser leaves the cloth matching at 0.17.
+  Panels are scored inside their own footprint (0.00 open, 0.84 closed), and only a
+  *bare* cloth (≤0.10) rules a panel out.
+- **Refuse to move a control on a mediocre match.** Real controls match at 100%; the
+  look-alikes the search settles for behind a rail scored 71-85% and proposed five bets
+  that had not moved.
+- **Discovered controls are hints.** They are drawn on `candidates.png` in the run
+  folder for review and stay out of the registry unless `--accept-candidates` is
+  passed, because a lit neighbour pill looks exactly like a new button — and a written
+  box is a click target for the bot.
+
+## Prove what the chrome does, don't assume it from the icon
+
+```powershell
+python -m automation.roulette_verify_ui --layout layout2
+python -m automation.roulette_verify_ui --layout layout2 --group toggle,chip
+python -m automation.roulette_verify_ui --layout layout2 --write-hitboxes
+```
+
+Each probe clicks the control, screenshots the cabinet and diffs it. Three
+things the sweep learned the hard way, which its `Plan` entries now encode:
+
+- **Effects arrive late.** The view swap, the rails and the chips repaint a
+  second or two after the click, so a control that looks inert gets a second
+  look before it is written off.
+- **A hidden control is not an inert one.** The `SERIES` / `SERIES EXTRA` pills
+  are drawn only while their rail is toggled on, and the bare cloth behind them
+  swallows clicks. `Plan.needs_visible` turns the rail on first. Visibility is
+  read from *edge density*, never brightness: the pills dim during "no más
+  apuestas", so a brightness test reports the betting phase instead.
+- **Both eye glyphs on a rail are the same toggle.** They are drawn as an open
+  eye and a crossed eye, but tapping either flips the pills, and tapping one of
+  them twice turns them on and then off. Hence `SERIES_EYE_TOP` /
+  `SERIES_EYE_BOTTOM` rather than `SHOW` / `HIDE`.
+
+Two controls are mapped from the help book and never pressed: `MENU_PIN_LOCK`
+locks the cabinet behind an unknown PIN, and `MENU_ASSISTANT` raises a service
+call that no click of ours can take back.
+
+## Prove bet spots against the middleware, don't eyeball them
+
+A box in the right place can still be the wrong bet. Verify with real clicks and
+`PlayerDataBets` as ground truth, then render the verdict map:
+
+```powershell
+python -m automation.roulette_verify_bets --ip 10.0.0.90            # all 50 mapped spots
+python -m automation.roulette_verify_bets --ip 10.0.0.90 --only "0,00,17"
+python -m automation.roulette_verify_bets --write-hitboxes           # fold proof into layout1
+python -m automation.roulette_map_overlay --ip 10.0.0.90 --mode verify
+python -m automation.roulette_verify_bets --layout layout2           # same sweep, Crycle skin
+python -m automation.roulette_verify_bets --layout layout2 --write-hitboxes
+```
+
+`--mode all` also writes `overlay_verified.png` whenever that skin already has a
+`results.json`, so one render call produces the whole set.
+
+Quote `--only` in PowerShell: an unquoted `0,00,17` is parsed as an integer array
+and `00` silently collapses to `0`.
+
+Inside bets (splits, streets, corners, six-lines, basket) are swept the same way
+with `--anchors`, which walks the `anchor_unverified` / `anchor` entries and writes
+`results_anchors.json` so the 50-spot verdict map stays untouched:
+
+```powershell
+python -m automation.roulette_verify_bets --layout layout2 --anchors
+python -m automation.roulette_verify_bets --layout layout2 --anchors --write-hitboxes
+```
+
+The racetrack view is the third group: `--family race` for the oval's pockets and
+`--family mini` for the small cloth inside it. Either puts the cabinet on the oval
+first (`ensure_view` presses `CAMBIAR VISTA` inside an open window and proves the
+swap against `screen_race.png`) and writes `results_race.json`:
+
+```powershell
+python -m automation.roulette_verify_bets --layout layout2 --family race,mini --batch 1
+python -m automation.roulette_verify_bets --layout layout2 --family race --write-hitboxes
+```
+
+To re-check one slice of the cloth, name families instead of spelling out ids:
+`--family straight|outside|split|street|corner|sixline|basket|trio|race|mini`
+(comma-separated, and the inside-bet families imply `--anchors`). Each group keeps
+its own results file, so a run may not mix them.
+
+```powershell
+python -m automation.roulette_verify_bets --layout layout2 --family split,corner
+```
+
+Every spot the sweep does not touch keeps its previous verdict, so the written
+summary still covers the whole skin.
+
+A proven anchor loses its `anchor_unverified` kind. This is also how mapping
+mistakes surface: an anchor that drifts off the shared edge reports a straight
+instead, and the reply names the bet the core really has there. That is how the
+zero column got fixed on layout2 — cell 2 straddles the 0/00 divider, so its whole
+edge is **one** three-number `Split 0+2+37` (there is no `0+2` or `2+00`), and the
+five-number `Basket 0+1+2+3+37` lives on the **outer bottom corner** of the zero
+column, not at the divider. Probe an unknown pixel with
+`_tmp_logs/layout2/probe_points.py 244,684`.
+
+Cabinet facts the verifier depends on (measured on `.90`):
+
+- Betting is open **22 s** out of a **40 s** cycle; a bet still standing when the
+  window shuts is played for real and the stake is lost. `CancelAllBets` inside
+  the window refunds it, so the sweep costs nothing.
+- Straights report `BetType=Fields`, `Id` = the number, with **`00` → `Id=37`**.
+- Outside bets (dozens, columns, even-money) are **dropped silently** below the
+  outside minimum of ~10 credits — they look identical to a missed click, so the
+  verifier skips them and says so instead of reporting a false failure. Top up
+  with `.\Invoke-WinDivertAftRoulette.ps1 -ComputerName 10.0.0.90 -NonRestricted
+  -AmountCents 500000 -Send` (≈6 min; `-DryRun` first) before sweeping them.
+
+## Prove a box by its corners, not its middle
+
+A hitbox that is a few pixels too big still passes a centre-click test. The corner
+probe clicks **1 px inside** the top-left and bottom-right of every mapped box and
+requires both clicks to produce the *same* event — bets via `PlayerDataBets`,
+chrome via the `Sending put action` lines in `godot1`, with a screenshot diff as
+the fallback for controls that only redraw.
+
+**Do not tail the logs to check whether a bet click landed.** On `.90` the client
+logs `Sending put action` only for `MenuCommands`, `SetChip`, `Paytable`,
+`SetNeighboursPower` and `AdminMenu`; `PlaceBet` and `CancelAllBets` appear in no
+log under `var\log` at all, and our own HTTP PUTs bypass the client so they are not
+logged either. A watcher over a live bet sweep therefore reports "no betting
+activity" while bets are visibly booking — poll `/api/data` instead. The window
+markers (`open` / `closing` / `closed`) *are* in `godot1`, which is why `BetWindow`
+reads them from there, and note those lines are **UTC** while `ruleta` logs local.
+
+```powershell
+python -m automation.roulette_edge_probe --target 10.0.0.90 --layout layout2
+python -m automation.roulette_edge_probe --target 10.0.0.90 --layout layout2 --family straight
+python -m automation.roulette_edge_probe --target local --layout layout2 --only "17,20" --batch 1
+python -m automation.roulette_edge_probe --layout layout2 --list   # plan only, no clicks
+```
+
+Verdicts: `same` (sound), `differs` (the box spans a border), `top_left` /
+`bottom_right` (only that corner registered — the box is too big), `silent`,
+`skipped` (box too thin for two distinct corners). Nothing is ever auto-applied;
+the pack lands in `_tmp_logs/edge_probe/<layout>_<target>/` as
+`EDGE-TEST-<layout>.md` + `edge_results.json`.
+
+What it costs and how it is kept cheap:
+
+- Number spots share a read — one script clicks eight corners, one
+  `PlayerDataBets` read names every bet that landed — and neighbours are kept out
+  of the same batch so a click that slips one cell lands on something no other
+  spot in the batch claims. A batch whose bet count does not match its identified
+  clicks is re-probed singly instead of reported on a guess.
+- **The sweep refuses to start with nothing to judge by.** Bets need the middleware
+  answering; chrome without `--pixel` needs the godot log folder. This is not
+  paranoia: `C:\Goldclub` on a cabinet is a junction to `G:\`, so swapping the
+  mounted install turns a roulette machine into a slot machine while SMB keeps
+  answering — which once produced two sweeps and 165 meaningless verdicts. If a run
+  reports every control `silent`, check the product before the mapping.
+- **`race_*` and `mini_*` are their own pass**, with `CHANGE_VIEW` pressed first and
+  the view proved by capture. Clicked on the square cloth they book whatever is under
+  those pixels, which is how `race_0` once "booked" `Dozen:13-24`. If the view will
+  not switch they are `skipped`, never guessed at. The square cloth is restored after.
+- `PANO` and `LAYOUT_SWITCH` are in `NEVER_CLICK`: a skin swap mid-sweep invalidates
+  every control after it, because the registry being swept describes one skin.
+- Three units failing the same way in a row stops the sweep — a pack of identical
+  infrastructure errors is not a report — and the untouched controls say so.
+- Chrome is judged from the log alone by default. The screenshot fallback that
+  separates "this button only redraws" from "the click missed" costs three cabinet
+  captures a control (~45 s each), and since the client logs only five action
+  names, most of the chrome lands in it — a full sweep with it on runs for hours.
+  Ask for it explicitly with `--pixel`, ideally with `--family chrome --only ...`.
+- The chip buttons are probed **last**: `chip_100` arms a 100-credit stake, and a
+  bet probed after it is played for a hundred times the intended price. The chip is
+  also re-armed to 0 before every bet unit, and a sweep stops probing bets below
+  `CREDIT_FLOOR` base units rather than reporting refused bets as missed clicks.
+- Verdicts are checkpointed to `edge_results.partial.json` after every unit, so a
+  dropped share does not cost the whole run. It is deleted once the pack is written.
+- The betting phase is *tracked* rather than waited for (`BetWindow`), so several
+  probes share one 22 s window. Every cloth bet is cancelled inside the window it
+  was placed in, so a sweep costs nothing.
+- **Named bets are excluded by default.** EVEN, ROJO, 1-12, `2 a 1` and their
+  racetrack twins are dropped silently below the outside minimum, which is
+  indistinguishable from a missed click. They are recognised by the *number count*
+  in their registry `expect.Id` (a chip bet covers at most six), not by where they
+  are drawn — that is what keeps `mini_ODD` out while `mini_17` stays in. Ask for
+  them by name or with `--family outside` after topping the credits up.
+
+**The cloth reserves a band along every cell border for the split that shares it.**
+Clicking 1 px inside `17`'s mapped box books `Split:15+18` at the top-left and
+`Split:17+20` at the bottom-right, because the registry boxes trace the drawn
+cells and the game hit-tests the borders as inside bets. So a straight failing the
+corner test is not automatically a mapping error, and the probe measures the band
+rather than guessing: for each failing number spot it walks both corners inwards
+(3, 6, 10, 16, 24 px) until the read shows the number and nothing wider, then
+writes that inset as the suggested box. Inside-bet anchors are never refined — they
+are *meant* to sit on a shared border. Skip the measurement with `--no-margin`.
+
+## The GUI's "Map current screen" button
+
+Same engine, driven from Automation → **Map current screen**, and it works in the
+shipped exe without a rebuild:
+
+- **Target**: a cabinet over the admin share, or **this computer** — the roulette
+  window if it is running here, otherwise the whole primary monitor.
+- **Connection pre-flight** runs before the screen list is usable and blocks OK
+  when something required is missing: SMB 445, the `C$` admin share and WinRM for a
+  cabinet; the input agent and a screen locally. Each failure carries the command
+  that fixes it (`cmdkey /add:<ip> ...`, `Enable-WinRM.ps1`). Optional parts —
+  logs, `:8090`, whether the game is running locally — only warn.
+- **Map picture**: every run writes `map_review.png` into its pack
+  (`automation_runs/<stamp>_<target>_screenmap_<layout>_<screen>/`) with every
+  mapped box drawn on the capture it was mapped from, plus a banner and a legend
+  (kept / moved / new / covered). The **Show map picture** button opens the newest
+  one. Report a mapping change with that image, never coordinates alone.
+- **Edge test** checkbox runs the corner probe straight after the mapping run.
+
+Hitbox and calibration JSON are read from and written to a **writable** folder —
+`automation\layouts` next to `LogInvestigator.exe`, seeded from the bundle on first
+use, the repo folder in a dev run. Reading them from the PyInstaller bundle would
+lose every mapping change when the exe exits. Run packs go to `automation_runs`
+beside the exe, never the current directory.
+
+## Embed it in the reply
+
+Use forward slashes or the chat will not render the image:
+
+```markdown
+![overlay](C:/Users/Ezbogar/GoldclubLogInvestigator/_tmp_logs/map_overlay/overlay_all.png)
+```
+
+Backslash paths (`C:\Users\...`) do **not** render.
+
+## Review the render, don't just ship it
+
+Read the PNG back and check boxes land on the real controls. If one is off,
+adjust that skin's areas module, rebuild its registry, re-render, and look again.
+Measure from detected cloth separator lines / button borders rather than guessing
+percentages — `_tmp_logs/layout2/measure_*.py` shows the approach (colour masks →
+row/column runs → box bounds).
+
+`tests/test_roulette_layout2.py` guards the result: it fails if any two boxes in a
+skin overlap, if a click point falls outside its own box, or if an inside-bet
+anchor uses an id the `PlaceBet` catalog does not know.
+
+Pick outline colours that survive the underlying pixels — `0`/`00` were invisible
+while drawn green on the green pockets.
+
+## Sliders need their travel drawn, not just a box
+
+A box around a slider says nothing about where a tap lands. Mapped sliders live in
+each skin's `UI_SLIDERS_PX` (`handle_min_x`, `handle_max_x`, `track_y`) and the
+overlay draws the travel line with `0.0` / `1.0` end ticks plus a panel inset.
+
+Calibrate the ends by tapping a ladder of known x positions and reading the handle
+back, not by eyeballing the track fill: taps inside the travel park the ring at
+`tap - 0.5 px`, and taps beyond it clamp, which is what pins the real ends. On
+layout2 the drawn track suggested 404..519 while the control actually clamps at
+397.5..519.5, so `--value 0.0` was 6 px short until it was measured. Set or read
+one with:
+
+```powershell
+python -m automation.roulette_slider --ip 10.0.0.90 --read
+python -m automation.roulette_slider --ip 10.0.0.90 --value 0.5
+python -m automation.roulette_slider --layout layout2 --value 1.0
+```
+
+Each capture-and-read round trip costs ~45 s, so probe a whole ladder in one
+script run rather than one value per command.
+
+Always leave OPACIDAD back at `1.0` when finished — a mid-track value changes how
+the GUI renders and skews later pixel-diff heuristics.

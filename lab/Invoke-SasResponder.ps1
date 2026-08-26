@@ -45,10 +45,10 @@ param(
     [int]    $DrainReserveSeconds = 3,
     [int]    $PollPort = 31150,
     [int]    $ReplyPort = 31100,
-    [string] $Table = (Join-Path $PSScriptRoot 'aft\captures\sas-response-table-steady.json'),
+    [string] $Table = (Join-Path (Split-Path $PSScriptRoot -Parent) 'aft\captures\sas-response-table-steady.json'),
     [string] $PsExecPath = 'C:\Tools\PSTools\PsExec.exe',
     [string] $WinDivertDir = 'C:\Tools\WinDivert\extracted\WinDivert-2.2.2-A\x64',
-    [string] $OutDir = (Join-Path $PSScriptRoot 'aft\captures'),
+    [string] $OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent) 'aft\captures'),
     [pscredential] $Credential,
     [switch] $RemoveDriver
 )
@@ -103,7 +103,8 @@ else { "WINDIVERT_NOT_STOPPED_SKIP_DELETE" }
 # ------------------------------------------------------------------ preconditions ----
 $dll = Join-Path $WinDivertDir 'WinDivert.dll'
 $sys = Join-Path $WinDivertDir 'WinDivert64.sys'
-$csSrc = Join-Path $PSScriptRoot 'WdRespond.cs'
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$csSrc = Join-Path $RepoRoot 'probes\WdRespond.cs'
 foreach ($f in @($PsExecPath, $dll, $sys, $csSrc, $Table)) {
     if (-not (Test-Path -LiteralPath $f)) { throw "Required file not found: $f" }
 }

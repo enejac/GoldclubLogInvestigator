@@ -68,7 +68,7 @@ Per-hop map: [hops/README.md](hops/README.md)
 | [RUNBOOK.md](RUNBOOK.md) | Day-to-day inject, verify, troubleshoot |
 | [PROVEN-INJECT-PROCEDURE.md](PROVEN-INJECT-PROCEDURE.md) | Saved .90 procedure that worked |
 | [hops/](hops/) | Hop-by-hop chain (tester/bridge/WAT/OneHand/verify) |
-| [diagrams/](diagrams/) | Flow diagrams for pollaft inject |
+| [diagrams/](diagrams/) | Flow diagrams — slot: `igt-onehand-layered-flow.svg`; roulette bill: **`igt-ruleta-bill-flow-report.html`** |
 | [investigations/](investigations/) | .90 vs .171, poll source, config parity, dead ends |
 | [report/](report/) | Read-only AFT/WAT audit output (generated) |
 | [test-runs/](test-runs/) | Historical before/after inject snapshots |

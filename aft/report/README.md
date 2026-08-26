@@ -19,7 +19,7 @@ cd C:\Users\Ezbogar\GoldclubLogInvestigator
 ```
 
 > **2026-06-15 update:** WinDivert IN-STREAM injection on the CommCtrlSAS →
-> Aurum bridge (`..\..\Invoke-WinDivertAft.ps1` / `..\..\Send-TestAft1000.ps1 -Send`)
+> Aurum bridge (`..\..\lab\Invoke-WinDivertAft.ps1` / `..\..\lab\Send-TestAft1000.ps1 -Send`)
 > replaces only the `0x72` frame; a SAS host must still be connected and polling.
 > See [`..\RUNBOOK.md`](../RUNBOOK.md). The audit tooling in this folder remains
 > strictly read-only and is used to *verify* such transfers, not to send them.

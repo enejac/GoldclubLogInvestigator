@@ -174,6 +174,53 @@ def _path_exists_dir(p: Path) -> bool:
         return False
 
 
+def unc_share_scan_root_reachable(scan_root: str, *, smb_timeout: float = 1.5) -> bool:
+    """True when a UNC scan root's host answers SMB and the path is a directory.
+
+    Used by SAS Verify share-recovery probes so a dead cabinet does not block
+    for 20–60 s on bare ``Path.is_dir()`` while COM/game recovery waits too.
+    """
+    normalized = normalize_path_str(scan_root)
+    if not normalized.startswith("\\\\"):
+        return False
+    path = Path(normalized)
+    host = extract_ip_from_path(normalized)
+    if host:
+        from network.scanner_utils import is_smb_alive
+
+        try:
+            from network.app_runtime import is_this_host
+
+            if is_this_host(host):
+                pass
+            elif not is_smb_alive(host, timeout=smb_timeout):
+                return False
+        except Exception:  # noqa: BLE001
+            if not is_smb_alive(host, timeout=smb_timeout):
+                return False
+    elif not _unc_host_answering(path):
+        return False
+    return _path_exists_dir(path)
+
+
+def should_arm_share_recovery_after_empty_load(scan_root: str) -> bool:
+    """Arm the share watcher only when the UNC path looks unreachable.
+
+    An empty Machine load on a reachable share with a resolved state tree is
+    usually RAM Clear / missing XML — not an access failure — so mtime retry
+    and empty-machine retry should handle it instead of looping share recovery.
+    """
+    normalized = normalize_path_str(scan_root)
+    if not normalized.startswith("\\\\"):
+        return False
+    if not unc_share_scan_root_reachable(normalized):
+        return True
+    layout = resolve_goldclub_layout(normalized)
+    if layout is not None and layout.state_gcmessenger is not None:
+        return False
+    return True
+
+
 def _path_exists_file(p: Path) -> bool:
     if not _unc_host_answering(p):
         return False
@@ -191,6 +238,11 @@ def _resolve_var_log_base(path: Path) -> Path | None:
         parts = [p.lower() for p in cur.parts]
         if len(parts) >= 2 and parts[-1] == "log" and parts[-2] == "var":
             return cur
+        # Bare …\var (after prefer_var_root_when_meters_under_state) — use …\var\log.
+        if parts and parts[-1] == "var":
+            log_child = cur / "log"
+            if _path_exists_dir(log_child):
+                return log_child
         parent = cur.parent
         cur = parent if parent != cur else None
     if _looks_like_log_tree(path):
@@ -545,8 +597,9 @@ def meter_state_roots_for_layout(layout: GoldclubLayout | None) -> list[Path]:
             roots.append(path)
 
     _add(layout.state_gcmessenger)
-    if layout.goldclub_root is not None:
-        for cand in _meter_state_roots_for_goldclub(layout.goldclub_root):
+    goldclub_root = getattr(layout, "goldclub_root", None)
+    if goldclub_root is not None:
+        for cand in _meter_state_roots_for_goldclub(goldclub_root):
             _add(cand)
     return roots
 

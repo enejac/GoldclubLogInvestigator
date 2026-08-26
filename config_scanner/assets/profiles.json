@@ -2,7 +2,7 @@
   "profiles": [
     {
       "id": "roulette_usb",
-      "label": "Roulette",
+      "label": "Ruleta Alegro Wing",
       "defaultTarget": "\\\\10.0.0.90\\c$\\Goldclub",
       "buildVersionRelativePath": "ruleta/BuildVersion.txt",
       "scanRoots": [
@@ -31,7 +31,9 @@
         "G:",
         "C:\\Goldclub",
         "\\\\10.0.0.90\\c$\\Goldclub",
-        "\\\\10.0.0.90\\d$\\Goldclub"
+        "\\\\10.0.0.90\\d$\\Goldclub",
+        "\\\\10.0.0.111\\slot",
+        "\\\\10.0.0.111\\c$\\Goldclub"
       ]
     },
     {

@@ -16,7 +16,7 @@
 [CmdletBinding()]
 param(
     [string] $SourceRoot = '\\10.0.0.90\c$\Goldclub\var\state\goldclub.aurum.services\GCMessenger\SASControler1',
-    [string] $OutDir = (Join-Path $PSScriptRoot 'aft\report')
+    [string] $OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent) 'aft\report')
 )
 
 Set-StrictMode -Version Latest

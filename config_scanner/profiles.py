@@ -65,7 +65,7 @@ def load_profiles() -> list[GameProfile]:
         return [
             GameProfile(
                 id="roulette_usb",
-                label="Roulette",
+                label="Ruleta Alegro Wing",
                 default_target=r"\\10.0.0.90\c$\Goldclub",
                 build_version_relative_path="ruleta/BuildVersion.txt",
                 build_fingerprint=None,
@@ -102,8 +102,13 @@ def display_profile_label(label: str | None, game_drive: str | None = None) -> s
     """Human profile name without obsolete USB-D wording; annotate remote UNC."""
     raw = (label or "").strip() or "—"
     # Historical / misleading media-specific labels
-    if raw in {"Roulette (USB D:)", "Roulette (USB)", "Roulette (USB D)"}:
-        raw = "Roulette"
+    if raw in {
+        "Roulette (USB D:)",
+        "Roulette (USB)",
+        "Roulette (USB D)",
+        "Roulette",
+    }:
+        raw = "Ruleta Alegro Wing"
     if raw.startswith("Slot (lab"):
         raw = "Slot"
     gd = (game_drive or "").strip()

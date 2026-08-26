@@ -1,0 +1,43 @@
+Copy 10.2 software - quick guide
+================================
+
+DEFAULT (UAC blocked / drives already mounted)
+----------------------------------------------
+Double-click:
+
+  Copy102.bat
+  or Fetch-Roulette102Software.bat
+
+No Administrator needed. Script will:
+  1. Scan mounted drives for goldclub roots (R:, P:, G:, W:, ...)
+  2. Pick 10.2 source (BuildVersion contains 10.2)
+  3. Pick writable destination (prefers G:, then W:)
+  4. Copy ruleta binaries, godot, apps, paytables JSON, godot.xml
+  5. Verify markers and log results
+
+Log: fetch-roulette102-software.log (same folder as this USB)
+
+Manual paths (if auto-detect picks wrong drive):
+
+  Fetch-Roulette102Software.bat -SourceGoldclubRoot R:\ -DestGoldclubRoot G:\
+
+Dry-run first:
+
+  Fetch-Roulette102Software.bat -WhatIf
+
+Staging on USB (copy on admin PC, apply on locked PC):
+
+  Admin PC:  Fetch-Roulette102Software.bat -SourceGoldclubRoot R:\ -DestGoldclubRoot H:\ConfigScanner\staging\10.2
+  Locked PC: Fetch-Roulette102Software.bat -SourceGoldclubRoot H:\ConfigScanner\staging\10.2 -DestGoldclubRoot G:\
+
+ADMIN ONLY (must mount P:\goldclub.vhd interior)
+-------------------------------------------------
+  Fetch-Roulette102Software-Admin.bat
+
+Requires UAC. Not for locked-down PCs.
+
+Before you run
+--------------
+- 10.2 goldclub interior mounted (e.g. R:\ruleta\, R:\config\)
+- Destination goldclub mounted and writable (e.g. G:\)
+- At least ~2 GB free on destination

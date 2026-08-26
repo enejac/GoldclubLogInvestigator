@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import json
 import re
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -29,15 +30,20 @@ class BuildInfo:
     exe_product_version: str | None = None
     exe_file_version: str | None = None
     exe_product_name: str | None = None
+    # Cabinet MachineName from ProductSerialNumber.json (e.g. GRT330106 / GST20664)
+    machine_serial: str | None = None
 
 
 def format_build_info_log_line(info: BuildInfo) -> str:
     """One-line version summary for scan logs and reports."""
+    software = format_software_display(info)
     parts: list[str] = []
-    if info.build_number:
+    if info.machine_serial:
+        parts.append(f"SN={info.machine_serial}")
+    if software:
+        parts.append(software)
+    if info.build_number and f"build {info.build_number}" not in software.casefold():
         parts.append(f"build={info.build_number}")
-    if info.product_version:
-        parts.append(f"productVersion={info.product_version}")
     if info.source_version:
         parts.append(f"sourceVersion={info.source_version}")
     if info.exe_product_name or info.exe_product_version:
@@ -47,6 +53,178 @@ def format_build_info_log_line(info: BuildInfo) -> str:
         if info.exe_file_version and info.exe_file_version != info.exe_product_version:
             parts.append(f"fileVersion={info.exe_file_version}")
     return ", ".join(parts) if parts else "version unknown"
+
+
+def software_product_family(profile_id: str | None) -> str:
+    """Human product family for snapshot names and reports."""
+    pid = (profile_id or "").strip().casefold()
+    if pid == "slot_lab_90" or pid.startswith("slot"):
+        return "Slot"
+    # Roulette USB / Alegro Wing cabinets (Ruleta Module).
+    return "Ruleta Alegro Wing"
+
+
+def _safe_folder_token(value: str | None, *, fallback: str = "unknown") -> str:
+    text = (value or "").strip() or fallback
+    text = re.sub(r"[^\w.\-]+", "_", text, flags=re.UNICODE)
+    text = re.sub(r"_+", "_", text).strip("._-")
+    return text or fallback
+
+
+
+_UNC_HOST_RE = re.compile(r"^\\\\([^\\]+)\\", re.IGNORECASE)
+_IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+
+def _machine_name_from_product_serial_json(path: Path) -> str | None:
+    try:
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    raw = str(data.get("MachineName") or "").strip()
+    if not raw:
+        kind = str(data.get("ProductKind") or "").strip().upper()
+        serial = str(data.get("ProductSerialNumber") or "").strip()
+        if kind and serial and serial.isdigit():
+            raw = f"G{kind}{serial}"
+        elif serial:
+            raw = serial
+    if not raw:
+        return None
+    token = _safe_folder_token(raw.upper(), fallback="")
+    return token or None
+
+
+def read_machine_serial_from_target(target: str | None) -> str | None:
+    """
+    Resolve cabinet MachineName / SN for snapshot folder names.
+
+    Prefers ``var/state/maintenance/ProductSerialNumber.json`` under the scan
+    image (local or UNC). Falls back to SMB identity helpers when the target
+    is a UNC admin share under an IPv4 host.
+    """
+    norm = normalize_scan_target(target or "")
+    if not norm:
+        return None
+
+    roots: list[Path] = []
+    try:
+        root = Path(norm)
+        roots.append(root)
+        if root.name.casefold() in {"slot", "ruleta", "goldclub"}:
+            roots.append(root.parent)
+        if root.parent.name.casefold() == "goldclub":
+            roots.append(root.parent)
+    except OSError:
+        pass
+
+    seen: set[str] = set()
+    for base in roots:
+        for rel in (
+            "var/state/maintenance/ProductSerialNumber.json",
+            "Goldclub/var/state/maintenance/ProductSerialNumber.json",
+        ):
+            cand = base / rel
+            key = str(cand).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            name = _machine_name_from_product_serial_json(cand)
+            if name:
+                return name
+
+    m = _UNC_HOST_RE.match(norm)
+    if m:
+        host = m.group(1).strip()
+        if _IPV4_RE.match(host):
+            try:
+                from network.fleet_scanner import read_cabinet_machine_name_from_state
+
+                remote = read_cabinet_machine_name_from_state(host)
+                if remote:
+                    return _safe_folder_token(remote.upper(), fallback="") or None
+            except Exception:
+                pass
+    return None
+
+
+def attach_machine_serial(info: BuildInfo, target: str | None = None) -> BuildInfo:
+    """Fill ``machine_serial`` from the scan target when missing."""
+    if (info.machine_serial or "").strip():
+        return info
+    sn = read_machine_serial_from_target(target or info.game_drive)
+    if not sn:
+        return info
+    return replace(info, machine_serial=sn)
+
+
+
+def short_product_version(product_version: str | None) -> str | None:
+    """Prefer major.minor (10.2) when a dotted product version is available."""
+    raw = (product_version or "").strip()
+    if not raw:
+        return None
+    match = re.match(r"^(\d+)\.(\d+)", raw)
+    if match:
+        return f"{match.group(1)}.{match.group(2)}"
+    return raw
+
+
+def preferred_product_version(info: BuildInfo) -> str:
+    """PE Details ProductVersion first — BuildVersion.txt / branch can lag a swap."""
+    return (
+        (info.exe_product_version or "").strip()
+        or (info.product_version or "").strip()
+    )
+
+
+def format_software_display(info: BuildInfo) -> str:
+    """
+    Clear product line for UI/reports, e.g.
+    ``Ruleta Alegro Wing software version 10.2 (10.2.0.684, build 40097)``.
+    """
+    family = software_product_family(info.profile_id)
+    full = preferred_product_version(info)
+    short = short_product_version(full)
+    build = (info.build_number or "").strip()
+    if short and full and short != full:
+        ver = f"version {short} ({full}"
+        if build:
+            ver += f", build {build})"
+        else:
+            ver += ")"
+    elif short or full:
+        ver = f"version {short or full}"
+        if build:
+            ver += f" (build {build})"
+    elif build:
+        ver = f"build {build}"
+    else:
+        ver = "version unknown"
+    return f"{family} software {ver}"
+
+
+def snapshot_software_token(info: BuildInfo) -> str:
+    """Filesystem-safe software token used inside snapshot folder names.
+
+    Uses the full PE Details ProductVersion (``10.2.0.876``), not the
+    shortened ``10.2`` from BuildVersion.txt.
+    """
+    family = software_product_family(info.profile_id)
+    family_token = _safe_folder_token(family.replace(" ", "_"))
+    full = preferred_product_version(info)
+    build = (info.build_number or "unknown").strip()
+    if info.profile_id == "slot_lab_90":
+        return f"Slot_b{_safe_folder_token(build)}"
+    ver_token = _safe_folder_token(full or "unknown")
+    if ver_token and not ver_token.lower().startswith("v"):
+        ver_token = f"v{ver_token}"
+    return f"{family_token}_{ver_token}_b{_safe_folder_token(build)}"
+
 
 
 def is_unc_path(target: str) -> bool:
@@ -101,6 +279,8 @@ _LAB_REMOTE_GAME_ROOTS = (
     r"\\10.0.0.90\c$\Goldclub\slot",
     r"\\10.0.0.90\d$\Goldclub",
     r"\\10.0.0.90\d$\Goldclub\slot",
+    r"\\10.0.0.111\slot",
+    r"\\10.0.0.111\c$\Goldclub",
 )
 
 # Maintenance RAM-clear scripts — secondary roulette USB marker when BuildVersion.txt is absent.
@@ -571,25 +751,31 @@ def resolve_build_info(
                     f"Found {rel} but no Ruleta.exe under {root}. "
                     "Empty Goldclub / incomplete image is not a valid roulette scan target."
                 )
-            return parse_build_version_file(
-                build_path,
-                game_drive=scan_target,
-                scan_timestamp=ts,
-                profile=profile,
+            return attach_machine_serial(
+                parse_build_version_file(
+                    build_path,
+                    game_drive=scan_target,
+                    scan_timestamp=ts,
+                    profile=profile,
+                ),
+                scan_target,
             )
         if has_roulette_game_exe(root) and has_ramclear_script(root):
-            return BuildInfo(
-                source_version=None,
-                branch="RAM-clear maintenance image",
-                product_version=None,
-                build_number="ramclear",
-                build_date=None,
-                trigger="ramclear_script",
-                requested_by=None,
-                scan_timestamp=ts.isoformat(),
-                game_drive=normalize_scan_target(scan_target),
-                profile_id=profile.id,
-                profile_label=display_profile_label(profile.label, scan_target),
+            return attach_machine_serial(
+                BuildInfo(
+                    source_version=None,
+                    branch="RAM-clear maintenance image",
+                    product_version=None,
+                    build_number="ramclear",
+                    build_date=None,
+                    trigger="ramclear_script",
+                    requested_by=None,
+                    scan_timestamp=ts.isoformat(),
+                    game_drive=normalize_scan_target(scan_target),
+                    profile_id=profile.id,
+                    profile_label=display_profile_label(profile.label, scan_target),
+                ),
+                scan_target,
             )
         raise FileNotFoundError(
             f"Roulette build tag not found at {build_path}\n"
@@ -600,11 +786,14 @@ def resolve_build_info(
     if profile.build_fingerprint:
         fp_type = str(profile.build_fingerprint.get("type") or "")
         if fp_type == "binary_sha1_prefix":
-            return _build_info_from_binary_fingerprint(
-                root,
-                profile,
-                scan_timestamp=ts,
-                game_drive=scan_target,
+            return attach_machine_serial(
+                _build_info_from_binary_fingerprint(
+                    root,
+                    profile,
+                    scan_timestamp=ts,
+                    game_drive=scan_target,
+                ),
+                scan_target,
             )
     raise FileNotFoundError(
         f"Profile '{profile.id}' has no build version path or supported fingerprint."
@@ -770,9 +959,22 @@ def unified_scan_candidates(
 
 
 def is_slot_cabinet_scan_target(target: str) -> bool:
-    """True when the scan path is a slot cabinet tree (not a roulette USB image)."""
+    """True when the scan path is a slot cabinet tree (not a roulette USB image).
+
+    Roulette lab cabinets often share ``C:\\goldclub`` as ``\\\\ip\\slot``.
+    That UNC name ends with ``\\slot`` but the tree is Ruleta, not OneHand.
+    """
     norm = normalize_scan_target(target).casefold().rstrip("\\")
-    return norm.endswith(r"\goldclub\slot") or norm.endswith(r"\slot")
+    if not (norm.endswith(r"\goldclub\slot") or norm.endswith(r"\slot")):
+        return False
+    root = scan_target_path(target)
+    try:
+        exists = root.exists()
+    except OSError:
+        exists = False
+    if exists and has_roulette_game_exe(root) and not has_slot_game_exe(root):
+        return False
+    return True
 
 
 def _fingerprint_profiles(profiles: list[GameProfile]) -> list[GameProfile]:
@@ -868,7 +1070,29 @@ def resolve_scan_for_target(
     if not explicit:
         raise ValueError("scan_target is required")
 
-    checked: list[str] = []
+    # Slot cabinet paths must not walk up into a parent roulette tree
+    # (e.g. empty C:\Goldclub\slot must not resolve as C:\Goldclub Ruleta).
+    if is_slot_cabinet_scan_target(explicit):
+        checked: list[str] = []
+        for candidate in (explicit, prefer_local_scan_target(explicit)):
+            norm = normalize_scan_target(candidate)
+            if not norm or norm in checked:
+                continue
+            checked.append(norm)
+            profile = match_profile_for_target(norm, profiles)
+            if profile:
+                return DiscoverResult(
+                    profile_id=profile.id,
+                    profile_label=display_profile_label(profile.label, norm),
+                    target=prefer_local_scan_target(norm),
+                )
+        raise FileNotFoundError(
+            f"No slot repo at:\n  {scan_target.strip()}\n\n"
+            "Expected slot binaries (OneHand.exe, game-start.exe, GoldClub.Settings.dll). "
+            "BuildVersion.txt is roulette-only and is not used under slot folders."
+        )
+
+    checked = []
     for candidate in scan_target_resolution_candidates(explicit, profiles=None):
         checked.append(candidate)
         profile = match_profile_for_target(candidate, profiles)
@@ -878,13 +1102,6 @@ def resolve_scan_for_target(
                 profile_label=display_profile_label(profile.label, candidate),
                 target=prefer_local_scan_target(candidate),
             )
-
-    if is_slot_cabinet_scan_target(explicit):
-        raise FileNotFoundError(
-            f"No slot repo at:\n  {scan_target.strip()}\n\n"
-            "Expected slot binaries (OneHand.exe, game-start.exe, GoldClub.Settings.dll). "
-            "BuildVersion.txt is roulette-only and is not used under slot folders."
-        )
 
     detail = "\n".join(f"  - {item}" for item in checked) or f"  - {explicit}"
     raise FileNotFoundError(
@@ -938,29 +1155,70 @@ def snapshot_folder_name(
     scan_timestamp: datetime,
     *,
     profile_id: str | None = None,
+    product_version: str | None = None,
+    exe_product_version: str | None = None,
+    machine_serial: str | None = None,
 ) -> str:
-    safe_build = build_number or "unknown"
-    if profile_id == "slot_lab_90":
-        prefix = f"slot{safe_build}"
-    else:
-        prefix = f"build{safe_build}"
+    """
+    Snapshot folder name with machine SN + readable software identity.
+
+    Example::
+        2026-07-27_GRT330106_Ruleta_Alegro_Wing_v10.2.0.876_b40119_091759
+    """
+    info = BuildInfo(
+        source_version=None,
+        branch=None,
+        product_version=product_version,
+        build_number=build_number,
+        build_date=None,
+        trigger=None,
+        requested_by=None,
+        scan_timestamp=scan_timestamp.isoformat(timespec="seconds"),
+        game_drive="",
+        profile_id=profile_id,
+        exe_product_version=exe_product_version,
+        machine_serial=machine_serial,
+    )
+    soft = snapshot_software_token(info)
     stamp = scan_timestamp.strftime("%H%M%S")
-    millis = scan_timestamp.microsecond // 1000
-    return f"{scan_timestamp.strftime('%Y-%m-%d')}_{prefix}_{stamp}_{millis:03d}"
+    date = scan_timestamp.strftime("%Y-%m-%d")
+    sn = _safe_folder_token(machine_serial, fallback="") if machine_serial else ""
+    if sn:
+        return f"{date}_{sn}_{soft}_{stamp}"
+    return f"{date}_{soft}_{stamp}"
 
 
 def baseline_folder_name(build_info: BuildInfo, *, profile_id: str | None = None) -> str:
     """Friendly snapshot folder name when marking a scan as baseline."""
-    resolved_profile = build_info.profile_id or profile_id or ""
-    build = build_info.build_number or "unknown"
-    if resolved_profile == "slot_lab_90":
-        return "slot_baseline"
-    version = build_info.product_version
-    if version:
-        safe_version = version.replace(".", "_")
-        return f"roulette_baseline_build{build}_{safe_version}"
-    return f"roulette_baseline_build{build}"
+    resolved = BuildInfo(
+        source_version=build_info.source_version,
+        branch=build_info.branch,
+        product_version=build_info.product_version,
+        build_number=build_info.build_number,
+        build_date=build_info.build_date,
+        trigger=build_info.trigger,
+        requested_by=build_info.requested_by,
+        scan_timestamp=build_info.scan_timestamp,
+        game_drive=build_info.game_drive,
+        profile_id=build_info.profile_id or profile_id or "",
+        profile_label=build_info.profile_label,
+        exe_product_version=build_info.exe_product_version,
+        exe_file_version=build_info.exe_file_version,
+        exe_product_name=build_info.exe_product_name,
+        machine_serial=build_info.machine_serial,
+    )
+    sn = _safe_folder_token(resolved.machine_serial, fallback="") if resolved.machine_serial else ""
+    if (resolved.profile_id or "") == "slot_lab_90":
+        return f"{sn}_slot_baseline" if sn else "slot_baseline"
+    soft = snapshot_software_token(resolved)
+    return f"{sn}_{soft}_baseline" if sn else f"{soft}_baseline"
 
 
 def is_baseline_folder_name(name: str) -> bool:
-    return name == "slot_baseline" or name.startswith("roulette_baseline_")
+    return (
+        name == "slot_baseline"
+        or name.endswith("_slot_baseline")
+        or name.startswith("roulette_baseline_")
+        or name.endswith("_baseline")
+    )
+

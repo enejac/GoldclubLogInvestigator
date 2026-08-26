@@ -95,8 +95,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Show-TestAft1000Help {
-    $runbook = Join-Path $PSScriptRoot 'aft\RUNBOOK.md'
-    $readme = Join-Path $PSScriptRoot 'aft\README.md'
+    $runbook = Join-Path (Split-Path $PSScriptRoot -Parent) 'aft\RUNBOOK.md'
+    $readme = Join-Path (Split-Path $PSScriptRoot -Parent) 'aft\README.md'
     Write-Host @"
 Send-TestAft1000.ps1 — thin wrapper around Invoke-WinDivertAft.ps1 (`$1,000 promo AFT default).
 

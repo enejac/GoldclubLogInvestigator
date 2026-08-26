@@ -1,4 +1,5 @@
 @echo off
+:: AUTO_ONLOGON: no pause - safe for slot1onlogon / USB boot
 setlocal EnableDelayedExpansion
 
 :: -------------------------------------------------
@@ -39,7 +40,6 @@ if exist "%SRC%TeamViewer_HKCU.reg" (
     echo [OK] Registry file copied.
 ) else (
     echo [ERROR] TeamViewer_HKCU.reg not found in backup root!
-    pause
     exit /b 1
 )
 
@@ -51,14 +51,12 @@ if exist "%SRC%TeamViewer\" (
     xcopy "%SRC%TeamViewer\*" "%DST%\" /E /I /H /R /Y /K
     if errorlevel 1 (
         echo [ERROR] Failed to copy TeamViewer data
-        pause
         exit /b 1
     ) else (
         echo [OK] TeamViewer data copied.
     )
 ) else (
     echo [ERROR] TeamViewer subfolder not found!
-    pause
     exit /b 1
 )
 
@@ -69,7 +67,6 @@ echo [4/6] Importing registry...
 reg import "%DST%\TeamViewer_HKCU.reg" >nul
 if errorlevel 1 (
     echo [ERROR] Registry import failed!
-    pause
     exit /b 1
 ) else (
     echo [OK] Registry imported.
@@ -90,3 +87,5 @@ if exist "%TVEXE%" (
 echo.
 echo === RESTORE COMPLETE ===
 echo.
+:: Always exit so the logon console window closes (Startup / onlogon).
+exit /b 0

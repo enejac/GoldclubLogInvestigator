@@ -40,7 +40,7 @@ Write-Host "SAS hex      : $($report.SasHex)"
 Write-Host "Bridge hex   : $($report.BridgeHex)"
 Write-Host ''
 if ($DryRun) { Write-Host '[dry-run] Payload built; not injecting.' -ForegroundColor Yellow; exit 0 }
-$injectScript = Join-Path $repoRoot 'Invoke-WinDivertAft.ps1'
+$injectScript = Join-Path $repoRoot 'lab\Invoke-WinDivertAft.ps1'
 if (-not (Test-Path -LiteralPath $injectScript)) { throw "Missing $injectScript" }
 $invokeArgs = @{
     Send              = $true

@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any
 import json
 import logging
+import re
 import time
 
 from product_version import PRODUCT_VERSION_PLACEHOLDER
@@ -105,6 +106,15 @@ FAILURE-MODE REASONING
   Correlate by timestamp to pinpoint where the flow stalls.
 - Watch for hardware faults (Dallas key/security, bill validator, printer, hopper), SAS link drops
   and comms timeouts, RAM clears, and accounting mismatches.
+- Roulette (Ruleta / Alegro) classic ERROR N screens: the Godot UI closes and a dedicated error
+  window opens. Logs show INFO TRIAL error="N" type="DISPLAYED" (and sometimes ERRO Trial expired
+  for ERROR 30). These are game-interrupting cabinet faults — treat ERROR N catalog title and
+  possible faults as the ROOT CAUSE (GCI-ROULETTE-007). Do not blame a later Godot kill alone when
+  TRIAL DISPLAYED is present. Slot / OneHand logs do not use this ERROR N screen.
+  ERROR 30 that returns after RAM clear / clock rollback is leftover
+  C:\\goldclub\\ruleta\\persistent\\RouletteActivate.dat (RAM clear does not wipe
+  persistent). Empty Activate plus "Dongle mismatch" is ERROR 99 (fresh bind),
+  not a missing Aurum XML. Do not restore an expired Activate.dat from a snapshot.
 - Rank severity ERROR > WARN > INFO, but weigh real impact: a single fatal crash that ends the
   session outranks many benign repeated warnings.
 
@@ -122,17 +132,36 @@ Act as a Senior Casino Systems & QA Engineer.
 - INCIDENT_DATA: [User provided logs]
 
 ### DEFECT TICKET TITLE RULES:
-Format the title exactly as (use SOFTWARE_VERSION verbatim — product label and core build, e.g. ``JinLong_v2.0.20.0``):
+Format the title EXACTLY as (SOFTWARE_VERSION must be the first segment — never omit it):
 {software_version} => [Game Name] => [Short Summary]
 
-- Game Name: Identify from logs (e.g., BigSafari_HnW).
+Example: ``Ruleta Module_v10.2.0.684 => Roulette => Godot Process Crash / Forced Exit``
+
+- SOFTWARE_VERSION is provided above — copy it verbatim as the title prefix.
+- Game Name: Identify from logs (e.g., Roulette, BigSafari_HnW). Do NOT put the product build alone as Game Name.
 - Summary: Concise technical failure.
 
-### OUTPUT SECTIONS:
-Title: [Follow formula above]
-Key details: [Technical bullets]
-Actual result: [Failure description]
-Expected result: [Correct behavior]
+### OUTPUT SECTIONS (all four are mandatory — never return empty or meta-only text):
+Title: [Follow formula above — MUST start with SOFTWARE_VERSION]
+Key details:
+- ROOT CAUSE: [First failure in the timeline — what broke first, in which component, and why]
+- LOG SEQUENCE: [3–8 chronological bullets from preceding_logs near the CRITICAL fault timestamp, oldest → newest]
+- [Additional technical bullets: exceptions, missing nodes, process exits, SAS/state if relevant]
+Actual result: [What the player/operator observed — concrete failure at the fault line]
+Expected result: [Correct stable behavior for this game flow]
+
+LOG SEQUENCE RULES:
+- Use only lines whose timestamps are at or near the incident fault time in error_details.
+- NEVER use LogDaemon boot/fingerprint lines (``Spawning v…``, ``Spawning... done``, early-day
+  INFO Connecting/Connected) unless the CRITICAL fault itself is at boot.
+- Prefer WARN/ERROR/CRITICAL, Godot kill/exit, Missing node, and exception lines over INFO chatter.
+- For Roulette: include ``TRIAL error=… type=DISPLAYED``, ``Trial expired``, and ``Roulette ERROR N``
+  lines when present — they mark the dedicated error window that closed Godot.
+
+You MUST ground ROOT CAUSE and LOG SEQUENCE in preceding_logs and error_details. Never invent
+events. If a ``known Roulette ERROR (catalog)`` block is provided, use it for ROOT CAUSE and link
+tracking id GCI-ROULETTE-007. If evidence is thin, state what is missing and infer cautiously from
+the lines provided. Never respond with safety ratings, refusals, or placeholder text only.
 
 Strictly avoid markdown bolding.
 
@@ -156,6 +185,7 @@ You MUST format your response EXACTLY with these four markdown headers and nothi
 * [Bullet points of the major recurring errors, critical crashes, and patterns found across the session]
 * [Group similar errors together and mention specific components that repeatedly fail]
 * [Keep it highly technical and objective]
+* [If Roulette ERROR N / TRIAL DISPLAYED appears, name the ERROR code and catalog root cause]
 
 ### Actual result
 [A paragraph describing the current unstable or broken state of the build based on the session logs. e.g., "Throughout the test session, the build exhibited systemic resource disposal failures..."]
@@ -165,6 +195,10 @@ You MUST format your response EXACTLY with these four markdown headers and nothi
 
 Write objectively throughout. Do not use first-person phrasing or disclaimers such as
 "Based on my AI analysis", "As an AI", or similar — especially in Actual result and Expected result.
+
+Roulette note: classic ERROR N screens close Godot and open a dedicated error window
+(TRIAL DISPLAYED / GCI-ROULETTE-007). Prefer catalog root cause over treating a later process kill
+as the primary defect when ERROR N is present.
 """.strip()
 
 
@@ -511,14 +545,556 @@ def _provider_ready(
     return False
 
 
+def _short_api_error(exc: BaseException) -> str:
+    s = str(exc).strip()
+    if not s:
+        return type(exc).__name__
+    line = s.splitlines()[0].strip()
+    if len(line) > 140:
+        line = line[:137] + "..."
+    return line
+
+
 def _dual_failure_message(
     e1: BaseException | None,
     e2: BaseException | None,
     *,
     audit: bool,
 ) -> str:
-    # Keep UI concise when both providers fail (no raw backend stack/details).
-    return "Limit reached. Please try again later."
+    pfx = "Session audit" if audit else "Technical summary"
+    err = e2 or e1
+    if err is not None:
+        hint = _quota_hint_from_exception(err, audit=audit)
+        if hint:
+            return hint
+        return f"{pfx} unavailable ({_short_api_error(err)})."
+    return (
+        f"{pfx} unavailable (all configured AI providers failed — "
+        "check API keys and quota in Settings)."
+    )
+
+
+_AI_FAILURE_MARKERS = (
+    "limit reached",
+    "please try again later",
+    "technical summary unavailable",
+    "technical summary skipped",
+    "session audit unavailable",
+    "session audit skipped",
+    "no api key configured",
+    "no configured ai provider",
+    "rate limited",
+    "quota is 0",
+    "gemini sdk not installed",
+    "⚠️",
+)
+
+
+def _is_ai_unavailable_response(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    return any(m in t for m in _AI_FAILURE_MARKERS)
+
+
+def _is_structured_defect_ticket(text: str) -> bool:
+    """True when AI output has parseable defect-ticket sections with real content."""
+    import re
+
+    t = (text or "").strip()
+    if len(t) < 80:
+        return False
+    lower = t.lower()
+    if re.fullmatch(r"user safety:\s*\w+", lower):
+        return False
+    if "user safety:" in lower and not re.search(r"(?im)^\s*Title\s*:", t):
+        return False
+
+    has_md = re.search(r"(?im)^\s*###\s*Title\s*$", t)
+    has_plain = re.search(r"(?im)^\s*Title\s*:", t)
+    if not has_md and not has_plain:
+        return False
+
+    key_match = re.search(
+        r"(?im)^\s*(?:###\s*)?Key details\s*:?\s*(.*?)(?:\n\s*\n|^\s*(?:###\s*)?Actual result\s*:?)",
+        t,
+        re.DOTALL,
+    )
+    if not key_match:
+        return False
+    key_body = key_match.group(1).strip()
+    if len(key_body) < 24:
+        return False
+    if key_body.lower().startswith("user safety"):
+        return False
+    return True
+
+
+def _is_low_quality_ai_response(text: str) -> bool:
+    """Catch blocked, safety-meta, or empty AI replies that should use offline analysis."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if _is_ai_unavailable_response(t):
+        return True
+    if _is_structured_defect_ticket(t):
+        return False
+    lower = t.lower()
+    if "user safety:" in lower and len(t) < 400:
+        return True
+    if len(t) < 60:
+        return True
+    return True
+
+
+_LOG_SEQUENCE_KEYWORDS = (
+    "error",
+    "warn",
+    "critical",
+    "exception",
+    "missing node",
+    "godot",
+    "ruleta",
+    "unhandled",
+    "exited",
+    "unexpected",
+    "killed",
+    "failed",
+    "nullreference",
+    "ioexception",
+    "queuedata",
+    "payoutpressed",
+    "process:",
+    "ended",
+    "stack trace",
+    "critical log",
+    "did not exit",
+    "forced",
+)
+
+_ISO_TS_RE = re.compile(
+    r"(?P<ts>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?)"
+)
+
+
+def _parse_line_timestamp(line: str) -> float | None:
+    """Return epoch seconds for an ISO timestamp at the start of a log line, if any."""
+    from datetime import datetime
+
+    m = _ISO_TS_RE.search(line or "")
+    if not m:
+        return None
+    raw = m.group("ts").replace(" ", "T")
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        return datetime.fromisoformat(raw).timestamp()
+    except Exception:
+        return None
+
+
+def _is_boot_fingerprint_line(line: str) -> bool:
+    """LogDaemon spawn / early connect noise — not useful as incident LOG SEQUENCE."""
+    low = (line or "").lower()
+    if "spawning" in low:
+        return True
+    if "logging::log()" in low and "spawn" in low:
+        return True
+    if "connecting to: 127.0.0.1" in low or "connected to: 127.0.0.1" in low:
+        return True
+    return False
+
+
+def _incident_anchor_epoch(error_details: str, preceding_logs: list[str]) -> float | None:
+    """Prefer the latest CRITICAL/fault timestamp; fall back to last timestamp in context."""
+    candidates: list[float] = []
+    for blob in (error_details or "", "\n".join(preceding_logs or [])):
+        for line in blob.splitlines():
+            low = line.lower()
+            if any(
+                k in low
+                for k in (
+                    "critical",
+                    "godot did not exit",
+                    "killing process",
+                    "unhandled exception",
+                    "exited unexpectedly",
+                )
+            ):
+                ts = _parse_line_timestamp(line)
+                if ts is not None:
+                    candidates.append(ts)
+    if candidates:
+        return max(candidates)
+    for line in reversed(list(preceding_logs or []) + (error_details or "").splitlines()):
+        ts = _parse_line_timestamp(line)
+        if ts is not None and not _is_boot_fingerprint_line(line):
+            return ts
+    return None
+
+
+def _extract_log_sequence_bullets(
+    lines: list[str],
+    *,
+    max_bullets: int = 10,
+    anchor_epoch: float | None = None,
+    window_seconds: float = 600.0,
+) -> list[str]:
+    """Chronological evidence lines near the fault — skip boot Spawning noise."""
+    filtered: list[str] = []
+    for line in lines:
+        s = (line or "").strip()
+        if not s or s.startswith("... [gap] ..."):
+            continue
+        if _is_boot_fingerprint_line(s):
+            continue
+        filtered.append(s)
+
+    if anchor_epoch is None:
+        anchor_epoch = _incident_anchor_epoch("\n".join(filtered), filtered)
+
+    near: list[str] = []
+    if anchor_epoch is not None:
+        for s in filtered:
+            ts = _parse_line_timestamp(s)
+            if ts is None:
+                continue
+            if abs(ts - anchor_epoch) <= window_seconds:
+                near.append(s)
+        if not near:
+            # Widen once if nothing in the tight window.
+            for s in filtered:
+                ts = _parse_line_timestamp(s)
+                if ts is None:
+                    continue
+                if abs(ts - anchor_epoch) <= window_seconds * 6:
+                    near.append(s)
+    pool = near if near else filtered
+
+    picked: list[str] = []
+    seen: set[str] = set()
+    for s in pool:
+        low = s.lower()
+        if not any(k in low for k in _LOG_SEQUENCE_KEYWORDS):
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        picked.append(s[:240])
+    if len(picked) < 3:
+        # Prefer the end of the pool (closest to the fault) over file-start INFO.
+        for s in reversed(pool):
+            if s in seen:
+                continue
+            seen.add(s)
+            picked.insert(0, s[:240])
+            if len(picked) >= max_bullets:
+                break
+    return picked[-max_bullets:]
+
+
+def ensure_defect_title_has_version(title: str, software_version: str) -> str:
+    """Force ``{software_version} => …`` on defect ticket titles (single line only)."""
+    from network.defect_ticket import first_title_line
+
+    sv = (software_version or "").strip() or PRODUCT_VERSION_PLACEHOLDER
+    t = first_title_line(title or "")
+    if not t:
+        return f"{sv} => Cabinet => Incident"
+    if t.startswith(sv + " =>") or t.startswith(sv + "=>"):
+        return t
+    if re.match(r"(?i)^(ruleta|roulette|slot|cabinet|game)\s*=>", t):
+        return f"{sv} => {t}"
+    if "=>" in t:
+        return f"{sv} => {t}"
+    return f"{sv} => Roulette => {t}"
+
+
+def rewrite_defect_ticket_software_version(text: str, software_version: str) -> str:
+    """Rewrite Title so SOFTWARE_VERSION is first; keep Key details as its own section."""
+    from network.defect_ticket import parse_defect_ticket_sections
+
+    sv = (software_version or "").strip() or PRODUCT_VERSION_PLACEHOLDER
+    t = text or ""
+    if not t.strip():
+        return t
+
+    parts = parse_defect_ticket_sections(t)
+    title = ensure_defect_title_has_version(parts.get("Title", ""), sv)
+    key = (parts.get("Key details") or "").strip()
+    actual = (parts.get("Actual result") or "").strip()
+    expected = (parts.get("Expected result") or "").strip()
+
+    out = f"Title: {title}\n\n"
+    if key:
+        out += f"Key details:\n{key}\n\n"
+    if actual:
+        out += f"Actual result: {actual}\n\n"
+    if expected:
+        out += f"Expected result: {expected}"
+    return out.strip()
+
+
+def _infer_root_cause_line(
+    error_details: str,
+    preceding_logs: list[str],
+    known: object | None,
+    failure: str,
+) -> str:
+    """Single-sentence root cause from log evidence and known-issue catalog."""
+    import re
+
+    from roulette_errors import find_roulette_error_in_text
+
+    roulette = find_roulette_error_in_text(error_details, "\n".join(preceding_logs))
+    if roulette is not None:
+        return (
+            f"Roulette ERROR {roulette.code} screen displayed (Godot UI closed): "
+            f"{roulette.title}"
+        )
+
+    combined = list(preceding_logs) + error_details.splitlines()
+    for line in reversed(combined):
+        s = line.strip()
+        if not s:
+            continue
+        if "Unhandled exception" in s:
+            ex = re.search(r"Unhandled exception:\s*(\S+)", s)
+            meth = re.search(r"at\s+(\S+\.\S+)\(", s)
+            if ex and meth:
+                return (
+                    f"Unhandled {ex.group(1)} in {meth.group(1).split('.')[-1]} "
+                    "— first fatal fault in the Godot/ruleta GUI stack."
+                )
+            if ex:
+                return f"Unhandled {ex.group(1)} — first fatal fault in the game client."
+        if "Godot did not exit" in s:
+            return (
+                "Godot renderer hung on shutdown and was force-killed — "
+                "usually follows an earlier GUI exception or ruleta service restart."
+            )
+        if re.search(r"exited unexpectedly|Ruleta process:\s*\d+\s+ended", s, re.I):
+            return (
+                "Ruleta/Godot child process terminated unexpectedly — "
+                "correlate godot\\ and ruleta\\ logs around this timestamp."
+            )
+        if "Missing node" in s:
+            return (
+                f"Scene graph fault before crash: {s[:180]} "
+                "(missing node often precedes NullReference on payout/touch)."
+            )
+        if "Exception while reading QueueData" in s:
+            return (
+                "Godot QueueData deserialization failed — backend sent null/invalid "
+                "lock or bet state to the UI queue."
+            )
+    if known is not None:
+        pc = getattr(known, "probable_cause", "") or ""
+        if ":" in pc:
+            tail = pc.split(":", 1)[1].strip()
+            if tail:
+                return tail
+    return f"CRITICAL fault: {failure} — inspect stack/context lines for the first ERROR/WARN before the fault."
+
+
+def _extract_game_name(error_details: str, preceding: list[str]) -> str:
+    import re
+
+    blob = f"{error_details}\n" + "\n".join(preceding)
+    theme = re.search(r"Themes[\\/\\]([^\\/\\]+)", blob, re.I)
+    if theme:
+        return theme.group(1)
+    if re.search(
+        r"ruleta|roulette|godot|TRIAL\s+error=|Roulette\s+ERROR\s+\d+",
+        blob,
+        re.I,
+    ):
+        return "Roulette"
+    if re.search(r"onehand|slot", blob, re.I):
+        return "Slot"
+    return "Cabinet"
+
+
+def _extract_failure_summary(error_details: str) -> str:
+    import re
+
+    from roulette_errors import find_roulette_error_in_text
+
+    roulette = find_roulette_error_in_text(error_details)
+    if roulette is not None:
+        short = roulette.title.rstrip(".")
+        if len(short) > 80:
+            short = short[:77] + "…"
+        return f"Roulette ERROR {roulette.code} — {short}"
+
+    m = re.search(r"Unhandled exception:\s*(\S+)", error_details)
+    if m:
+        ex = m.group(1)
+        meth = re.search(r"at\s+(\S+\.\S+)\(", error_details)
+        if meth:
+            short_m = meth.group(1).split(".")[-1]
+            return f"{ex} ({short_m})"
+        return ex
+    for pat in (
+        r"(NullReferenceException)",
+        r"(InvalidOperationException)",
+        r"(IOException)",
+        r"Critical Log Exception",
+    ):
+        m = re.search(pat, error_details, re.I)
+        if m:
+            return m.group(1)
+    for line in error_details.splitlines():
+        s = line.strip()
+        if len(s) > 24:
+            return s[:120]
+    return "Critical log exception"
+
+
+def _roulette_catalog_prompt_block(
+    error_details: str,
+    preceding_logs: list[str],
+) -> str | None:
+    """Matched Roulette ERROR N catalog text for cloud / offline ticket AI."""
+    from roulette_errors import (
+        find_roulette_error_in_text,
+        format_catalog_block_for_ai,
+    )
+
+    info = find_roulette_error_in_text(
+        error_details,
+        "\n".join(preceding_logs or []),
+    )
+    if info is None:
+        return None
+    return format_catalog_block_for_ai(info)
+
+
+def _offline_incident_summary(
+    error_details: str,
+    preceding_logs: list[str],
+    software_version: str,
+    *,
+    ai_fallback: bool = False,
+) -> str:
+    """Structured defect ticket from log evidence when AI providers fail or return garbage."""
+    from parser_rules import match_known_issue
+    from roulette_errors import find_roulette_error_in_text
+
+    sv = (software_version or "").strip() or PRODUCT_VERSION_PLACEHOLDER
+    game = _extract_game_name(error_details, preceding_logs)
+    failure = _extract_failure_summary(error_details)
+
+    roulette = find_roulette_error_in_text(
+        error_details,
+        "\n".join(preceding_logs or []),
+    )
+
+    known = match_known_issue(error_details, "CRITICAL")
+    if known is None:
+        for line in preceding_logs:
+            known = match_known_issue(line, "CRITICAL")
+            if known:
+                break
+
+    if roulette is not None:
+        title_label = f"Roulette ERROR {roulette.code} — {roulette.title.rstrip('.')}"
+        if len(title_label) > 100:
+            title_label = title_label[:97] + "…"
+    else:
+        title_label = known.name if known else failure
+    title = ensure_defect_title_has_version(f"{game} => {title_label}", sv)
+
+    root_cause = _infer_root_cause_line(error_details, preceding_logs, known, failure)
+    anchor = _incident_anchor_epoch(error_details, list(preceding_logs))
+    seq_lines = _extract_log_sequence_bullets(
+        list(preceding_logs) + error_details.splitlines(),
+        anchor_epoch=anchor,
+    )
+
+    bullets: list[str] = [
+        f"ROOT CAUSE: {root_cause}",
+    ]
+    if roulette is not None:
+        bullets.append(roulette.probable_cause)
+        bullets.append("Tracking: GCI-ROULETTE-007 — Roulette ERROR N screen (Godot UI closed).")
+    if seq_lines:
+        bullets.append("LOG SEQUENCE:")
+        bullets.extend(f"  * {ln}" for ln in seq_lines)
+    elif known and roulette is None:
+        bullets.append(known.probable_cause)
+
+    combined = list(preceding_logs) + error_details.splitlines()
+    seq_set = set(seq_lines)
+    for line in combined:
+        s = line.strip()
+        if not s or s in seq_set:
+            continue
+        for needle in (
+            "Missing node",
+            "Unhandled exception",
+            "Godot did not exit",
+            "exited unexpectedly",
+            "Ruleta process:",
+            "Exception while reading QueueData",
+            "Critical Log Exception",
+            "TRIAL error=",
+            "Trial expired",
+            "Roulette ERROR",
+        ):
+            if needle.lower() in s.lower() and s not in bullets and len(bullets) < 14:
+                bullets.append(s[:220])
+                break
+
+    if len(bullets) <= 2:
+        bullets.append(failure)
+
+    if ai_fallback:
+        bullets.append(
+            "Evidence-based summary — AI returned insufficient detail "
+            "(blocked, safety filter, or empty response)."
+        )
+    else:
+        bullets.append(
+            "Offline draft — AI summary unavailable (rate limit, quota, or missing API key)."
+        )
+
+    actual = (
+        f"The session logged a CRITICAL fault in {game}: {failure}. "
+        f"{root_cause}"
+    )
+    if roulette is not None:
+        expected = (
+            f"{game} should play without opening the dedicated ERROR {roulette.code} "
+            "window; Godot UI should stay up and the wheel/sensors/COM/power path for "
+            "this catalog fault should remain healthy."
+        )
+    else:
+        expected = (
+            f"{game} should run without unhandled GUI exceptions or hung Godot shutdowns; "
+            "touch/payout flows should stay synchronized with the Aurum backend."
+        )
+    if known and getattr(known, "issue_id", "").startswith("GCI-GODOT-002"):
+        expected = (
+            f"{game} Godot renderer should exit cleanly on game switch; "
+            "ruleta service should not kill a hung process without a preceding logged fault."
+        )
+
+    formatted: list[str] = []
+    for b in bullets:
+        if b == "LOG SEQUENCE:":
+            formatted.append("- LOG SEQUENCE:")
+        elif b.startswith("  * "):
+            formatted.append(b)
+        else:
+            formatted.append(f"- {b}")
+    key_block = "\n".join(formatted)
+    return (
+        f"Title: {title}\n\n"
+        f"Key details:\n{key_block}\n\n"
+        f"Actual result: {actual}\n\n"
+        f"Expected result: {expected}"
+    )
 
 
 def _call_with_failover(
@@ -845,14 +1421,28 @@ def enhance_incident_summary(
     )
     error_block = err if err else "(No error_details or stack trace was provided.)"
 
-    user_content = f"""Analyze the following incident payload. Base **LOG SEQUENCE** strictly on preceding_logs when present.
+    catalog_block = _roulette_catalog_prompt_block(err, prev_lines)
+    catalog_section = ""
+    if catalog_block:
+        catalog_section = (
+            "\n--- known Roulette ERROR (catalog) ---\n"
+            f"{catalog_block}\n"
+        )
+
+    user_content = f"""Analyze the following incident payload.
+
+CRITICAL RULES:
+1. Title MUST start with SOFTWARE_VERSION exactly: {sv} => [Game] => [Summary]
+2. LOG SEQUENCE must use timestamps near the CRITICAL fault in error_details.
+   Do NOT quote LogDaemon ``Spawning v…`` / early-day Connecting lines unless the fault is at boot.
+3. If a Roulette ERROR catalog block is present, use it for ROOT CAUSE and cite GCI-ROULETTE-007.
 
 --- preceding_logs ({len(prev_lines)} chronological line(s), oldest → newest) ---
 {preceding_block}
 
 --- error_details ---
 {error_block}
-"""
+{catalog_section}"""
     if len(user_content) > _MAX_USER_CHARS:
         user_content = (
             user_content[:_MAX_USER_CHARS] + "\n…(truncated for API size limits)…"
@@ -917,7 +1507,7 @@ def enhance_incident_summary(
     def run_venice() -> str:
         return _venice_chat_completion(system_instruction, user_content, vk).strip()
 
-    return _call_with_failover(
+    result = _call_with_failover(
         primary_provider=prov,
         gemini_key=key,
         groq_key=groq_api_key or "",
@@ -930,6 +1520,14 @@ def enhance_incident_summary(
         run_venice=run_venice,
         audit=False,
     )
+    if _is_ai_unavailable_response(result) or _is_low_quality_ai_response(result):
+        return _offline_incident_summary(
+            error_details,
+            preceding_logs,
+            software_version,
+            ai_fallback=bool(result and not _is_ai_unavailable_response(result)),
+        )
+    return rewrite_defect_ticket_software_version(result, sv)
 
 
 def generate_full_audit(
@@ -1035,7 +1633,7 @@ def generate_full_audit(
     def run_venice() -> str:
         return _venice_chat_completion(system_instruction, user_payload, vk).strip()
 
-    return _call_with_failover(
+    result = _call_with_failover(
         primary_provider=prov,
         gemini_key=key,
         groq_key=groq_api_key or "",
@@ -1048,4 +1646,7 @@ def generate_full_audit(
         run_venice=run_venice,
         audit=True,
     )
+    if _is_ai_unavailable_response(result):
+        return result
+    return rewrite_defect_ticket_software_version(result, sv)
 

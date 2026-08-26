@@ -43,6 +43,57 @@ def test_parse_sas_6f_paste_coin_in_simple() -> None:
     assert rows["0000"] == "34"
 
 
+def test_parse_sas_6f_paste_gates_on_command_byte() -> None:
+    """A 2F RX that happens to contain token 6F must not feed the 6F parser."""
+    from gui.sas_verify_dialog import parse_sas_6f_paste
+
+    # Command byte is 2F; trailing BCD happens to include 6F as a value nibble pair.
+    line = "RX<= 01 2F 07 00 00 02 00 00 6F 00 D2 B2"
+    assert parse_sas_6f_paste(line) == []
+
+
+def test_parse_sas_6f_paste_accepts_spaced_rx_arrow() -> None:
+    from gui.sas_verify_dialog import parse_sas_6f_paste
+
+    line = "RX <= 01 6F 00 01 00 00 00 02 00 34"
+    rows = {r.meter_id: r.sas_value_text for r in parse_sas_6f_paste(line)}
+    assert rows["0000"] == "34"
+
+
+def test_igt_6f_meter_value_rejects_hex_letters() -> None:
+    from gui.sas_verify_dialog import _igt_6f_meter_value_to_credits
+
+    assert _igt_6f_meter_value_to_credits("000000000000001100") == "1100"
+    assert _igt_6f_meter_value_to_credits("000000000000016F3E") == ""
+    assert _igt_6f_meter_value_to_credits("00AF") == ""
+    assert _igt_6f_meter_value_to_credits("") == ""
+
+
+def test_decode_2f_rx_frame_rejects_corrupt_bcd() -> None:
+    from gui.sas_verify_dialog import _decode_2f_rx_frame
+
+    good = bytes.fromhex("012F0700000200000000D2B2")
+    assert _decode_2f_rx_frame(good) == ("02", "0")
+
+    corrupt = bytes.fromhex("012F07000002000000AFD2B2")
+    assert _decode_2f_rx_frame(corrupt) is None
+
+
+def test_parse_sas_2f_paste_accepts_compact_hex() -> None:
+    from gui.sas_verify_dialog import parse_sas_2f_paste
+
+    paste = "RX<=012F0700000200000000B0C7"
+    got = parse_sas_2f_paste(paste)
+    assert got["0000"] == "0"
+
+
+def test_parse_sas_2f_paste_rejects_corrupt_bcd() -> None:
+    from gui.sas_verify_dialog import parse_sas_2f_paste
+
+    paste = "RX<= 01 2F 07 00 00 02 00 00 00 AF D2 B2"
+    assert parse_sas_2f_paste(paste) == {}
+
+
 def test_wire_meter_code_to_6f_verify_code() -> None:
     from gui.sas_verify_dialog import wire_meter_code_to_6f_verify_code
 
@@ -84,6 +135,18 @@ def test_pick_sas_com_port_skips_ticket_printer() -> None:
     assert pick_sas_com_port("", ports) == "COM11"
 
 
+def test_pick_sas_com_port_returns_none_when_only_non_sas_devices() -> None:
+    """Opening the ticket printer never yields meters and disturbs the printer."""
+    from network.sas_serial_meters import SerialPortInfo, pick_sas_com_port
+
+    ports = [
+        SerialPortInfo("COM4", "Ticket printer(s)"),
+        SerialPortInfo("COM8", "Receipt printer"),
+    ]
+    assert pick_sas_com_port("", ports) is None
+    assert pick_sas_com_port("COM4", ports) is None
+
+
 def test_auto_wire_baud_combos_prefers_raw_19200() -> None:
     from network.sas_serial_meters import AUTO_WIRE_BAUD_COMBOS, _probe_should_continue
 
@@ -91,6 +154,49 @@ def test_auto_wire_baud_combos_prefers_raw_19200() -> None:
     assert _probe_should_continue("No bytes were received (batch 1).")
     assert _probe_should_continue("SAS link not responding on COM4")
     assert not _probe_should_continue("Could not open COM4 for SAS meter fetch.")
+
+
+def test_roulette_wire_combos_prefers_mux_on_cabinet_only() -> None:
+    from network.sas_serial_meters import (
+        AUTO_WIRE_BAUD_RTS_COMBOS,
+        ROULETTE_WIRE_BAUD_RTS_COMBOS,
+        wire_baud_combos_for_game_kind,
+    )
+
+    # Host / workstation cable into MUX upstream = same raw@19200 order as slot
+    # (AFT host COM path). Prefetch max_combos=2 must not burn on mux-only tries.
+    host = wire_baud_combos_for_game_kind("roulette", on_cabinet=False)
+    assert host[0][:2] == ("raw", 19200)
+    assert host == AUTO_WIRE_BAUD_RTS_COMBOS
+    # On the roulette EGM: CommCtrl MUX @921600 (cabinet COM5).
+    cabinet = wire_baud_combos_for_game_kind("roulette", on_cabinet=True)
+    assert cabinet[0][:2] == ("mux", 921600)
+    assert cabinet == ROULETTE_WIRE_BAUD_RTS_COMBOS
+    assert wire_baud_combos_for_game_kind("slot")[0][:2] == ("raw", 19200)
+
+
+def test_pick_sas_com_port_roulette_on_cabinet_prefers_com5() -> None:
+    from network.sas_serial_meters import SerialPortInfo, pick_sas_com_port
+
+    ports = [
+        SerialPortInfo("COM4", "Ticket printer(s)"),
+        SerialPortInfo("COM5", "Online MUX-SAS"),
+        SerialPortInfo("COM7", "Leds"),
+    ]
+    assert (
+        pick_sas_com_port("", ports, game_kind="roulette", on_cabinet=True) == "COM5"
+    )
+    # Host / slot path still prefers COM4 when it is not a ticket printer.
+    host_ports = [
+        SerialPortInfo("COM4", "FTDI USB Serial"),
+        SerialPortInfo("COM5", "Other"),
+    ]
+    assert (
+        pick_sas_com_port("", host_ports, game_kind="roulette", on_cabinet=False)
+        == "COM4"
+    )
+    assert pick_sas_com_port("", host_ports, game_kind="slot") == "COM4"
+
 
 
 def test_general_poll_alternation() -> None:
@@ -235,6 +341,22 @@ def test_parse_rx_response_ordered_coin_in() -> None:
     assert got == [("0000", 34)]
 
 
+def test_malformed_bcd_meter_is_omitted_not_zeroed() -> None:
+    """Corrupt BCD must read as "no value", never as a zero that can MATCH."""
+    from network.meter_comparator import meter_value_to_int_or_none
+
+    assert meter_value_to_int_or_none("000034") == 34
+    assert meter_value_to_int_or_none("0000AF") is None
+    assert meter_value_to_int_or_none("") is None
+
+    # 0000 = 34 (good), 0100 = corrupt payload, 0200 = 7 (good, still in sync).
+    line = "RX<= 01 6F 00 01 00 00 00 02 00 34 00 01 02 00 AF 00 02 02 00 07"
+    got = dict(sas_parser.parse_rx_response_ordered(line))
+    assert got["0000"] == 34
+    assert "0001" not in got
+    assert got["0002"] == 7
+
+
 def test_parse_rx_response_meters_dict() -> None:
     line = "RX<= 01 6F 00 01 00 00 00 02 00 34"
     d = sas_parser.parse_rx_response_meters(line)
@@ -319,9 +441,10 @@ def test_cashless_total_reconciles_with_components() -> None:
 def test_zero_length_meter_does_not_desync() -> None:
     ordered = sas_parser.parse_rx_response_ordered(_RX_CREDIT)
     codes = [c for c, _ in ordered]
-    assert codes == ["0B00", "1700", "1500", "6E00", "2300", "1600", "1800"]
+    # 6E00 reported length 0 — omitted (no fake zero); later meters still parse.
+    assert codes == ["0B00", "1700", "1500", "2300", "1600", "1800"]
     d = dict(ordered)
-    assert d["6E00"] == 0  # device reported 6E00 with length 0
+    assert "6E00" not in d
     assert d["1700"] == 862000  # consistent with the cashless frame
     assert d["1500"] == 8340
 
@@ -467,7 +590,11 @@ def test_build_bill_display_rows_empty_fallback_catalog() -> None:
 
 def test_build_bill_rows_from_cabinet_note_meters() -> None:
     from network.accounting_state_loader import extract_cabinet_bill_note_meters
-    from network.sas_serial_meters import build_bill_rows_from_cabinet_note_meters, build_bill_display_rows
+    from network.sas_serial_meters import (
+        build_bill_display_rows,
+        build_bill_rows_from_cabinet_note_meters,
+        merge_bill_rows_with_catalog,
+    )
 
     state = {
         "note_curInCnt_500": "6",
@@ -488,6 +615,31 @@ def test_build_bill_rows_from_cabinet_note_meters() -> None:
     assert len(display) == 7
     assert next(r for r in display if r.label == "$5.00").count == 6
     assert all(r.count == 0 for r in display if r.label == "$1.00")
+
+    # Empty catalog placeholders must not block a later cabinet note read
+    # (the local Auto-fetch path used to re-feed them and keep Bills at 0).
+    placeholders = merge_bill_rows_with_catalog(())
+    assert all(r.source == "missing" for r in placeholders)
+    recovered = build_bill_display_rows(bill_rows=placeholders, machine_state=state)
+    assert next(r for r in recovered if r.label == "$5.00").count == 6
+
+
+def test_build_bill_display_rows_includes_cabinet_thousand_dollar_note() -> None:
+    """``.90`` publishes notecurin*100000 ($1,000) — keep it in BILL IN TOTAL."""
+    from network.sas_serial_meters import build_bill_display_rows
+
+    state = {
+        "notecurincnt200": "6",
+        "notecurinamt200": "1200",
+        "notecurincnt100000": "1",
+        "notecurinamt100000": "100000",
+        "notesinstackeramt": "101200",
+        "notesinstackercnt": "7",
+    }
+    display = build_bill_display_rows(machine_state=state)
+    assert any(r.label == "$1,000.00" and r.count == 1 for r in display)
+    assert sum(r.count for r in display) == 7
+    assert sum(r.amount_cents for r in display) == 101200
 
 
 def test_expand_aggregate_bill_assigns_single_denom_row() -> None:
@@ -545,6 +697,58 @@ def test_should_skip_cabinet_reload_when_loaded_and_same_root() -> None:
     )
 
 
+def test_should_skip_cabinet_reload_false_when_not_loaded() -> None:
+    from gui.sas_verify_dialog import should_skip_cabinet_reload
+
+    root = r"\\10.0.0.90\c$\Goldclub\var\log"
+    assert not should_skip_cabinet_reload(
+        scan_root=root,
+        loaded_scan_root=root,
+        machine_state_loaded=False,
+    )
+
+
+def test_should_skip_cabinet_reload_false_when_root_changed() -> None:
+    from gui.sas_verify_dialog import should_skip_cabinet_reload
+
+    assert not should_skip_cabinet_reload(
+        scan_root=r"\\10.0.0.90\c$\Goldclub\var\log",
+        loaded_scan_root=r"\\10.0.0.171\c$\Goldclub\var\log",
+        machine_state_loaded=True,
+    )
+
+
+def test_should_skip_cabinet_reload_respects_ttl() -> None:
+    from gui.sas_verify_dialog import should_skip_cabinet_reload
+
+    root = r"\\10.0.0.90\c$\Goldclub\var\log"
+    assert should_skip_cabinet_reload(
+        scan_root=root,
+        loaded_scan_root=root,
+        machine_state_loaded=True,
+        loaded_at=100.0,
+        ttl_seconds=15.0,
+        now=110.0,
+    )
+    assert not should_skip_cabinet_reload(
+        scan_root=root,
+        loaded_scan_root=root,
+        machine_state_loaded=True,
+        loaded_at=100.0,
+        ttl_seconds=15.0,
+        now=120.0,
+    )
+    # Same root alone is not enough when TTL is set but loaded_at is missing.
+    assert not should_skip_cabinet_reload(
+        scan_root=root,
+        loaded_scan_root=root,
+        machine_state_loaded=True,
+        loaded_at=None,
+        ttl_seconds=15.0,
+        now=100.0,
+    )
+
+
 def test_meter_fetch_display_action_capture_when_cached() -> None:
     from gui.sas_verify_dialog import meter_fetch_display_action
 
@@ -589,6 +793,9 @@ def test_format_bill_amount_display() -> None:
     assert format_bill_amount_display(2200) == "22.00"
     assert format_bill_amount_display(20800) == "208.00"
     assert format_bill_amount_display(0) == "0.00"
+    assert format_bill_amount_display(-50) == "0.00"
+    assert format_bill_amount_display("not-a-number") == "0.00"  # type: ignore[arg-type]
+    assert format_bill_amount_display(None) == "0.00"  # type: ignore[arg-type]
 
 
 def test_format_bill_reject_count_label() -> None:
@@ -658,7 +865,7 @@ def test_compute_master_summary_reference_totals() -> None:
 
     values = {
         "000B": "20800",
-        "0000": "999999",  # wagered - must not inflate Credit In / Total In
+        "0000": "999999",  # wagered — must not inflate Credit In / Total In
         "0017": "500",
         "0015": "500",
         "HPIN": "500",
@@ -696,6 +903,39 @@ def test_master_credit_in_excludes_coin_in_wagered() -> None:
     )
     assert cash_only["credit_in"] == with_bets_ignored["credit_in"]
     assert abs(cash_only["credit_in"] - 100.0) < 0.01
+
+
+def test_master_handpay_in_uses_device_manager_in_not_sas_0023() -> None:
+    """EGM Handpay In = handpayCashableInAmt; SAS 0023 is hand-paid out."""
+    from gui.sas_verify_dialog import MASTER_HANDPAY_IN_CODE, compute_master_summary
+    from gui.view_model import IncidentViewModel
+
+    assert MASTER_HANDPAY_IN_CODE == "HPIN"
+    vm = IncidentViewModel.__new__(IncidentViewModel)
+    state = {
+        "handpaycashableinamt": "100000",
+        "handpaycashableoutamt": "0",
+        "billin": "500",
+        "wattransferinamt": "100000",
+        "ticketinamt": "100000",
+    }
+    assert vm.get_gm2u_value_for_sas_code("HPIN", state) == "100000"
+    assert vm.get_gm2u_value_for_sas_code("0023", state) == "0"
+    values = {
+        "000B": "500",
+        "0000": "888888",  # wagered — excluded from Credit In
+        "0017": "100000",
+        "0015": "100000",
+        "HPIN": "100000",
+        "006E": "0",
+        "0001": "0",
+        "0003": "0",
+        "0016": "0",
+        "0018": "0",
+    }
+    totals = compute_master_summary(values)
+    assert abs(totals["credit_in"] - 3005.0) < 0.01
+    assert abs(totals["total_credit"] - 3005.0) < 0.01
 
 
 def test_format_transfer_count_display() -> None:
@@ -782,9 +1022,97 @@ def test_build_yield_chart_slices_reference() -> None:
 
 
 def test_build_yield_chart_slices_empty_without_bet() -> None:
-    from gui.machine_yield_chart import build_yield_chart_slices
+    import inspect
+
+    from gui.machine_yield_chart import (
+        EMPTY_YIELD_CHART_TEXT,
+        MachineYieldChartWidget,
+        build_yield_chart_slices,
+    )
 
     assert build_yield_chart_slices(None, None) == ()
+    # Empty chart must say so in words — a lone dash looked like a broken pie.
+    assert EMPTY_YIELD_CHART_TEXT == "no games yet"
+    src = inspect.getsource(MachineYieldChartWidget.paintEvent)
+    assert "EMPTY_YIELD_CHART_TEXT" in src
+    assert '"\u2014"' not in src
+
+
+def test_build_yield_chart_slices_negative_hold_keeps_real_pct() -> None:
+    """Yield > 100%: legend keeps real negative hold; ring weights by |Y| and |H|."""
+    from gui.machine_yield_chart import build_yield_chart_slices
+
+    slices = build_yield_chart_slices(117.41, -17.41)
+    assert len(slices) == 2
+    assert abs(slices[0].pct - 117.41) < 0.001
+    assert abs(slices[1].pct - (-17.41)) < 0.001  # not clamped to 0.00
+    total = 117.41 + 17.41
+    assert abs(slices[0].fraction - (117.41 / total)) < 0.001
+    assert abs(slices[1].fraction - (17.41 / total)) < 0.001
+    assert slices[0].fraction > slices[1].fraction
+    assert abs(slices[0].fraction + slices[1].fraction - 1.0) < 0.001
+
+
+def test_build_yield_chart_slices_over_yield_screenshot_case() -> None:
+    """132.85% yield / -32.85% hold must leave a visible Hold wedge (not a solid ring)."""
+    from gui.machine_yield_chart import build_yield_chart_slices
+
+    slices = build_yield_chart_slices(132.85, -32.85)
+    assert abs(slices[0].pct - 132.85) < 0.001
+    assert abs(slices[1].pct - (-32.85)) < 0.001
+    total = 132.85 + 32.85
+    assert slices[1].fraction > 0.15
+    assert abs(slices[0].fraction - (132.85 / total)) < 0.001
+    assert slices[0].fraction > slices[1].fraction
+
+
+def test_build_yield_chart_slices_massive_house_loss() -> None:
+    """Screenshot case: ~1200% yield must not paint Hold as ~92% of the ring."""
+    from gui.machine_yield_chart import build_yield_chart_slices
+
+    # Bet $45.08 / Win $539.60 → Yield 1196.98%, Hold −1096.98%
+    slices = build_yield_chart_slices(1196.98, -1096.98)
+    assert abs(slices[0].pct - 1196.98) < 0.001
+    assert abs(slices[1].pct - (-1096.98)) < 0.001
+    total = 1196.98 + 1096.98
+    assert abs(slices[0].fraction - (1196.98 / total)) < 0.001
+    assert abs(slices[1].fraction - (1096.98 / total)) < 0.001
+    # Teal Yield is the majority; amber is the over-pay share, not the whole pie.
+    assert slices[0].fraction > 0.50
+    assert slices[0].fraction > slices[1].fraction
+
+
+def test_build_yield_chart_slices_rejects_nan_bool_and_tiny_over_yield() -> None:
+    import math
+
+    from gui.machine_yield_chart import build_yield_chart_slices, format_yield_chart_pct
+
+    assert build_yield_chart_slices(float("nan"), 0.0) == ()
+    assert build_yield_chart_slices(True, False) == ()  # type: ignore[arg-type]
+    slices = build_yield_chart_slices(100.3, -0.3)
+    assert slices[1].fraction > 0.0  # must not be filtered as "empty"
+    assert format_yield_chart_pct(float("inf")) == "—"
+    assert math.isfinite(slices[0].fraction)
+
+
+def test_build_yield_chart_slices_negative_yield_symmetric() -> None:
+    from gui.machine_yield_chart import build_yield_chart_slices
+
+    slices = build_yield_chart_slices(-10.0, 110.0)
+    assert abs(slices[0].pct - (-10.0)) < 0.001
+    assert abs(slices[1].pct - 110.0) < 0.001
+    total = 10.0 + 110.0
+    assert abs(slices[0].fraction - (10.0 / total)) < 0.001
+    assert abs(slices[1].fraction - (110.0 / total)) < 0.001
+    assert slices[1].fraction > slices[0].fraction
+
+
+def test_format_game_pct_display_rejects_nan() -> None:
+    from gui.sas_verify_dialog import format_game_pct_display
+
+    assert format_game_pct_display(None) == "—"
+    assert format_game_pct_display(float("nan")) == "—"
+    assert format_game_pct_display(12.5) == "12.50%"
 
 
 def test_pie_geometry_centered_in_pie_rect() -> None:
@@ -798,6 +1126,46 @@ def test_pie_geometry_centered_in_pie_rect() -> None:
     assert pie_rect.right() < legend_rect.left() + 2
     assert abs(cx - pie_rect.center().x()) < 0.01
     assert rx > 0 and ry > 0
+
+
+def test_outside_label_anchor_lands_beyond_the_ring() -> None:
+    """Value callouts must sit strictly outside the ring, not over its face.
+
+    This is the fix for the "27.96% not visible in black" report: the hub
+    used to draw the number where the far inner wall shows through the hole,
+    so a plain dark color disappeared. Labels now anchor further out along
+    the same radial direction as their slice's own rim point.
+    """
+    import math
+
+    from gui.machine_yield_chart import outside_label_anchor
+
+    cx, cy, rx, ry = 100.0, 80.0, 60.0, 33.0
+    for mid_angle in (0.0, 45.0, 91.0, 180.0, 270.0, 315.0):
+        leader_start, label_point, on_right = outside_label_anchor(cx, cy, rx, ry, mid_angle)
+        d_leader = math.hypot(leader_start.x() - cx, leader_start.y() - cy)
+        d_label = math.hypot(label_point.x() - cx, label_point.y() - cy)
+        d_rim = math.hypot(
+            rx * math.cos(math.radians(90.0 - mid_angle)),
+            ry * math.sin(math.radians(90.0 - mid_angle)),
+        )
+        # Both anchors sit outside the ring's own rim, and the label is
+        # further out than the leader-line start point.
+        assert d_leader > d_rim * 0.999
+        assert d_label > d_leader
+        # Alignment side matches which half of the donut the slice is on.
+        assert on_right == (label_point.x() >= cx)
+
+
+def test_outside_label_anchor_empty_slice_stays_at_center() -> None:
+    from gui.machine_yield_chart import outside_label_anchor
+
+    # A slice whose rim point sits exactly on the vertical axis (dx == 0)
+    # must not raise and must resolve a deterministic side.
+    leader_start, label_point, on_right = outside_label_anchor(0.0, 0.0, 50.0, 30.0, 0.0)
+    assert on_right is True
+    assert abs(leader_start.x()) < 1e-9
+    assert abs(label_point.x()) < 1e-9
 
 
 def test_center_widget_in_panel_top_stuck_layout() -> None:
@@ -877,12 +1245,44 @@ def test_aggregate_theme_paytable_meters() -> None:
     assert totals == {"coinin": "170", "gamesplayed": "3"}
 
 
-def test_build_coin_panel_display_rows_aggregate() -> None:
+def test_build_coin_panel_display_rows_ignores_electronic_credit_meters() -> None:
+    """Cashless EGMs have coinin/coinout/curtodrop — those must not fill Coins."""
+    from network.sas_serial_meters import build_all_coin_panel_rows, catalog_coin_panel_rows
+
+    panels = build_all_coin_panel_rows(
+        machine_state={
+            "coinin": "49280",
+            "coinout": "42536",
+            "curtodropamt": "100000",
+            "curtodropcnt": "7",
+            "curincnt": "3",
+        },
+        sas_values={"0000": "49280", "0001": "42536", "0002": "100000"},
+    )
+    for panel_id, (rows, totals) in panels.items():
+        assert len(rows) == len(catalog_coin_panel_rows(panel_id))
+        assert totals is None
+        assert all(r.amount_cents == 0 and r.count == 0 for r in rows)
+
+
+def test_build_coin_panel_display_rows_uses_physical_coin_meters() -> None:
     from network.sas_serial_meters import build_coin_panel_display_rows, catalog_coin_panel_rows
 
-    rows, totals = build_coin_panel_display_rows("in", machine_state={"coinin": "940"})
+    rows, totals = build_coin_panel_display_rows(
+        "in",
+        machine_state={"physicalcoininamt": "940", "coinincnt": "12"},
+    )
     assert len(rows) == len(catalog_coin_panel_rows("in"))
-    assert totals == {"amount_cents": 940, "count": 0, "sas_code": "0000"}
+    assert totals == {"amount_cents": 940, "count": 12}
+
+    _, zero = build_coin_panel_display_rows(
+        "hopper",
+        machine_state={"cointohopperamt": "0", "cointohoppercnt": "0"},
+    )
+    assert zero == {"amount_cents": 0, "count": 0}
+
+    _, missing = build_coin_panel_display_rows("in", machine_state={})
+    assert missing is None
 
 
 def test_probe_com_port_available_reports_missing_port() -> None:
@@ -992,6 +1392,7 @@ def test_accounting_tab_gui_layout_automated() -> None:
     )
     dlg._paste.setPlainText(sample_paste)
     parsed = build_verify_6f_rows_from_paste(sample_paste)
+    dlg._meter_tabs.setCurrentIndex(TAB_ACCOUNTING)
     dlg._render(parsed_rows=parsed, allow_machine_lookup=False)
     app.processEvents()
 
@@ -1014,7 +1415,14 @@ def test_accounting_tab_gui_layout_automated() -> None:
     assert dlg._table.horizontalScrollBar().maximum() == 0
     status_item = dlg._table.item(0, COL_STATUS)
     assert status_item is not None
-    assert status_item.text() in {"MATCH", "MISMATCH", "PENDING"}
+    # Empty scan root with no compare running renders NO MACHINE (not PENDING).
+    assert status_item.text() in {
+        "MATCH",
+        "MISMATCH",
+        "PENDING",
+        "NOT REPORTED",
+        "NO MACHINE",
+    }
 
 
 def test_sas_verify_window_flags_include_system_menu() -> None:

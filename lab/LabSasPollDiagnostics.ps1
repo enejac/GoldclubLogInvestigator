@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Diagnose missing cabinet qGMID1:80/81 SAS polls (service down vs MUX vs SMB).
     Dot-source from Invoke-WinDivertAft.ps1 and Invoke-SasMuxPollKeeper.ps1.
@@ -6,7 +6,7 @@
 #requires -Version 5.1
 
 if (-not (Get-Command Test-LabSmbAccess -ErrorAction SilentlyContinue)) {
-    . "$PSScriptRoot\LabAccess.ps1"
+    . (Join-Path (Split-Path $PSScriptRoot -Parent) 'LabAccess.ps1')
 }
 if (-not (Get-Command Test-LabWinRmReachable -ErrorAction SilentlyContinue)) {
     . "$PSScriptRoot\LabRemoteTransport.ps1"
@@ -21,7 +21,7 @@ function Resolve-LabPsExecAuthArgsForComputer {
     if (Get-Command Get-LabPsExecArgs -ErrorAction SilentlyContinue) {
         $fleet = if ($script:LabFleetIps) { @($script:LabFleetIps) } else { @() }
         if ($Computer -in $fleet) {
-            return @(Get-LabPsExecArgs)
+            return @(Get-LabPsExecArgs -ComputerName $Computer)
         }
     }
     return @()
@@ -103,7 +103,7 @@ function Initialize-CabinetInjectPrerequisites {
     }
 
     if ($isFleet -and (Get-Command Get-LabPsExecArgs -ErrorAction SilentlyContinue)) {
-        $authArgs = @(Get-LabPsExecArgs)
+        $authArgs = @(Get-LabPsExecArgs -ComputerName $Computer)
         $report.AuthArgs = $authArgs
         $steps.Add('PsExec auth: applied GOLD-CLUB\test (-u/-p) for lab fleet') | Out-Null
     }
@@ -161,7 +161,7 @@ function Initialize-CabinetInjectPrerequisites {
             Initialize-LabSmbCredential -Ip @($Computer)
             $steps.Add('SMB: refreshed cmdkey before PsExec retry') | Out-Null
             if ($isFleet -and (Get-Command Get-LabPsExecArgs -ErrorAction SilentlyContinue)) {
-                $authArgs = @(Get-LabPsExecArgs)
+                $authArgs = @(Get-LabPsExecArgs -ComputerName $Computer)
                 $report.AuthArgs = $authArgs
                 $steps.Add('PsExec auth: re-applied GOLD-CLUB\test before retry') | Out-Null
             }

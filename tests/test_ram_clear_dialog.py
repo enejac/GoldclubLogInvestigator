@@ -53,6 +53,37 @@ def test_finished_dialog_keeps_real_failures_short() -> None:
     assert "[ERROR]" in body
 
 
+def test_summarize_succeeds_when_chain_logged_error_but_finished() -> None:
+    raw = """
+[START] 10-Backup.ps1
+[ERROR] 10-Backup.ps1: access denied (non-fatal in chain)
+[END] 10-Backup.ps1
+[END] ensure state wipe (official targets only)
+[START] post-start game
+[END] post-start game
+[MILESTONE] game up - soft-meter stamp (0x7A) continuing in background
+[END] LogInvestigator RAM Clear
+"""
+    ok, msg = summarize_ram_clear_output(raw, returncode=1)
+    assert ok is True
+    assert "RAM Clear completed" in msg
+
+
+def test_finished_dialog_recovers_from_false_failed_header() -> None:
+    tail = """
+[ERROR] 10-Backup.ps1: access denied
+[MILESTONE] game up - soft-meter stamp (0x7A) continuing in background
+[END] LogInvestigator RAM Clear
+"""
+    raw = "RAM Clear failed.\n\n" + tail.strip()
+    display_ok, body = format_ram_clear_finished_dialog(
+        ok=False, msg=raw, label="GST20664 (10.0.0.90)"
+    )
+    assert display_ok is True
+    assert "RAM Clear completed" in body
+    assert "GST20664" in body
+
+
 FAST_SUCCESS = """
 [END] ensure state wipe (official targets only)
 [START] post-start services
@@ -109,6 +140,10 @@ def test_blank_meter_ui_for_ram_clear_clears_state() -> None:
     dlg._compare_job_id = 4
     dlg._active_compare_job_id = 4
     dlg._local_diff_job_id = 2
+    dlg._meter_fetch_job_id = 7
+    dlg._active_meter_fetch_job_id = 7
+    dlg._local_sas_state = {"coinin": "1"}
+    dlg._had_settled_mismatch = True
     dlg._machine_state = {"gameplayedcnt": "6"}
     dlg._machine_state_loaded = True
     dlg._machine_state_loaded_at = 1.0
@@ -142,6 +177,7 @@ def test_blank_meter_ui_for_ram_clear_clears_state() -> None:
     dlg._reset_master_summary = lambda: None
     dlg._reset_transfer_summary = lambda: None
     dlg._reset_security_summary = lambda: None
+    dlg._stop_meter_fetch_thread = lambda **_k: True
 
     SasVerifyDialog._blank_meter_ui_for_ram_clear(
         dlg, status="cleared"
@@ -153,6 +189,9 @@ def test_blank_meter_ui_for_ram_clear_clears_state() -> None:
     assert dlg._compare_ui_pending is False
     assert dlg._auto_fetch_round_active is False
     assert dlg._active_compare_job_id == 5
+    assert dlg._active_meter_fetch_job_id == 8
+    assert dlg._local_sas_state == {}
+    assert dlg._had_settled_mismatch is False
     assert all(not (r.sas_value_text or "").strip() for r in dlg._last_parsed_rows)
     assert len(dlg._last_parsed_rows) == len(DEFAULT_6F_VERIFY_POLL_CODES)
     assert SasVerifyDialog._keep_machine_on_empty_reload(dlg) is False

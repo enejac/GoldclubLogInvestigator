@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8"?>                                       
+<MagicWheelSettingsConfig xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">                                       
+  <Bet>1</Bet>                                       
+  <SpinTimeMs>1</SpinTimeMs>                                       
+  <MoneyWheelAverage>5</MoneyWheelAverage>                                       
+  <WinTimeMs>1</WinTimeMs>                                       
+  <MaxWheelSpins>50000</MaxWheelSpins>                                       
+  <ShowNumberMS>true</ShowNumberMS>                                       
+  <HelpText>+{0}MS</HelpText>                                       
+  <bonusMSDuration>3</bonusMSDuration>                                       
+</MagicWheelSettingsConfig>                                       

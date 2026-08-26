@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Probe host COM4 and run the built-in SAS 80/81 poll keeper for MUX cabinets (.171).
 #>
@@ -16,7 +16,7 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-. "$PSScriptRoot\LabAccess.ps1"
+. (Join-Path (Split-Path $PSScriptRoot -Parent) 'LabAccess.ps1')
 . "$PSScriptRoot\LabRemoteTransport.ps1"
 . "$PSScriptRoot\LabSasPollDiagnostics.ps1"
 $script:LabCredential = Get-LabCredential
@@ -28,8 +28,8 @@ $script:LabPsExecArgs = @($bootstrap.AuthArgs)
 $script:InjectBootstrapReport = $bootstrap
 function Get-MuxKeeperScript {
     $candidates = @(
-        (Join-Path $PSScriptRoot 'scripts\sas_poll_keeper.py'),
-        (Join-Path $PSScriptRoot 'scripts\sas_poll_keeper_standalone.py')
+        (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\sas_poll_keeper.py'),
+        (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\sas_poll_keeper_standalone.py')
     )
     foreach ($path in $candidates) {
         if (Test-Path -LiteralPath $path) { return $path }
@@ -77,7 +77,8 @@ function Start-MuxPollKeeperProcess {
     $keeper = Get-MuxKeeperScript
     $py = Get-Command python -ErrorAction SilentlyContinue
     $args = @($keeper, $Port, '--interval-ms', '200', '--warmup-s', ([string]([math]::Max(0.5, $WarmupSec))))
-    return Start-Process -FilePath $py.Source -ArgumentList $args -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru
+    $repoRoot = Split-Path $PSScriptRoot -Parent
+    return Start-Process -FilePath $py.Source -ArgumentList $args -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru
 }
 Write-Host ''
 if ($VerbosePreference -eq 'Continue') {

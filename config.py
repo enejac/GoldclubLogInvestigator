@@ -23,7 +23,7 @@ DEFAULT_LOCAL_LOG_ROOT: Final[str] = r"C:\Goldclub\var\log"
 DEFAULT_REMOTE_IP: Final[str] = "10.0.0.90"
 
 # Optional override for Jira browse URLs in known-issue tracking (see data/known_issues.json).
-JIRA_BASE_URL: Final[str] = ""
+JIRA_BASE_URL: Final[str] = "https://winsytemsintl.atlassian.net"
 
 
 # Active fleet monitor: background ICMP + SMB + admin log share probes (see ``gui/fleet_heartbeat``).
@@ -35,11 +35,22 @@ FLEET_HEARTBEAT_ENABLED: Final[bool] = True
 FLEET_SNAPSHOT_EXCLUDE_IPV4: Final[frozenset[str]] = frozenset({"10.0.0.1"})
 
 
+_UNC_HOST_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
 def format_unc_log_root(ip: str) -> str:
-    """Return the Goldclub log UNC path for ``ip`` (host name or address)."""
+    """
+    Return the Goldclub log UNC path for ``ip`` (host name or address).
+
+    The host is substituted into a UNC template, so anything with a separator or
+    whitespace would silently build a different path (``10.0.0.90\\x`` ends up
+    pointing at a share we never meant to open).
+    """
     host = (ip or "").strip()
     if not host:
         raise ValueError("IP or hostname is required for remote scan path")
+    if not _UNC_HOST_RE.match(host):
+        raise ValueError(f"Invalid host for remote scan path: {ip!r}")
     return BASE_UNC_PATH.format(ip=host)
 
 
@@ -142,6 +153,9 @@ LOG_EXTENSIONS: Final[tuple[str, ...]] = (".log", ".txt")
 LIVE_WATCH_POLL_MS: Final[int] = 800
 LIVE_WATCH_ACTIVE_FILES: Final[int] = 5
 LIVE_WATCH_DISCOVER_SEC: Final[float] = 5.0
+# After a log is truncated or replaced, re-read at most this many bytes of the
+# new file so content written before we noticed is not lost.
+LIVE_WATCH_REWIND_MAX_BYTES: Final[int] = 4 * 1024 * 1024
 
 # Log janitor ages and fleet clock-drift threshold: see ``config_manager.SettingsManager``.
 
@@ -310,6 +324,16 @@ SEVERITY_RULES: Final[list[SeverityRule]] = [
         ],
     },
     {
+        "name": "ruleta_number_on_screen_mismatch",
+        "label": "Roulette Number On Screen Mismatch",
+        "severity": "CRITICAL",
+        "patterns": [
+            # ruleta Roulette logs use truncated level token ERRO (not ERROR).
+            r"\bERRO\b[^\n]*ERR:\s*number on screen\s*:\s*\d+",
+            r"ERR:\s*number on screen\s*:\s*\d+",
+        ],
+    },
+    {
         "name": "goldclub_erro",
         "label": "Error Log Line",
         "severity": "MEDIUM",
@@ -354,6 +378,9 @@ FIRST_CAUSE_ANOMALY_PATTERNS: Final[list[str]] = [
     r"Missing node\.",
     r"Godot did not exit",
     r"exited unexpectedly",
+    r"""<TRIAL\s+error\s*=\s*["']\d+["']\s+type\s*=\s*["']DISPLAYED["']""",
+    r"\bTrial\s+expired!!!",
+    r"\bTRIAL\s+EXPIRED\s+ON\b",
 ]
 
 # Stack / continuation lines to skip when classifying “start” of a block (optional)
@@ -369,6 +396,14 @@ class ProbableCauseRule(TypedDict):
 
 
 PROBABLE_CAUSE_RULES: Final[list[ProbableCauseRule]] = [
+    {
+        "pattern": r"ERR:\s*number on screen\s*:\s*\d+",
+        "cause": (
+            "CRITICAL: Roulette display/ball number mismatch (ERR: number on screen) — "
+            "wheel sensor vs on-screen result disagree; check ruleta Roulette log around "
+            "READBALL/HIT/STOP ON INDEX and physical RNG/wheel hardware."
+        ),
+    },
     {
         "pattern": r"AurumSetup\.xml|FileNotFoundException.*AurumSetup",
         "cause": "CRITICAL: Aurum setup XML missing — verify aurum config path and factory reset / deploy.",

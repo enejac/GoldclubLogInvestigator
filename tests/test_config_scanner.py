@@ -40,12 +40,24 @@ from config_scanner.report import (
     filter_file_diffs_for_find,
     format_compare_changed_list,
     format_compare_summary,
+    format_setting_change_description,
     is_actionable_content_change,
     looks_like_ciphertext_token,
     prioritize_file_diffs_for_panel,
+    setting_display_name,
     smart_find_match,
 )
 from config_scanner.service import ConfigScannerService, allocate_snapshot_dir, scan_scope_zero_diff_hint
+from config_scanner.write_scope import (
+    WriteScope,
+    classify_path,
+    filter_relative_paths,
+    is_hardware_path,
+    is_paytable_config_path,
+    is_protected_write_path,
+    is_software_path,
+    path_matches_write_scope,
+)
 from config_scanner.xml_diff import (
     ContentChange,
     FileDiff,
@@ -54,6 +66,8 @@ from config_scanner.xml_diff import (
     compare_manifests,
     file_content_diff,
     find_element_for_flat_path,
+    flat_xml_map,
+    is_structural_item_change,
     resolve_apply_value,
 )
 
@@ -241,8 +255,9 @@ def test_snapshot_folder_name_slot_prefix() -> None:
         "AB12CD34",
         datetime(2026, 7, 13, 10, 45, 46),
         profile_id="slot_lab_90",
+        machine_serial="GST20664",
     )
-    assert name == "2026-07-13_slotAB12CD34_104546_000"
+    assert name == "2026-07-13_GST20664_Slot_bAB12CD34_104546"
 
 
 def test_parse_build_version_file(tmp_path: Path) -> None:
@@ -260,8 +275,69 @@ def test_parse_build_version_file(tmp_path: Path) -> None:
 
 
 def test_snapshot_folder_name() -> None:
-    name = snapshot_folder_name("37556", datetime(2026, 7, 13, 10, 45, 46))
-    assert name == "2026-07-13_build37556_104546_000"
+    name = snapshot_folder_name(
+        "37556",
+        datetime(2026, 7, 13, 10, 45, 46),
+        profile_id="roulette_usb",
+        product_version="10.1.0.0",
+        machine_serial="GRT330106",
+    )
+    assert name == "2026-07-13_GRT330106_Ruleta_Alegro_Wing_v10.1.0.0_b37556_104546"
+
+
+def test_snapshot_folder_name_uses_exe_details_version() -> None:
+    """PE Details ProductVersion wins over a stale BuildVersion.txt / branch."""
+    name = snapshot_folder_name(
+        "40119",
+        datetime(2026, 8, 11, 5, 29, 5),
+        profile_id="roulette_usb",
+        product_version="10.1.8.0",
+        exe_product_version="10.2.0.876",
+        machine_serial="GRT330106",
+    )
+    assert name == (
+        "2026-08-11_GRT330106_Ruleta_Alegro_Wing_v10.2.0.876_b40119_052905"
+    )
+    assert "v10.1" not in name
+    assert "v10.2_b" not in name
+
+
+def test_order_snapshots_newest_first_pins_just_created() -> None:
+    from config_scanner.service import SnapshotInfo, order_snapshots_newest_first
+
+    def _row(name: str, stamp: str) -> SnapshotInfo:
+        return SnapshotInfo(
+            name=name,
+            build_number=None,
+            product_version=None,
+            source_version=None,
+            exe_product_version=None,
+            exe_product_name=None,
+            branch=None,
+            scan_timestamp=stamp,
+            file_count=1,
+            game_drive="",
+            is_baseline=False,
+        )
+
+    older = _row("2026-08-19_v10.1", "2026-08-19T08:30:00")
+    rolled = _row("2026-08-11_v10.2.0.876", "2026-08-11T05:43:00")
+    ordered = order_snapshots_newest_first([older, rolled])
+    assert [row.name for row in ordered] == [older.name, rolled.name]
+    pinned = order_snapshots_newest_first(
+        [older, rolled], pin_name=rolled.name
+    )
+    assert [row.name for row in pinned] == [rolled.name, older.name]
+
+
+def test_snapshot_folder_name_without_serial_keeps_legacy_shape() -> None:
+    name = snapshot_folder_name(
+        "37556",
+        datetime(2026, 7, 13, 10, 45, 46),
+        profile_id="roulette_usb",
+        product_version="10.1.0.0",
+    )
+    assert name == "2026-07-13_Ruleta_Alegro_Wing_v10.1.0.0_b37556_104546"
 
 
 def test_compare_manifests_counts() -> None:
@@ -1097,6 +1173,64 @@ def test_format_compare_summary_mixed_changes() -> None:
     assert "(10 unchanged)" in summary
 
 
+def test_format_compare_panel_summary_two_settings() -> None:
+    from config_scanner.report import format_compare_panel_summary
+    from config_scanner.xml_diff import ContentChange, FileDiff
+
+    diffs = [
+        FileDiff(
+            relative_path="config/etc/application/ruleta/setup.xml",
+            status="modified",
+            baseline_sha1="a",
+            target_sha1="b",
+            baseline_size_bytes=10,
+            target_size_bytes=10,
+            content_diff=[
+                ContentChange(
+                    change_type="modified",
+                    path="config/node[@name='payoutAutoConfirm']",
+                    old_value="1",
+                    new_value="0",
+                )
+            ],
+        ),
+        FileDiff(
+            relative_path="config/etc/application/config/appSettings.xml",
+            status="modified",
+            baseline_sha1="c",
+            target_sha1="d",
+            baseline_size_bytes=10,
+            target_size_bytes=10,
+            content_diff=[
+                ContentChange(
+                    change_type="added",
+                    path="config/initPath",
+                    old_value=None,
+                    new_value="game settings.godot",
+                )
+            ],
+        ),
+    ]
+    assert format_compare_panel_summary(diffs) == "2 files \u00b7 2 settings"
+
+
+def test_compare_panel_styles_have_chip_keys() -> None:
+    from config_scanner.report import compare_panel_encrypted_origin_styles
+
+    styles = compare_panel_encrypted_origin_styles()
+    for key in (
+        "summary",
+        "chip",
+        "chip_muted",
+        "arrow",
+        "file_card",
+        "encrypted_header",
+        "plain_header",
+    ):
+        assert key in styles
+        assert styles[key]
+
+
 def test_format_compare_changed_list_mgconfig_case() -> None:
     file_diffs = [
         FileDiff(
@@ -1139,13 +1273,13 @@ def test_format_diff_cell_value_distinguishes_missing_and_blank() -> None:
         format_diff_cell_value,
     )
 
-    assert format_diff_cell_value(None) == "not present"
-    assert format_diff_cell_value("") == '"" (blank)'
-    assert format_diff_cell_value("   ") == '"" (blank)'
+    assert format_diff_cell_value(None) == "missing"
+    assert format_diff_cell_value("") == "(empty)"
+    assert format_diff_cell_value("   ") == "(empty)"
     assert format_diff_cell_value("game") == "game"
-    assert apply_button_label("") == "Write blank"
-    assert apply_button_label("game") == "Write"
-    assert "blank" in format_apply_value_detail("").lower()
+    assert apply_button_label("") == "Apply empty"
+    assert apply_button_label("game") == "Apply"
+    assert "empty" in format_apply_value_detail("").lower()
     assert "missing" in format_apply_value_detail(None).lower()
 
 
@@ -1232,8 +1366,9 @@ def test_baseline_folder_name_slot() -> None:
         scan_timestamp="2026-07-13T13:55:27",
         game_drive=r"\\10.0.0.90\c$\Goldclub\slot",
         profile_id="slot_lab_90",
+        machine_serial="GST20664",
     )
-    assert baseline_folder_name(info) == "slot_baseline"
+    assert baseline_folder_name(info) == "GST20664_slot_baseline"
 
 
 def test_baseline_folder_name_roulette() -> None:
@@ -1248,8 +1383,9 @@ def test_baseline_folder_name_roulette() -> None:
         scan_timestamp="2026-07-13T10:00:00",
         game_drive="D:\\",
         profile_id="roulette_usb",
+        machine_serial="GRT330106",
     )
-    assert baseline_folder_name(info) == "roulette_baseline_build37556_10_1_0_0"
+    assert baseline_folder_name(info) == "GRT330106_Ruleta_Alegro_Wing_v10.1.0.0_b37556_baseline"
 
 
 def test_migrate_legacy_nested_usb_layout(tmp_path: Path) -> None:
@@ -1628,6 +1764,24 @@ def test_roulette_exe_version_sniff(tmp_path: Path) -> None:
     assert info.product_version == "10.1.0.0"
 
 
+def test_live_ruleta_exe_version_and_banner(tmp_path: Path) -> None:
+    from config_scanner.software_compat import (
+        format_live_ruleta_sw_banner,
+        live_ruleta_exe_version_for_target,
+    )
+
+    assert format_live_ruleta_sw_banner(None) == "Running: Ruleta.exe unknown"
+    assert format_live_ruleta_sw_banner("  ") == "Running: Ruleta.exe unknown"
+    assert format_live_ruleta_sw_banner("10.2.0.876") == (
+        "Running: Ruleta.exe 10.2.0.876"
+    )
+    ruleta_dir = tmp_path / "ruleta"
+    ruleta_dir.mkdir()
+    (ruleta_dir / "Ruleta.exe").write_bytes(b"\x00" * 100 + "10.1.8.0".encode("utf-16le"))
+    assert live_ruleta_exe_version_for_target(str(tmp_path)) == "10.1.8.0"
+    assert live_ruleta_exe_version_for_target(str(tmp_path / "missing")) is None
+
+
 def test_parse_build_version_enriches_from_ruleta_exe(tmp_path: Path) -> None:
     ruleta_dir = tmp_path / "ruleta"
     ruleta_dir.mkdir()
@@ -1665,8 +1819,11 @@ def test_format_build_info_log_line_roulette() -> None:
         exe_product_name="Ruleta Module",
     )
     line = format_build_info_log_line(info)
-    assert "build=37556" in line
-    assert "productVersion=10.1.0.0" in line
+    # The software display already carries build/product version, so the line must
+    # state each of them exactly once.
+    assert "build 37556" in line
+    assert "build=37556" not in line
+    assert line.count("10.1.0.0") == 2
     assert "Ruleta Module=10.1.0.0" in line
 
 
@@ -1751,7 +1908,9 @@ def test_is_scan_target_valid_rejects_stale_slot_path(tmp_path: Path) -> None:
     tool_root = _minimal_tool_root(tmp_path)
     service = ConfigScannerService(tool_root)
     assert service.is_scan_target_valid(str(roulette_root)) is True
+    # Empty / non-slot C:\Goldclub\slot must not walk up to a parent roulette tree.
     assert service.is_scan_target_valid(r"C:\Goldclub\slot") is False
+    assert service.is_scan_target_valid(str(tmp_path / "missing_scan_root")) is False
 
 
 def test_slot_cabinet_path_ignores_ruleta_build_version(tmp_path: Path) -> None:
@@ -1781,6 +1940,26 @@ def test_slot_cabinet_path_ignores_ruleta_build_version(tmp_path: Path) -> None:
     assert is_slot_cabinet_scan_target(str(empty_slot)) is True
     with pytest.raises(FileNotFoundError, match="No slot repo"):
         resolve_scan_for_target(str(empty_slot), profiles)
+
+
+def test_goldclub_share_named_slot_is_roulette_when_ruleta_present(tmp_path: Path) -> None:
+    """\\\\cabinet\\slot is C:\\goldclub on roulette EGMs, not Goldclub\\slot."""
+    from config_scanner.build_version import is_slot_cabinet_scan_target
+
+    share = tmp_path / "slot"
+    ruleta = share / "ruleta"
+    ruleta.mkdir(parents=True)
+    _ensure_roulette_exe(ruleta)
+    (ruleta / "BuildVersion.txt").write_text(
+        "Source Version: 1\nBranch: $/x/10.1.0.0\nBuild Number: 38884\n",
+        encoding="utf-8",
+    )
+    (share / "config").mkdir()
+    (share / "config" / "setup.xml").write_text("<root/>", encoding="utf-8")
+    profiles = load_profiles()
+    assert is_slot_cabinet_scan_target(str(share)) is False
+    result = resolve_scan_for_target(str(share), profiles)
+    assert result.profile_id == "roulette_usb"
 
 
 def test_prepare_for_target_honors_explicit_drive(tmp_path: Path) -> None:
@@ -2100,6 +2279,442 @@ def test_apply_snapshot_to_target_success(tmp_path: Path) -> None:
     assert mgconfig.read_text(encoding="utf-8") == "<original/>"
 
 
+def test_write_scope_classifies_hw_sw_and_protected() -> None:
+    assert is_hardware_path("HW/driverssetup/configuration.xml")
+    assert is_hardware_path("config/etc/application/CommCtrl/settings.xml")
+    assert is_hardware_path("config/etc/application/CommCtrlSAS/settings.xml")
+    # Live cabinet paths (trailing SAS instance digit + system/hardware tree).
+    assert is_hardware_path(
+        "config/etc/application/aurum/SASControler1/options.xml"
+    )
+    assert is_hardware_path(
+        "config/etc/application/system/hardware/monitor/monitors.json"
+    )
+    ruleta_json = (
+        "config/etc/application/system/hardware/serialport/serialports/ruleta.json"
+    )
+    assert is_protected_write_path(ruleta_json)
+    assert classify_path(ruleta_json) == "protected"
+    assert not is_hardware_path(ruleta_json)
+    assert is_hardware_path("data/XYNTService2/CommCtrl.xml")
+    assert is_hardware_path("data/maintenance/config/service.d/CommCtrl.json")
+    # Device configs outside …/hardware/ (bill, ticket, switches, LEDs, counters).
+    assert is_hardware_path("config/etc/application/game/switches.xml")
+    assert is_hardware_path("config/etc/application/gcbackup/items/config/game-switches.xml")
+    assert is_hardware_path("config/plugins/hwsubsys-switchconfigintelligent.xml")
+    assert is_hardware_path(
+        "data/GoldClub.HW.Subsys.Driver.DriverLoader/receipt/"
+        "GoldClub.HW.Subsys.Driver.GoldClub.Light.xml"
+    )
+    assert is_hardware_path(
+        "data/GoldClub.HW.Subsys.Driver.DriverLoader/receipt/"
+        "GoldClub.HW.Subsys.Driver.Egasa.ElectronicCounter.xml"
+    )
+    assert is_hardware_path(
+        "data/GoldClub.HW.Subsys.Driver.DriverLoader/receipt/"
+        "GoldClub.HW.Subsys.Driver.FutureLogic.PSA66ST2.xml"
+    )
+    assert is_hardware_path(
+        "data/GoldClub.HW.Subsys.Driver.FutureLogic.PSA66ST2/tickets/ticket0.dat"
+    )
+    assert is_hardware_path("data/setup.2/Additional/ExternalGameBillDeviceInfo/device.xml")
+    assert is_hardware_path(
+        "data/setup.2/Additional/ExternalTicketPrinterDeviceInfo/device.xml"
+    )
+    assert is_hardware_path(
+        "config/etc/application/HW/driverssetup/configuration.xml"
+    )
+    # Game UI / ruleta layout — not cabinet HW devices.
+    assert not is_hardware_path(
+        "config/etc/application/ruleta/layouts/singlewheel/common/jackpotCountersScreen.xml"
+    )
+    assert not is_hardware_path("config/etc/xml-configs/application/ruleta/Mechanical.xml")
+    assert is_software_path("config/etc/application/ruleta/setup.xml")
+    assert is_software_path("mgconfig.xml")
+    assert is_software_path("slot/themes/mgconfig.xml")
+    assert is_protected_write_path(
+        "config/etc/application/system/hardware/serialport/layout.json"
+    )
+    assert is_protected_write_path(
+        "config/etc/application/hardware/serialport/layout.json"
+    )
+    assert is_protected_write_path(
+        "config/etc/application/system/hardware/serialport/serialports/ruleta.json"
+    )
+    assert classify_path(
+        "config/etc/application/system/hardware/serialport/locations.json"
+    ) == "protected"
+    assert not path_matches_write_scope(
+        "config/etc/application/system/hardware/serialport/layout.json",
+        WriteScope.HARDWARE,
+    )
+    assert not path_matches_write_scope(
+        "config/etc/application/system/hardware/serialport/layout.json",
+        WriteScope.FULL,
+    )
+    # Misclassification guard: hardware tree must not fall through to software.
+    assert not is_software_path(
+        "config/etc/application/system/hardware/monitor/monitors.json"
+    )
+    assert not is_software_path(
+        "config/etc/application/aurum/SASControler1/options.xml"
+    )
+    hw = filter_relative_paths(
+        [
+            "HW/driverssetup/configuration.xml",
+            "config/etc/application/aurum/SASControler1/options.xml",
+            "config/etc/application/system/hardware/monitor/monitors.json",
+            "mgconfig.xml",
+            "config/etc/application/ruleta/setup.xml",
+            "config/etc/application/system/hardware/serialport/layout.json",
+        ],
+        WriteScope.HARDWARE,
+    )
+    assert hw == [
+        "HW/driverssetup/configuration.xml",
+        "config/etc/application/aurum/SASControler1/options.xml",
+        "config/etc/application/system/hardware/monitor/monitors.json",
+    ]
+    sw = filter_relative_paths(
+        [
+            "HW/driverssetup/configuration.xml",
+            "config/etc/application/aurum/SASControler1/options.xml",
+            "mgconfig.xml",
+            "config/etc/application/ruleta/setup.xml",
+        ],
+        WriteScope.SOFTWARE,
+    )
+    assert sw == ["mgconfig.xml", "config/etc/application/ruleta/setup.xml"]
+    paytable = "config/etc/application/ruleta/paytables/paytable_elite_double_zero.json"
+    assert is_paytable_config_path(paytable)
+    assert not is_paytable_config_path("config/etc/application/ruleta/setup.xml")
+    assert path_matches_write_scope(paytable, WriteScope.FULL)
+    assert path_matches_write_scope(paytable, WriteScope.FULL_SOFTWARE)
+    assert not path_matches_write_scope(paytable, WriteScope.BINARIES_ONLY)
+    assert not path_matches_write_scope(
+        "config/etc/application/ruleta/setup.xml", WriteScope.BINARIES_ONLY
+    )
+    assert filter_relative_paths(
+        [paytable, "config/etc/application/ruleta/setup.xml"],
+        WriteScope.BINARIES_ONLY,
+    ) == []
+    assert not path_matches_write_scope(paytable, WriteScope.NO_PAYTABLE)
+    assert path_matches_write_scope(
+        "config/etc/application/ruleta/setup.xml", WriteScope.NO_PAYTABLE
+    )
+    assert filter_relative_paths(
+        [paytable, "config/etc/application/ruleta/setup.xml"],
+        WriteScope.NO_PAYTABLE,
+    ) == ["config/etc/application/ruleta/setup.xml"]
+
+
+def test_restore_manifest_files_respects_path_allow(tmp_path: Path) -> None:
+    game_root = tmp_path / "game"
+    hw = game_root / "HW" / "driverssetup"
+    hw.mkdir(parents=True)
+    sw = game_root / "config" / "etc" / "application" / "ruleta"
+    sw.mkdir(parents=True)
+    (hw / "configuration.xml").write_text("<hw-live/>", encoding="utf-8")
+    (sw / "setup.xml").write_text("<sw-live/>", encoding="utf-8")
+
+    manifest = Manifest(
+        scanned_at="t",
+        file_count=2,
+        elapsed_seconds=0.1,
+        files=[
+            FileEntry("HW/driverssetup/configuration.xml", "A", 8, "t"),
+            FileEntry("config/etc/application/ruleta/setup.xml", "B", 8, "t"),
+        ],
+    )
+    snap_dir = tmp_path / "snap"
+    snap_dir.mkdir()
+    (snap_dir / "files" / "HW" / "driverssetup").mkdir(parents=True)
+    (snap_dir / "files" / "config" / "etc" / "application" / "ruleta").mkdir(
+        parents=True
+    )
+    (snap_dir / "files" / "HW" / "driverssetup" / "configuration.xml").write_text(
+        "<hw-snap/>", encoding="utf-8"
+    )
+    (snap_dir / "files" / "config" / "etc" / "application" / "ruleta" / "setup.xml").write_text(
+        "<sw-snap/>", encoding="utf-8"
+    )
+
+    result = restore_manifest_files(
+        snap_dir,
+        manifest,
+        str(game_root),
+        relative_path_allow={"HW/driverssetup/configuration.xml"},
+    )
+    assert result.written_count == 1
+    assert result.skipped_count == 1
+    assert (hw / "configuration.xml").read_text(encoding="utf-8") == "<hw-snap/>"
+    assert (sw / "setup.xml").read_text(encoding="utf-8") == "<sw-live/>"
+
+
+def test_apply_snapshot_hardware_scope_skips_software(tmp_path: Path) -> None:
+    slot_root = tmp_path / "slot"
+    slot_root.mkdir()
+    (slot_root / "OneHand.exe").write_bytes(b"onehand")
+    (slot_root / "game-start.exe").write_bytes(b"start")
+    (slot_root / "GoldClub.Settings.dll").write_bytes(b"dll")
+    hw = slot_root / "HW" / "driverssetup"
+    hw.mkdir(parents=True)
+    (hw / "configuration.xml").write_text("<hw-live/>", encoding="utf-8")
+    mgconfig = slot_root / "mgconfig.xml"
+    mgconfig.write_text("<sw-live/>", encoding="utf-8")
+
+    tool_root = _minimal_tool_root(tmp_path)
+    snap_dir = tool_root / "snapshots" / "slot_snap"
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "files" / "HW" / "driverssetup").mkdir(parents=True)
+    (snap_dir / "files" / "HW" / "driverssetup" / "configuration.xml").write_text(
+        "<hw-snap/>", encoding="utf-8"
+    )
+    (snap_dir / "files" / "mgconfig.xml").write_text("<sw-snap/>", encoding="utf-8")
+    (snap_dir / "build-info.json").write_text(
+        json.dumps(
+            {
+                "buildNumber": "37556",
+                "scanTimestamp": "2026-07-13T10:00:00",
+                "gameDrive": str(slot_root),
+                "profileId": "slot_lab_90",
+                "profileLabel": "Slot lab",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (snap_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "fileCount": 2,
+                "elapsedSeconds": 0.1,
+                "files": [
+                    {
+                        "relativePath": "HW/driverssetup/configuration.xml",
+                        "sha1": "AAA",
+                        "sizeBytes": 9,
+                        "lastWriteUtc": "t",
+                    },
+                    {
+                        "relativePath": "mgconfig.xml",
+                        "sha1": "BBB",
+                        "sizeBytes": 9,
+                        "lastWriteUtc": "t",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service = ConfigScannerService(tool_root)
+    assert service.count_scoped_snapshot_files("slot_snap", "hardware") == 1
+    assert service.count_scoped_snapshot_files("slot_snap", "software") == 1
+    assert service.count_scoped_snapshot_files("slot_snap", "full") == 2
+
+    result = service.apply_snapshot_to_target(
+        "slot_snap", str(slot_root), write_scope="hardware"
+    )
+    assert result.written_count == 1
+    assert result.write_scope == "hardware"
+    assert result.scoped_file_count == 1
+    assert (hw / "configuration.xml").read_text(encoding="utf-8") == "<hw-snap/>"
+    assert mgconfig.read_text(encoding="utf-8") == "<sw-live/>"
+
+
+def test_apply_archived_file_rejects_protected_serialport(tmp_path: Path) -> None:
+    slot_root = tmp_path / "slot"
+    slot_root.mkdir()
+    (slot_root / "OneHand.exe").write_bytes(b"onehand")
+    (slot_root / "game-start.exe").write_bytes(b"start")
+    (slot_root / "GoldClub.Settings.dll").write_bytes(b"dll")
+    rel = "config/etc/application/system/hardware/serialport/layout.json"
+    live = slot_root / Path(rel)
+    live.parent.mkdir(parents=True)
+    live.write_text('{"live":true}', encoding="utf-8")
+
+    tool_root = _minimal_tool_root(tmp_path)
+    _write_archived_snapshot(
+        tool_root / "snapshots" / "slot_snap",
+        profile_id="slot_lab_90",
+        profile_label="Slot lab",
+        game_drive=str(slot_root),
+        rel_path=rel,
+        content='{"snap":true}',
+    )
+    service = ConfigScannerService(tool_root)
+    with pytest.raises(ValueError, match="serialport"):
+        service.apply_archived_file_to_target(str(slot_root), "slot_snap", rel)
+    assert live.read_text(encoding="utf-8") == '{"live":true}'
+
+
+def test_restore_manifest_files_skips_serialport_even_when_allowed(
+    tmp_path: Path,
+) -> None:
+    """Low-level restore must refuse COM maps even if allow-list includes them."""
+    from config_scanner.scanner import FileEntry, Manifest, restore_single_archived_file
+
+    game_root = tmp_path / "game"
+    rel = "config/etc/application/system/hardware/serialport/layout.json"
+    live = game_root / Path(rel)
+    live.parent.mkdir(parents=True)
+    live.write_text('{"live":true}', encoding="utf-8")
+    ok_rel = "config/setup.xml"
+    ok_live = game_root / "config" / "setup.xml"
+    ok_live.write_text("<live/>", encoding="utf-8")
+
+    snap_dir = tmp_path / "snap"
+    snap_dir.mkdir()
+    for path, body in ((rel, '{"snap":true}'), (ok_rel, "<snap/>")):
+        archived = snap_dir / "files" / Path(path)
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        archived.write_text(body, encoding="utf-8")
+
+    manifest = Manifest(
+        scanned_at="t",
+        file_count=2,
+        elapsed_seconds=0.1,
+        files=[
+            FileEntry(rel, "A" * 40, 12, "t"),
+            FileEntry(ok_rel, "B" * 40, 7, "t"),
+        ],
+    )
+    # Deliberately allow serialport — scanner must still skip it.
+    result = restore_manifest_files(
+        snap_dir,
+        manifest,
+        str(game_root),
+        relative_path_allow={rel, ok_rel},
+    )
+    assert result.written_count == 1
+    assert result.skipped_count == 1
+    assert result.errors == ()
+    assert live.read_text(encoding="utf-8") == '{"live":true}'
+    assert ok_live.read_text(encoding="utf-8") == "<snap/>"
+
+    with pytest.raises(ValueError, match="serialport"):
+        restore_single_archived_file(snap_dir, rel, str(game_root))
+    assert live.read_text(encoding="utf-8") == '{"live":true}'
+
+
+def test_count_scoped_only_counts_archived_files(tmp_path: Path) -> None:
+    slot_root = tmp_path / "slot"
+    slot_root.mkdir()
+    (slot_root / "OneHand.exe").write_bytes(b"x")
+    (slot_root / "game-start.exe").write_bytes(b"x")
+    (slot_root / "GoldClub.Settings.dll").write_bytes(b"x")
+    tool_root = _minimal_tool_root(tmp_path)
+    snap_dir = tool_root / "snapshots" / "slot_snap"
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "files").mkdir()
+    # Manifest lists mgconfig but archive copy is missing.
+    (snap_dir / "build-info.json").write_text(
+        json.dumps(
+            {
+                "buildNumber": "1",
+                "scanTimestamp": "t",
+                "gameDrive": str(slot_root),
+                "profileId": "slot_lab_90",
+                "profileLabel": "Slot",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (snap_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "fileCount": 1,
+                "elapsedSeconds": 0.1,
+                "files": [
+                    {
+                        "relativePath": "mgconfig.xml",
+                        "sha1": "A",
+                        "sizeBytes": 1,
+                        "lastWriteUtc": "t",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ConfigScannerService(tool_root)
+    assert service.count_scoped_snapshot_files("slot_snap", "software") == 0
+    assert service.count_scoped_snapshot_files("slot_snap", "full") == 0
+
+
+def test_apply_snapshot_fails_when_zero_files_written(tmp_path: Path) -> None:
+    slot_root = tmp_path / "slot"
+    slot_root.mkdir()
+    (slot_root / "OneHand.exe").write_bytes(b"x")
+    (slot_root / "game-start.exe").write_bytes(b"x")
+    (slot_root / "GoldClub.Settings.dll").write_bytes(b"x")
+    (slot_root / "mgconfig.xml").write_text("<live/>", encoding="utf-8")
+    tool_root = _minimal_tool_root(tmp_path)
+    snap_dir = tool_root / "snapshots" / "slot_snap"
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "files").mkdir()
+    (snap_dir / "build-info.json").write_text(
+        json.dumps(
+            {
+                "buildNumber": "1",
+                "scanTimestamp": "t",
+                "gameDrive": str(slot_root),
+                "profileId": "slot_lab_90",
+                "profileLabel": "Slot",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (snap_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "fileCount": 1,
+                "elapsedSeconds": 0.1,
+                "files": [
+                    {
+                        "relativePath": "mgconfig.xml",
+                        "sha1": "A",
+                        "sizeBytes": 1,
+                        "lastWriteUtc": "t",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ConfigScannerService(tool_root)
+    with pytest.raises(OSError, match="Wrote 0 files"):
+        service.apply_snapshot_to_target(
+            "slot_snap", str(slot_root), write_scope="software"
+        )
+
+
+def test_apply_snapshot_to_target_success_sets_full_scope(tmp_path: Path) -> None:
+    """Regression: default apply still restores software paths like mgconfig."""
+    slot_root = tmp_path / "slot"
+    slot_root.mkdir()
+    (slot_root / "OneHand.exe").write_bytes(b"onehand")
+    (slot_root / "game-start.exe").write_bytes(b"start")
+    (slot_root / "GoldClub.Settings.dll").write_bytes(b"dll")
+    mgconfig = slot_root / "mgconfig.xml"
+    mgconfig.write_text("<mutated/>", encoding="utf-8")
+
+    tool_root = _minimal_tool_root(tmp_path)
+    _write_archived_snapshot(
+        tool_root / "snapshots" / "slot_snap",
+        profile_id="slot_lab_90",
+        profile_label="Slot lab",
+        game_drive=str(slot_root),
+        rel_path="mgconfig.xml",
+        content="<original/>",
+    )
+    service = ConfigScannerService(tool_root)
+    result = service.apply_snapshot_to_target("slot_snap", str(slot_root))
+    assert result.write_scope == "full"
+    assert result.written_count == 1
+    assert mgconfig.read_text(encoding="utf-8") == "<original/>"
+
+
 MGCONFIG_XML = """<?xml version="1.0"?>
 <Multigamer>
   <TransferParameters>
@@ -2187,3 +2802,624 @@ def test_unified_candidates_include_lab_unc_before_late_drives() -> None:
     i_idx = next((i for i, c in enumerate(cands) if c.rstrip("\\") == "I:"), len(cands))
     unc_idx = min(cands.index(u) for u in unc)
     assert unc_idx < i_idx
+
+
+_DRIVERS_WITH_TITO = """<?xml version="1.0" encoding="utf-8"?>
+<config xmlns="config">
+  <drivers>
+    <item0>
+      <aliasName>switch</aliasName>
+      <driverRawName>.[GoldClub.HW.Subsys.Driver.GoldClub.SecuritySwitch]</driverRawName>
+      <enabled>True</enabled>
+      <options>
+        <endpointaddress>tcp://127.0.0.1:30600</endpointaddress>
+      </options>
+    </item0>
+    <item1>
+      <aliasName>tito</aliasName>
+      <driverRawName>.[GoldClub.HW.Subsys.Driver.FutureLogic.PSA66ST2]</driverRawName>
+      <enabled>True</enabled>
+      <options>
+        <endpointaddress>tcp://127.0.0.1:30400</endpointaddress>
+      </options>
+    </item1>
+    <item2>
+      <aliasName>light</aliasName>
+      <driverRawName>.[GoldClub.HW.Subsys.Driver.GoldClub.Light]</driverRawName>
+      <enabled>True</enabled>
+      <options>
+        <endpointaddress>tcp://127.0.0.1:30700</endpointaddress>
+      </options>
+    </item2>
+  </drivers>
+</config>
+"""
+
+_DRIVERS_WITHOUT_TITO = """<?xml version="1.0" encoding="utf-8"?>
+<config xmlns="config">
+  <drivers>
+    <item0>
+      <aliasName>switch</aliasName>
+      <driverRawName>.[GoldClub.HW.Subsys.Driver.GoldClub.SecuritySwitch]</driverRawName>
+      <enabled>True</enabled>
+      <options>
+        <endpointaddress>tcp://127.0.0.1:30600</endpointaddress>
+      </options>
+    </item0>
+    <item1>
+      <aliasName>light</aliasName>
+      <driverRawName>.[GoldClub.HW.Subsys.Driver.GoldClub.Light]</driverRawName>
+      <enabled>True</enabled>
+      <options>
+        <endpointaddress>tcp://127.0.0.1:30700</endpointaddress>
+      </options>
+    </item1>
+  </drivers>
+</config>
+"""
+
+
+def test_driverssetup_tito_remove_is_not_rename_to_light(tmp_path: Path) -> None:
+    """Removing tito must NOT look like tito→light / 30400→30700 field mutations."""
+    import xml.etree.ElementTree as ET
+
+    baseline = tmp_path / "baseline.xml"
+    target = tmp_path / "target.xml"
+    baseline.write_text(_DRIVERS_WITH_TITO, encoding="utf-8")
+    target.write_text(_DRIVERS_WITHOUT_TITO, encoding="utf-8")
+
+    changes = file_content_diff("HW/driverssetup/configuration.xml", baseline, target)
+
+    # One structural remove for tito — not a flood of leaf removes + false modifies.
+    assert len(changes) == 1
+    change = changes[0]
+    assert change.change_type == "removed"
+    assert "aliasName='tito'" in change.path
+    assert "light" not in change.path
+    assert is_structural_item_change(change)
+    assert change.old_value is not None
+    assert "tito" in change.old_value.casefold()
+    assert "30400" in change.old_value
+
+    # No misleading modified rows that look like tito became light.
+    assert not any(c.change_type == "modified" for c in changes)
+    assert not any(
+        c.old_value == "tito" and c.new_value == "light" for c in changes
+    )
+    assert not any(
+        c.old_value and "30400" in c.old_value and c.new_value and "30700" in c.new_value
+        for c in changes
+    )
+
+    # Labels must be unambiguous; Write must be blocked.
+    assert "HW driver «tito»" == setting_display_name(change.path)
+    desc = format_setting_change_description(change)
+    assert "entire driver entry removed" in desc.casefold() or "entire driver entry removed" in desc
+    assert "not a rename" in desc.casefold()
+    assert not is_actionable_content_change(change)
+
+    primary, opaque = content_change_panel_partition(changes)
+    assert change in primary
+    assert change not in opaque
+
+    # Identity path still resolves light under the live file.
+    root = ET.parse(target).getroot()
+    light_ep = find_element_for_flat_path(
+        root,
+        "config/drivers/item[@aliasName='light']/options/endpointaddress",
+    )
+    assert light_ep is not None
+    assert light_ep.text == "tcp://127.0.0.1:30700"
+
+    with pytest.raises(ValueError, match="whole HW driver"):
+        apply_xml_value_at_path(target, change.path, change.old_value)
+
+
+def test_driverssetup_identity_paths_stable_across_index_shift() -> None:
+    import xml.etree.ElementTree as ET
+
+    with_tito = flat_xml_map(ET.ElementTree(ET.fromstring(_DRIVERS_WITH_TITO)))
+    without = flat_xml_map(ET.ElementTree(ET.fromstring(_DRIVERS_WITHOUT_TITO)))
+    assert any("item[@aliasName='tito']" in k for k in with_tito)
+    assert any("item[@aliasName='light']" in k for k in with_tito)
+    assert any("item[@aliasName='light']" in k for k in without)
+    # Same identity key for light despite item2 → item1 index shift.
+    light_keys_a = {k for k in with_tito if "aliasName='light'" in k}
+    light_keys_b = {k for k in without if "aliasName='light'" in k}
+    assert light_keys_a == light_keys_b
+    for key in light_keys_a:
+        assert with_tito[key] == without[key]
+
+
+def test_machine_identity_paths_blocked() -> None:
+    from config_scanner.machine_identity import is_protected_machine_identity_path
+    from config_scanner.write_scope import is_protected_write_path
+
+    assert is_protected_machine_identity_path("config/licences/6051106A90E561F9F08CDEEBB5C3F6E2.xml")
+    assert is_protected_machine_identity_path("config/licenses/foo.xml")
+    assert is_protected_machine_identity_path("slot/licence.dll")
+    assert is_protected_machine_identity_path(
+        "config/etc/application/licensing/xmlLicenceStorageSettings.xml"
+    )
+    assert is_protected_machine_identity_path(
+        "var/state/maintenance/ProductSerialNumber.json"
+    )
+    assert is_protected_machine_identity_path("services/aurum/config/AurumSetup.xml")
+    assert is_protected_write_path("config/licences/foo.xml")
+    assert not is_protected_machine_identity_path(
+        "config/etc/application/ruleta/setup.xml"
+    )
+
+
+def test_machine_identity_field_not_actionable() -> None:
+    from config_scanner.machine_identity import is_protected_identity_field
+    from config_scanner.report import is_actionable_content_change
+    from config_scanner.xml_diff import ContentChange
+
+    change = ContentChange(
+        change_type="modified",
+        path="Licence/SerialNumber",
+        old_value="330106",
+        new_value="19737",
+    )
+    assert is_protected_identity_field(change.path)
+    assert not is_actionable_content_change(change)
+
+    egm = ContentChange(
+        change_type="modified",
+        path="root/EgmId",
+        old_value="GCC_RT_330106_01",
+        new_value="GCC_RT_19737_01",
+    )
+    assert is_protected_identity_field(egm.path)
+    assert not is_actionable_content_change(egm)
+
+
+def test_merge_xml_preserves_live_serial() -> None:
+    from config_scanner.machine_identity import merge_xml_bytes_preserving_identity
+
+    live = b"""<?xml version='1.0'?>
+<Licence xmlns="http://tempuri.org/AurumLicence.xsd">
+  <SerialNumber>330106</SerialNumber>
+  <LicenseeId>12-12327444</LicenseeId>
+</Licence>"""
+    incoming = b"""<?xml version='1.0'?>
+<Licence xmlns="http://tempuri.org/AurumLicence.xsd">
+  <SerialNumber>19737</SerialNumber>
+  <LicenseeId>12-99999999</LicenseeId>
+</Licence>"""
+    merged = merge_xml_bytes_preserving_identity(live, incoming)
+    assert b">330106</" in merged
+    assert b"12-99999999" in merged
+    assert b">19737</" not in merged
+
+
+def test_restore_skips_licence_file(tmp_path: Path) -> None:
+    from config_scanner.scanner import (
+        FileEntry,
+        Manifest,
+        archive_manifest_files,
+        restore_manifest_files,
+        snapshot_content_root,
+    )
+
+    target = tmp_path / "Goldclub"
+    target.mkdir()
+    rel = "config/licences/test-licence.xml"
+    live_file = target / rel.replace("/", "\\")
+    live_file.parent.mkdir(parents=True)
+    live_file.write_text(
+        "<Licence><SerialNumber>330106</SerialNumber></Licence>",
+        encoding="utf-8",
+    )
+
+    snap_dir = tmp_path / "snapshots" / "snap_a"
+    manifest = Manifest(
+        scanned_at="2026-07-27T12:00:00Z",
+        file_count=1,
+        elapsed_seconds=0.1,
+        files=[
+            FileEntry(rel, "a" * 40, 10, "2026-07-27T12:00:00Z"),
+        ],
+    )
+    archive_manifest_files(
+        str(target),
+        manifest,
+        snap_dir,
+        content_overrides={
+            rel: b"<Licence><SerialNumber>19737</SerialNumber></Licence>",
+        },
+    )
+    assert snapshot_content_root(snap_dir) is not None
+
+    result = restore_manifest_files(snap_dir, manifest, str(target))
+    assert result.written_count == 0
+    assert result.skipped_count == 1
+    assert "330106" in live_file.read_text(encoding="utf-8")
+
+
+def test_apply_content_change_rejects_identity_field(tmp_path: Path) -> None:
+    from config_scanner.machine_identity import is_protected_identity_field
+    from config_scanner.xml_diff import ContentChange
+
+    change = ContentChange(
+        change_type="modified",
+        path="root/EgmId",
+        old_value="GCC_RT_330106_01",
+        new_value="GCC_RT_19737_01",
+    )
+    assert is_protected_identity_field(change.path)
+    assert not is_actionable_content_change(change)
+
+def test_read_machine_serial_from_target(tmp_path: Path) -> None:
+    from config_scanner.build_version import read_machine_serial_from_target
+
+    maint = tmp_path / "var" / "state" / "maintenance"
+    maint.mkdir(parents=True)
+    (maint / "ProductSerialNumber.json").write_text(
+        '{"MachineName": "GRT330106", "ProductSerialNumber": "330106", "ProductKind": "RT"}',
+        encoding="utf-8",
+    )
+    assert read_machine_serial_from_target(str(tmp_path)) == "GRT330106"
+
+def test_write_verify_detects_protected_change(tmp_path: Path) -> None:
+    from config_scanner.write_verify import (
+        PreWriteCapture,
+        capture_pre_write_state,
+        verify_snapshot_restore,
+    )
+
+    game_root = tmp_path / "game"
+    hw = game_root / "HW" / "driverssetup"
+    hw.mkdir(parents=True)
+    serial = game_root / "config/etc/application/system/hardware/serialport"
+    serial.mkdir(parents=True)
+    layout = serial / "layout.json"
+    layout.write_text('{"live":true}', encoding="utf-8")
+    (hw / "configuration.xml").write_text("<live/>", encoding="utf-8")
+
+    snap_dir = tmp_path / "snap"
+    snap_dir.mkdir()
+    rel_hw = "HW/driverssetup/configuration.xml"
+    rel_layout = "config/etc/application/system/hardware/serialport/layout.json"
+    for rel, body in ((rel_hw, "<snap/>"), (rel_layout, '{"snap":true}')):
+        archived = snap_dir / "files" / Path(rel)
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        archived.write_text(body, encoding="utf-8")
+
+    manifest = Manifest(
+        scanned_at="t",
+        file_count=2,
+        elapsed_seconds=0.1,
+        files=[
+            FileEntry(rel_hw, "A" * 40, 8, "t"),
+            FileEntry(rel_layout, "B" * 40, 12, "t"),
+        ],
+    )
+    pre = capture_pre_write_state(
+        game_root, manifest, allowed_paths={rel_hw}
+    )
+    assert rel_layout in pre.protected_sha1
+    layout.write_text('{"tampered":true}', encoding="utf-8")
+    result = verify_snapshot_restore(
+        snap_dir,
+        manifest,
+        game_root,
+        written_paths=(rel_hw,),
+        pre_write=pre,
+    )
+    assert not result.ok
+    assert rel_layout in result.protected_changed
+
+
+def test_apply_snapshot_verifies_written_files(tmp_path: Path) -> None:
+    slot_root = tmp_path / "slot"
+    slot_root.mkdir()
+    (slot_root / "OneHand.exe").write_bytes(b"onehand")
+    (slot_root / "game-start.exe").write_bytes(b"start")
+    (slot_root / "GoldClub.Settings.dll").write_bytes(b"dll")
+    hw = slot_root / "HW" / "driverssetup"
+    hw.mkdir(parents=True)
+    (hw / "configuration.xml").write_text("<live/>", encoding="utf-8")
+    serial = slot_root / "config/etc/application/system/hardware/serialport"
+    serial.mkdir(parents=True)
+    (serial / "layout.json").write_text('{"ports":[]}', encoding="utf-8")
+
+    tool_root = _minimal_tool_root(tmp_path)
+    snap_dir = tool_root / "snapshots" / "slot_snap"
+    _write_archived_snapshot(
+        snap_dir,
+        profile_id="slot_lab_90",
+        profile_label="Slot lab",
+        game_drive=str(slot_root),
+        rel_path="HW/driverssetup/configuration.xml",
+        content="<snap/>",
+    )
+    layout_rel = "config/etc/application/system/hardware/serialport/layout.json"
+    layout_arch = snap_dir / "files" / Path(layout_rel)
+    layout_arch.parent.mkdir(parents=True, exist_ok=True)
+    layout_arch.write_text('{"snap":true}', encoding="utf-8")
+    manifest = load_manifest(snap_dir)
+    manifest = Manifest(
+        scanned_at=manifest.scanned_at,
+        file_count=manifest.file_count + 1,
+        elapsed_seconds=manifest.elapsed_seconds,
+        files=[
+            *manifest.files,
+            FileEntry(layout_rel, "B" * 40, 12, "t"),
+        ],
+        warnings=manifest.warnings,
+    )
+    (snap_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "scannedAt": manifest.scanned_at,
+                "fileCount": manifest.file_count,
+                "elapsedSeconds": manifest.elapsed_seconds,
+                "files": [
+                    {
+                        "relativePath": e.relative_path,
+                        "sha1": e.sha1,
+                        "sizeBytes": e.size_bytes,
+                        "lastWriteUtc": e.last_write_utc,
+                    }
+                    for e in manifest.files
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ConfigScannerService(tool_root)
+    result = service.apply_snapshot_to_target(
+        "slot_snap", str(slot_root), write_scope="hardware"
+    )
+    assert result.verify_ok is True
+    assert result.written_count == 1
+    assert result.protected_verified >= 1
+    assert (hw / "configuration.xml").read_text(encoding="utf-8") == "<snap/>"
+    assert (serial / "layout.json").read_text(encoding="utf-8") == '{"ports":[]}'
+
+def test_format_compare_panel_header_shows_snapshot_pair() -> None:
+    from config_scanner.report import format_compare_panel_header
+    from config_scanner.xml_diff import FileDiff
+
+    diffs = [
+        FileDiff(
+            relative_path="config/a.xml",
+            status="modified",
+            baseline_sha1="a",
+            target_sha1="b",
+            baseline_size_bytes=1,
+            target_size_bytes=1,
+            content_diff=[],
+        ),
+        FileDiff(
+            relative_path="config/b.xml",
+            status="added",
+            baseline_sha1=None,
+            target_sha1="c",
+            baseline_size_bytes=None,
+            target_size_bytes=1,
+            content_diff=[],
+        ),
+    ]
+    text = format_compare_panel_header("ref_snap", "new_snap", diffs)
+    assert "ref_snap" in text and "new_snap" in text
+    assert "2 files" in text
+    tagged = format_compare_panel_header(
+        "ref_snap", "new_snap", diffs, session_reference="ref_snap"
+    )
+    assert "reference snapshot" in tagged
+
+def test_rollback_save_load_and_availability(tmp_path: Path) -> None:
+    from config_scanner.rollback import (
+        clear_rollback,
+        load_rollback,
+        make_rollback_info,
+        rollback_is_available,
+        save_rollback,
+    )
+
+    root = tmp_path / "tool"
+    (root / "snapshots" / "rollback_snap").mkdir(parents=True)
+    (root / "snapshots" / "rollback_snap" / "files").mkdir()
+    (root / "snapshots" / "rollback_snap" / "files" / "a.xml").write_text("<a/>", encoding="utf-8")
+
+    info = make_rollback_info(
+        snapshot_name="rollback_snap",
+        restored_from="baseline_snap",
+        write_scope="full",
+        scan_target=r"\\10.0.0.90\c$\Goldclub",
+    )
+    save_rollback(info, root)
+    loaded = load_rollback(root)
+    assert loaded is not None
+    assert loaded.snapshot_name == "rollback_snap"
+    assert loaded.restored_from == "baseline_snap"
+    assert rollback_is_available(root, loaded)
+
+    clear_rollback(root)
+    assert load_rollback(root) is None
+
+
+def test_service_records_and_clears_rollback(tmp_path: Path) -> None:
+    tool_root = tmp_path / "tool"
+    (tool_root / "snapshots").mkdir(parents=True)
+    (tool_root / "reports").mkdir()
+    (tool_root / "config.json").write_text(
+        '{"gameDrive": null, "buildVersionRelativePath": "ruleta/BuildVersion.txt", '
+        '"scanRoots": ["config"], "includePatterns": ["*.xml"], "parallelWorkers": 1, '
+        '"snapshotsDir": "snapshots", "reportsDir": "reports"}',
+        encoding="utf-8",
+    )
+    snap = tool_root / "snapshots" / "live_before"
+    (snap / "files").mkdir(parents=True)
+    (snap / "files" / "x.xml").write_text("<x/>", encoding="utf-8")
+
+    service = ConfigScannerService(tool_root)
+    assert not service.rollback_is_available()
+    service.record_rollback_snapshot(
+        snapshot_name="live_before",
+        restored_from="ref_snap",
+        write_scope="hardware",
+        scan_target="D:\\Goldclub",
+    )
+    assert service.rollback_is_available()
+    info = service.get_rollback_info()
+    assert info is not None and info.snapshot_name == "live_before"
+    service.clear_rollback_snapshot()
+    assert service.get_rollback_info() is None
+
+
+def _write_rollback_snapshot(
+    root: Path,
+    name: str,
+    *,
+    exe_product_version: str,
+    with_software: bool,
+) -> None:
+    snap = root / "snapshots" / name
+    (snap / "files").mkdir(parents=True)
+    (snap / "files" / "x.xml").write_text("<x/>", encoding="utf-8")
+    (snap / "build-info.json").write_text(
+        json.dumps(
+            {
+                "productVersion": exe_product_version,
+                "exeProductVersion": exe_product_version,
+                "buildNumber": "40119",
+                "scanTimestamp": "2026-08-21T08:00:00+00:00",
+                "gameDrive": "C:\\Goldclub",
+                "profileId": "roulette_usb",
+                "profileLabel": "Ruleta Alegro Wing",
+            }
+        ),
+        encoding="utf-8",
+    )
+    if with_software:
+        (snap / "software").mkdir()
+        (snap / "software" / "Ruleta.exe").write_bytes(b"MZ")
+
+
+def test_describe_rollback_reports_version_and_software(tmp_path: Path) -> None:
+    from config_scanner.rollback import (
+        describe_rollback,
+        make_rollback_info,
+    )
+
+    root = tmp_path / "tool"
+    _write_rollback_snapshot(
+        root, "live_before", exe_product_version="10.1.8.0", with_software=True
+    )
+    info = make_rollback_info(
+        snapshot_name="live_before",
+        restored_from="ref_snap",
+        write_scope="full_software",
+        scan_target="C:\\Goldclub",
+    )
+    details = describe_rollback(info, root)
+    assert details is not None
+    assert details.version == "10.1.8.0"
+    assert details.has_software is True
+    assert details.is_self_contained is True
+    assert "10.1.8.0" in details.summary()
+    assert "Ruleta binaries" in details.summary()
+
+
+def test_describe_rollback_flags_config_only_undo_point(tmp_path: Path) -> None:
+    from config_scanner.rollback import describe_rollback, make_rollback_info
+
+    root = tmp_path / "tool"
+    _write_rollback_snapshot(
+        root, "live_before", exe_product_version="10.2.0.876", with_software=False
+    )
+    details = describe_rollback(
+        make_rollback_info(
+            snapshot_name="live_before",
+            restored_from="ref_snap",
+            write_scope="full",
+            scan_target="C:\\Goldclub",
+        ),
+        root,
+    )
+    assert details is not None
+    assert details.has_software is False
+    assert details.is_self_contained is False
+    assert "config only" in details.summary()
+
+
+def test_describe_rollback_none_without_snapshot(tmp_path: Path) -> None:
+    from config_scanner.rollback import describe_rollback, make_rollback_info
+
+    assert describe_rollback(None, tmp_path) is None
+    missing = make_rollback_info(
+        snapshot_name="gone",
+        restored_from="ref",
+        write_scope="full",
+        scan_target="C:\\Goldclub",
+    )
+    assert describe_rollback(missing, tmp_path) is None
+
+
+def test_service_exposes_rollback_details(tmp_path: Path) -> None:
+    tool_root = tmp_path / "tool"
+    (tool_root / "snapshots").mkdir(parents=True)
+    (tool_root / "reports").mkdir()
+    (tool_root / "config.json").write_text(
+        '{"gameDrive": null, "buildVersionRelativePath": "ruleta/BuildVersion.txt", '
+        '"scanRoots": ["config"], "includePatterns": ["*.xml"], "parallelWorkers": 1, '
+        '"snapshotsDir": "snapshots", "reportsDir": "reports"}',
+        encoding="utf-8",
+    )
+    _write_rollback_snapshot(
+        tool_root, "live_before", exe_product_version="10.1.8.0", with_software=True
+    )
+
+    service = ConfigScannerService(tool_root)
+    assert service.get_rollback_details() is None
+    service.record_rollback_snapshot(
+        snapshot_name="live_before",
+        restored_from="ref_snap",
+        write_scope="full_software",
+        scan_target="C:\\Goldclub",
+    )
+    details = service.get_rollback_details()
+    assert details is not None
+    assert details.version == "10.1.8.0"
+    assert details.is_self_contained is True
+
+
+def test_stack_restart_finds_repo_scripts() -> None:
+    from config_scanner.stack_restart import find_stack_scripts
+
+    scripts = find_stack_scripts()
+    assert scripts is not None
+    kill, run = scripts
+    assert kill.name == "Kill-All.ps1"
+    assert run.name == "Run-FullStack.ps1"
+
+
+def test_plan_stack_restart_local_drive_on_egm(monkeypatch) -> None:
+    from config_scanner import stack_restart as sr
+
+    monkeypatch.setattr(sr, "running_on_egm", lambda: True)
+    monkeypatch.setattr(
+        sr,
+        "find_stack_scripts",
+        lambda: (Path("Kill-All.ps1"), Path("Run-FullStack.ps1")),
+    )
+    plan = sr.plan_stack_restart(r"C:\Goldclub")
+    assert plan is not None
+    assert plan.mode == "local"
+    assert plan.host is None
+
+
+def test_plan_stack_restart_unc_remote() -> None:
+    from config_scanner.stack_restart import plan_stack_restart, unc_host_from_target
+
+    assert unc_host_from_target(r"\\10.0.0.111\c$\Goldclub") == "10.0.0.111"
+    plan = plan_stack_restart(r"\\10.0.0.111\c$\Goldclub")
+    assert plan is not None
+    assert plan.mode == "remote"
+    assert plan.host == "10.0.0.111"
+    assert plan.run_ps1.endswith("Run-FullStack.ps1")
+

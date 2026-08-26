@@ -23,33 +23,30 @@ from config import FLEET_SNAPSHOT_EXCLUDE_IPV4
 from database.migrate import apply_migrations
 from database.models import Base, IncidentORM, MachineORM, StateNodeORM
 from network.fleet_scanner import HostProbeResult
+from database.format_label import format_machine_label
 from parser import Incident
 from timeline_engine import EnvFingerprint, parse_iso_timestamp_sort_key
 
 logger = logging.getLogger(__name__)
 
-_LOGGED_MACHINE_ID_RE = re.compile(r"^gst\d+$", re.IGNORECASE)
+# Re-export for existing imports: from database.manager import format_machine_label
+__all__ = ["format_machine_label"]
+
+# Historical SlotLog ids (GST#####) and roulette hostnames (GRT##### / ALLEGRO…).
+_LOGGED_MACHINE_ID_RE = re.compile(r"^(gst|grt)\d+$", re.IGNORECASE)
 
 
 def _is_logged_machine_id_style(name: str | None) -> bool:
     return bool(name and _LOGGED_MACHINE_ID_RE.fullmatch(name.strip()))
 
 
-def format_machine_label(name: str | None, ip_address: str | None) -> str:
-    """Display ``id (ip)`` when a name/id is known, else the IP alone."""
-    ip = (ip_address or "").strip() or "—"
-    n = (name or "").strip()
-    if n:
-        return f"{n} ({ip})"
-    return ip
-
-
 _APP_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_DB_FILE = _APP_DIR / "goldclub_investigator.db"
 
 
 def default_db_path() -> Path:
-    return DEFAULT_DB_FILE
+    from app_paths import app_install_dir
+
+    return app_install_dir() / "goldclub_investigator.db"
 
 
 def _dedup_hash(timestamp: datetime | str | None, machine_ip: str, message: str) -> str:
@@ -172,7 +169,7 @@ class DatabaseManager:
     """Thread-safe usage: prefer a **new** ``Engine`` per background worker, or one engine with ``check_same_thread=False`` and serialized sessions."""
 
     def __init__(self, db_path: Path | str | None = None) -> None:
-        self._db_path = Path(db_path) if db_path else DEFAULT_DB_FILE
+        self._db_path = Path(db_path) if db_path else default_db_path()
 
     @property
     def db_path(self) -> Path:
@@ -200,10 +197,13 @@ class DatabaseManager:
         row = session.scalars(select(MachineORM).where(MachineORM.ip_address == ip)).first()
         if row:
             if lid:
+                # Always prefer the newest live / log identity (rebuild can change GST→GRT).
                 row.name = lid
                 row.enrollment_status = None
-            elif disp and not _is_logged_machine_id_style(row.name):
-                row.name = disp
+            elif disp:
+                prev = (row.name or "").strip()
+                if not prev or prev.casefold() != disp.casefold():
+                    row.name = disp
             row.last_scanned_at = _utc_now()
             session.flush()
             return row
@@ -458,6 +458,7 @@ class DatabaseManager:
         now = _utc_now()
         new_label = "New / Unscanned"
         for r in results:
+            live_name = (r.resolved_name or "").strip() or None
             row = session.scalars(select(MachineORM).where(MachineORM.ip_address == r.ip)).first()
             if row:
                 row.last_reachable = r.ping_ok
@@ -470,6 +471,9 @@ class DatabaseManager:
                     row.last_clock_drift_seconds = None
                 if r.ping_ok:
                     row.last_scanned_at = now
+                if live_name and (row.name or "").strip().casefold() != live_name.casefold():
+                    row.name = live_name
+                    row.enrollment_status = None
             else:
                 if not r.ping_ok:
                     continue
@@ -478,7 +482,7 @@ class DatabaseManager:
                 session.add(
                     MachineORM(
                         ip_address=r.ip,
-                        name=None,
+                        name=live_name,
                         asset_id=None,
                         enrollment_status=new_label if new_host_requires_log_root else None,
                         last_scanned_at=now,

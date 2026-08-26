@@ -1,0 +1,3848 @@
+{
+  "layout_id": "slot",
+  "skin": "RouletteGame",
+  "layer": 1,
+  "view": "cloth",
+  "description": "OneHand Slot Roulette (European single-zero), triple-stack 1920x3240 client; interactive cloth on the bottom panel.",
+  "buttons": {
+    "0": {
+      "id": "0",
+      "x": 68,
+      "y": 2316,
+      "width": 147,
+      "height": 382,
+      "click_center_px": {
+        "x": 141,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 7.344,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 3.542,
+        "y_min": 71.481,
+        "x_max": 11.198,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "0"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL",
+      "verified": {
+        "at": "2026-07-29T15:00:00+0200",
+        "method": "OneHand click + client screenshot",
+        "note": "visual: cell-diff after click with 17 still staked"
+      }
+    },
+    "1": {
+      "id": "1",
+      "x": 215,
+      "y": 2571,
+      "width": 126,
+      "height": 127,
+      "click_center_px": {
+        "x": 278,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 14.479,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 11.198,
+        "y_min": 79.352,
+        "x_max": 17.76,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "1"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "2": {
+      "id": "2",
+      "x": 215,
+      "y": 2443,
+      "width": 126,
+      "height": 128,
+      "click_center_px": {
+        "x": 278,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 14.479,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 11.198,
+        "y_min": 75.401,
+        "x_max": 17.76,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "2"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "3": {
+      "id": "3",
+      "x": 215,
+      "y": 2316,
+      "width": 126,
+      "height": 127,
+      "click_center_px": {
+        "x": 278,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 14.479,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 11.198,
+        "y_min": 71.481,
+        "x_max": 17.76,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "3"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "4": {
+      "id": "4",
+      "x": 341,
+      "y": 2571,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 404,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 21.042,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 17.76,
+        "y_min": 79.352,
+        "x_max": 24.375,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "4"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "5": {
+      "id": "5",
+      "x": 341,
+      "y": 2443,
+      "width": 127,
+      "height": 128,
+      "click_center_px": {
+        "x": 404,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 21.042,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 17.76,
+        "y_min": 75.401,
+        "x_max": 24.375,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "5"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "6": {
+      "id": "6",
+      "x": 341,
+      "y": 2316,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 404,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 21.042,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 17.76,
+        "y_min": 71.481,
+        "x_max": 24.375,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "6"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "7": {
+      "id": "7",
+      "x": 468,
+      "y": 2571,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 531,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 27.656,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 24.375,
+        "y_min": 79.352,
+        "x_max": 30.99,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "7"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "8": {
+      "id": "8",
+      "x": 468,
+      "y": 2443,
+      "width": 127,
+      "height": 128,
+      "click_center_px": {
+        "x": 531,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 27.656,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 24.375,
+        "y_min": 75.401,
+        "x_max": 30.99,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "8"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "9": {
+      "id": "9",
+      "x": 468,
+      "y": 2316,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 531,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 27.656,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 24.375,
+        "y_min": 71.481,
+        "x_max": 30.99,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "9"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "10": {
+      "id": "10",
+      "x": 595,
+      "y": 2571,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 658,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 34.271,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 30.99,
+        "y_min": 79.352,
+        "x_max": 37.604,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "10"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "11": {
+      "id": "11",
+      "x": 595,
+      "y": 2443,
+      "width": 127,
+      "height": 128,
+      "click_center_px": {
+        "x": 658,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 34.271,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 30.99,
+        "y_min": 75.401,
+        "x_max": 37.604,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "11"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "12": {
+      "id": "12",
+      "x": 595,
+      "y": 2316,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 658,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 34.271,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 30.99,
+        "y_min": 71.481,
+        "x_max": 37.604,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "12"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "13": {
+      "id": "13",
+      "x": 722,
+      "y": 2571,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 785,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 40.885,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 37.604,
+        "y_min": 79.352,
+        "x_max": 44.219,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "13"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "14": {
+      "id": "14",
+      "x": 722,
+      "y": 2443,
+      "width": 127,
+      "height": 128,
+      "click_center_px": {
+        "x": 785,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 40.885,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 37.604,
+        "y_min": 75.401,
+        "x_max": 44.219,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "14"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "15": {
+      "id": "15",
+      "x": 722,
+      "y": 2316,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 785,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 40.885,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 37.604,
+        "y_min": 71.481,
+        "x_max": 44.219,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "15"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "16": {
+      "id": "16",
+      "x": 849,
+      "y": 2571,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 912,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 47.5,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 44.219,
+        "y_min": 79.352,
+        "x_max": 50.833,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "16"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "17": {
+      "id": "17",
+      "x": 849,
+      "y": 2443,
+      "width": 127,
+      "height": 128,
+      "click_center_px": {
+        "x": 912,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 47.5,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 44.219,
+        "y_min": 75.401,
+        "x_max": 50.833,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "17"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL",
+      "verified": {
+        "at": "2026-07-29T15:00:00+0200",
+        "method": "OneHand click + client screenshot",
+        "note": "visual: cell-diff vs base after click (prove/21_after_17.png); chip landed in mapped 17 box"
+      }
+    },
+    "18": {
+      "id": "18",
+      "x": 849,
+      "y": 2316,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 912,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 47.5,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 44.219,
+        "y_min": 71.481,
+        "x_max": 50.833,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "18"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "19": {
+      "id": "19",
+      "x": 976,
+      "y": 2571,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 1039,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 54.115,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 50.833,
+        "y_min": 79.352,
+        "x_max": 57.448,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "19"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "20": {
+      "id": "20",
+      "x": 976,
+      "y": 2443,
+      "width": 127,
+      "height": 128,
+      "click_center_px": {
+        "x": 1039,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 54.115,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 50.833,
+        "y_min": 75.401,
+        "x_max": 57.448,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "20"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "21": {
+      "id": "21",
+      "x": 976,
+      "y": 2316,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 1039,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 54.115,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 50.833,
+        "y_min": 71.481,
+        "x_max": 57.448,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "21"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "22": {
+      "id": "22",
+      "x": 1103,
+      "y": 2571,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 1166,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 60.729,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 57.448,
+        "y_min": 79.352,
+        "x_max": 64.062,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "22"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "23": {
+      "id": "23",
+      "x": 1103,
+      "y": 2443,
+      "width": 127,
+      "height": 128,
+      "click_center_px": {
+        "x": 1166,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 60.729,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 57.448,
+        "y_min": 75.401,
+        "x_max": 64.062,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "23"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "24": {
+      "id": "24",
+      "x": 1103,
+      "y": 2316,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 1166,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 60.729,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 57.448,
+        "y_min": 71.481,
+        "x_max": 64.062,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "24"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "25": {
+      "id": "25",
+      "x": 1230,
+      "y": 2571,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 1293,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 67.344,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 64.062,
+        "y_min": 79.352,
+        "x_max": 70.677,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "25"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "26": {
+      "id": "26",
+      "x": 1230,
+      "y": 2443,
+      "width": 127,
+      "height": 128,
+      "click_center_px": {
+        "x": 1293,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 67.344,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 64.062,
+        "y_min": 75.401,
+        "x_max": 70.677,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "26"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "27": {
+      "id": "27",
+      "x": 1230,
+      "y": 2316,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 1293,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 67.344,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 64.062,
+        "y_min": 71.481,
+        "x_max": 70.677,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "27"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "28": {
+      "id": "28",
+      "x": 1357,
+      "y": 2571,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 1420,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 73.958,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 70.677,
+        "y_min": 79.352,
+        "x_max": 77.292,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "28"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "29": {
+      "id": "29",
+      "x": 1357,
+      "y": 2443,
+      "width": 127,
+      "height": 128,
+      "click_center_px": {
+        "x": 1420,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 73.958,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 70.677,
+        "y_min": 75.401,
+        "x_max": 77.292,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "29"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "30": {
+      "id": "30",
+      "x": 1357,
+      "y": 2316,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 1420,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 73.958,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 70.677,
+        "y_min": 71.481,
+        "x_max": 77.292,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "30"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "31": {
+      "id": "31",
+      "x": 1484,
+      "y": 2571,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 1547,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 80.573,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 77.292,
+        "y_min": 79.352,
+        "x_max": 83.906,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "31"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "32": {
+      "id": "32",
+      "x": 1484,
+      "y": 2443,
+      "width": 127,
+      "height": 128,
+      "click_center_px": {
+        "x": 1547,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 80.573,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 77.292,
+        "y_min": 75.401,
+        "x_max": 83.906,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "32"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "33": {
+      "id": "33",
+      "x": 1484,
+      "y": 2316,
+      "width": 127,
+      "height": 127,
+      "click_center_px": {
+        "x": 1547,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 80.573,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 77.292,
+        "y_min": 71.481,
+        "x_max": 83.906,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "33"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "34": {
+      "id": "34",
+      "x": 1611,
+      "y": 2571,
+      "width": 125,
+      "height": 127,
+      "click_center_px": {
+        "x": 1673,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 87.135,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 83.906,
+        "y_min": 79.352,
+        "x_max": 90.417,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "34"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "35": {
+      "id": "35",
+      "x": 1611,
+      "y": 2443,
+      "width": 125,
+      "height": 128,
+      "click_center_px": {
+        "x": 1673,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 87.135,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 83.906,
+        "y_min": 75.401,
+        "x_max": 90.417,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "35"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "36": {
+      "id": "36",
+      "x": 1611,
+      "y": 2316,
+      "width": 125,
+      "height": 127,
+      "click_center_px": {
+        "x": 1673,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 87.135,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 83.906,
+        "y_min": 71.481,
+        "x_max": 90.417,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "place_bet": [
+        "36"
+      ],
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL",
+      "verified": {
+        "at": "2026-07-29T15:00:00+0200",
+        "method": "OneHand click + client screenshot",
+        "note": "visual: cell-diff after click"
+      }
+    },
+    "1-12": {
+      "id": "1-12",
+      "x": 215,
+      "y": 2698,
+      "width": 507,
+      "height": 90,
+      "click_center_px": {
+        "x": 468,
+        "y": 2743
+      },
+      "click_center_pct": {
+        "x_pct": 24.375,
+        "y_pct": 84.66
+      },
+      "click_area_pct": {
+        "x_min": 11.198,
+        "y_min": 83.272,
+        "x_max": 37.604,
+        "y_max": 86.049
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "13-24": {
+      "id": "13-24",
+      "x": 722,
+      "y": 2698,
+      "width": 508,
+      "height": 90,
+      "click_center_px": {
+        "x": 976,
+        "y": 2743
+      },
+      "click_center_pct": {
+        "x_pct": 50.833,
+        "y_pct": 84.66
+      },
+      "click_area_pct": {
+        "x_min": 37.604,
+        "y_min": 83.272,
+        "x_max": 64.062,
+        "y_max": 86.049
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "25-36": {
+      "id": "25-36",
+      "x": 1230,
+      "y": 2698,
+      "width": 506,
+      "height": 90,
+      "click_center_px": {
+        "x": 1483,
+        "y": 2743
+      },
+      "click_center_pct": {
+        "x_pct": 77.24,
+        "y_pct": 84.66
+      },
+      "click_area_pct": {
+        "x_min": 64.062,
+        "y_min": 83.272,
+        "x_max": 90.417,
+        "y_max": 86.049
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "2to1_top": {
+      "id": "2to1_top",
+      "x": 1736,
+      "y": 2316,
+      "width": 91,
+      "height": 127,
+      "click_center_px": {
+        "x": 1781,
+        "y": 2379
+      },
+      "click_center_pct": {
+        "x_pct": 92.76,
+        "y_pct": 73.426
+      },
+      "click_area_pct": {
+        "x_min": 90.417,
+        "y_min": 71.481,
+        "x_max": 95.156,
+        "y_max": 75.401
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "2to1_mid": {
+      "id": "2to1_mid",
+      "x": 1736,
+      "y": 2443,
+      "width": 91,
+      "height": 128,
+      "click_center_px": {
+        "x": 1781,
+        "y": 2507
+      },
+      "click_center_pct": {
+        "x_pct": 92.76,
+        "y_pct": 77.377
+      },
+      "click_area_pct": {
+        "x_min": 90.417,
+        "y_min": 75.401,
+        "x_max": 95.156,
+        "y_max": 79.352
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "2to1_bot": {
+      "id": "2to1_bot",
+      "x": 1736,
+      "y": 2571,
+      "width": 91,
+      "height": 127,
+      "click_center_px": {
+        "x": 1781,
+        "y": 2634
+      },
+      "click_center_pct": {
+        "x_pct": 92.76,
+        "y_pct": 81.296
+      },
+      "click_area_pct": {
+        "x_min": 90.417,
+        "y_min": 79.352,
+        "x_max": 95.156,
+        "y_max": 83.272
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "1-18": {
+      "id": "1-18",
+      "x": 215,
+      "y": 2788,
+      "width": 253,
+      "height": 86,
+      "click_center_px": {
+        "x": 341,
+        "y": 2831
+      },
+      "click_center_pct": {
+        "x_pct": 17.76,
+        "y_pct": 87.377
+      },
+      "click_area_pct": {
+        "x_min": 11.198,
+        "y_min": 86.049,
+        "x_max": 24.375,
+        "y_max": 88.704
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "EVEN": {
+      "id": "EVEN",
+      "x": 468,
+      "y": 2788,
+      "width": 254,
+      "height": 86,
+      "click_center_px": {
+        "x": 595,
+        "y": 2831
+      },
+      "click_center_pct": {
+        "x_pct": 30.99,
+        "y_pct": 87.377
+      },
+      "click_area_pct": {
+        "x_min": 24.375,
+        "y_min": 86.049,
+        "x_max": 37.604,
+        "y_max": 88.704
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "RED": {
+      "id": "RED",
+      "x": 722,
+      "y": 2788,
+      "width": 254,
+      "height": 86,
+      "click_center_px": {
+        "x": 849,
+        "y": 2831
+      },
+      "click_center_pct": {
+        "x_pct": 44.219,
+        "y_pct": 87.377
+      },
+      "click_area_pct": {
+        "x_min": 37.604,
+        "y_min": 86.049,
+        "x_max": 50.833,
+        "y_max": 88.704
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "BLACK": {
+      "id": "BLACK",
+      "x": 976,
+      "y": 2788,
+      "width": 253,
+      "height": 86,
+      "click_center_px": {
+        "x": 1102,
+        "y": 2831
+      },
+      "click_center_pct": {
+        "x_pct": 57.396,
+        "y_pct": 87.377
+      },
+      "click_area_pct": {
+        "x_min": 50.833,
+        "y_min": 86.049,
+        "x_max": 64.01,
+        "y_max": 88.704
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "ODD": {
+      "id": "ODD",
+      "x": 1229,
+      "y": 2788,
+      "width": 253,
+      "height": 86,
+      "click_center_px": {
+        "x": 1355,
+        "y": 2831
+      },
+      "click_center_pct": {
+        "x_pct": 70.573,
+        "y_pct": 87.377
+      },
+      "click_area_pct": {
+        "x_min": 64.01,
+        "y_min": 86.049,
+        "x_max": 77.188,
+        "y_max": 88.704
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "19-36": {
+      "id": "19-36",
+      "x": 1482,
+      "y": 2788,
+      "width": 254,
+      "height": 86,
+      "click_center_px": {
+        "x": 1609,
+        "y": 2831
+      },
+      "click_center_pct": {
+        "x_pct": 83.802,
+        "y_pct": 87.377
+      },
+      "click_area_pct": {
+        "x_min": 77.188,
+        "y_min": 86.049,
+        "x_max": 90.417,
+        "y_max": 88.704
+      },
+      "kind": "bet",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "chip": "chip_20",
+      "chip_index": 0,
+      "clear": "CANCEL_ALL"
+    },
+    "HISTORY_BTN": {
+      "id": "HISTORY_BTN",
+      "x": 40,
+      "y": 2197,
+      "width": 60,
+      "height": 73,
+      "click_center_px": {
+        "x": 70,
+        "y": 2233
+      },
+      "click_center_pct": {
+        "x_pct": 3.646,
+        "y_pct": 68.92
+      },
+      "click_area_pct": {
+        "x_min": 2.083,
+        "y_min": 67.809,
+        "x_max": 5.208,
+        "y_max": 70.062
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet",
+      "note": "Opens HISTORY / LAST 100 NUMBERS modal."
+    },
+    "HISTORY_STRIP": {
+      "id": "HISTORY_STRIP",
+      "x": 110,
+      "y": 2190,
+      "width": 1740,
+      "height": 100,
+      "click_center_px": {
+        "x": 980,
+        "y": 2240
+      },
+      "click_center_pct": {
+        "x_pct": 51.042,
+        "y_pct": 69.136
+      },
+      "click_area_pct": {
+        "x_min": 5.729,
+        "y_min": 67.593,
+        "x_max": 96.354,
+        "y_max": 70.679
+      },
+      "kind": "readout",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "read_only"
+    },
+    "SHOW_WINS": {
+      "id": "SHOW_WINS",
+      "x": 20,
+      "y": 2790,
+      "width": 100,
+      "height": 80,
+      "click_center_px": {
+        "x": 70,
+        "y": 2830
+      },
+      "click_center_pct": {
+        "x_pct": 3.646,
+        "y_pct": 87.346
+      },
+      "click_area_pct": {
+        "x_min": 1.042,
+        "y_min": 86.111,
+        "x_max": 6.25,
+        "y_max": 88.58
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet",
+      "note": "Eye pill left of the dozens (ES: MOSTRAR PREMIOS). Geometry from panel_bot_cloth; effect not proven live yet."
+    },
+    "HOT_COLD": {
+      "id": "HOT_COLD",
+      "x": 20,
+      "y": 2875,
+      "width": 100,
+      "height": 70,
+      "click_center_px": {
+        "x": 70,
+        "y": 2910
+      },
+      "click_center_pct": {
+        "x_pct": 3.646,
+        "y_pct": 89.815
+      },
+      "click_area_pct": {
+        "x_min": 1.042,
+        "y_min": 88.735,
+        "x_max": 6.25,
+        "y_max": 90.895
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet",
+      "note": "Flame|snowflake pill: flashes 5 hot + 5 cold highlights on the cloth for ~5 s. Bot reads them via roulette_slot_hotcold."
+    },
+    "CHANGE_VIEW": {
+      "id": "CHANGE_VIEW",
+      "x": 1805,
+      "y": 2880,
+      "width": 105,
+      "height": 80,
+      "click_center_px": {
+        "x": 1857,
+        "y": 2920
+      },
+      "click_center_pct": {
+        "x_pct": 96.719,
+        "y_pct": 90.123
+      },
+      "click_area_pct": {
+        "x_min": 94.01,
+        "y_min": 88.889,
+        "x_max": 99.479,
+        "y_max": 91.358
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet",
+      "note": "Toggles the wheel-order racetrack oval around the square cloth.",
+      "verified": {
+        "at": "2026-07-29T15:00:00+0200",
+        "method": "OneHand click + client screenshot",
+        "note": "visual: toggles wheel-order racetrack oval around cloth (prove/31_after_change_view_bot.png)"
+      }
+    },
+    "NEIGHBORS": {
+      "id": "NEIGHBORS",
+      "x": 40,
+      "y": 2980,
+      "width": 190,
+      "height": 60,
+      "click_center_px": {
+        "x": 135,
+        "y": 3010
+      },
+      "click_center_pct": {
+        "x_pct": 7.031,
+        "y_pct": 92.901
+      },
+      "click_area_pct": {
+        "x_min": 2.083,
+        "y_min": 91.975,
+        "x_max": 11.979,
+        "y_max": 93.827
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet",
+      "note": "Call bet (ES: VECINOS)."
+    },
+    "FINAL": {
+      "id": "FINAL",
+      "x": 240,
+      "y": 2980,
+      "width": 190,
+      "height": 60,
+      "click_center_px": {
+        "x": 335,
+        "y": 3010
+      },
+      "click_center_pct": {
+        "x_pct": 17.448,
+        "y_pct": 92.901
+      },
+      "click_area_pct": {
+        "x_min": 12.5,
+        "y_min": 91.975,
+        "x_max": 22.396,
+        "y_max": 93.827
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet"
+    },
+    "COMPLETE": {
+      "id": "COMPLETE",
+      "x": 440,
+      "y": 2980,
+      "width": 190,
+      "height": 60,
+      "click_center_px": {
+        "x": 535,
+        "y": 3010
+      },
+      "click_center_pct": {
+        "x_pct": 27.865,
+        "y_pct": 92.901
+      },
+      "click_area_pct": {
+        "x_min": 22.917,
+        "y_min": 91.975,
+        "x_max": 32.812,
+        "y_max": 93.827
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet"
+    },
+    "ORPHELINS": {
+      "id": "ORPHELINS",
+      "x": 40,
+      "y": 3060,
+      "width": 145,
+      "height": 70,
+      "click_center_px": {
+        "x": 112,
+        "y": 3095
+      },
+      "click_center_pct": {
+        "x_pct": 5.833,
+        "y_pct": 95.525
+      },
+      "click_area_pct": {
+        "x_min": 2.083,
+        "y_min": 94.444,
+        "x_max": 9.635,
+        "y_max": 96.605
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet"
+    },
+    "SERIES_5_8": {
+      "id": "SERIES_5_8",
+      "x": 195,
+      "y": 3060,
+      "width": 145,
+      "height": 70,
+      "click_center_px": {
+        "x": 267,
+        "y": 3095
+      },
+      "click_center_pct": {
+        "x_pct": 13.906,
+        "y_pct": 95.525
+      },
+      "click_area_pct": {
+        "x_min": 10.156,
+        "y_min": 94.444,
+        "x_max": 17.708,
+        "y_max": 96.605
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet",
+      "note": "Call bet (ES: SERIE 5/8)."
+    },
+    "NEIGHBORS_OF_ZERO": {
+      "id": "NEIGHBORS_OF_ZERO",
+      "x": 350,
+      "y": 3060,
+      "width": 160,
+      "height": 70,
+      "click_center_px": {
+        "x": 430,
+        "y": 3095
+      },
+      "click_center_pct": {
+        "x_pct": 22.396,
+        "y_pct": 95.525
+      },
+      "click_area_pct": {
+        "x_min": 18.229,
+        "y_min": 94.444,
+        "x_max": 26.562,
+        "y_max": 96.605
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet",
+      "note": "Call bet (ES: VECINOS DEL CERO)."
+    },
+    "ZERO_GAME": {
+      "id": "ZERO_GAME",
+      "x": 520,
+      "y": 3060,
+      "width": 120,
+      "height": 70,
+      "click_center_px": {
+        "x": 580,
+        "y": 3095
+      },
+      "click_center_pct": {
+        "x_pct": 30.208,
+        "y_pct": 95.525
+      },
+      "click_area_pct": {
+        "x_min": 27.083,
+        "y_min": 94.444,
+        "x_max": 33.333,
+        "y_max": 96.605
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet",
+      "note": "Call bet (ES: CERO JUEGO)."
+    },
+    "chip_20": {
+      "id": "chip_20",
+      "x": 690,
+      "y": 2982,
+      "width": 80,
+      "height": 80,
+      "click_center_px": {
+        "x": 730,
+        "y": 3022
+      },
+      "click_center_pct": {
+        "x_pct": 38.021,
+        "y_pct": 93.272
+      },
+      "click_area_pct": {
+        "x_min": 35.938,
+        "y_min": 92.037,
+        "x_max": 40.104,
+        "y_max": 94.506
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "verified": {
+        "at": "2026-07-29T15:00:00+0200",
+        "method": "OneHand click + client screenshot",
+        "note": "visual: selection glow after click (prove/10_chip_20.png)"
+      }
+    },
+    "chip_50": {
+      "id": "chip_50",
+      "x": 781,
+      "y": 2987,
+      "width": 80,
+      "height": 80,
+      "click_center_px": {
+        "x": 821,
+        "y": 3027
+      },
+      "click_center_pct": {
+        "x_pct": 42.76,
+        "y_pct": 93.426
+      },
+      "click_area_pct": {
+        "x_min": 40.677,
+        "y_min": 92.191,
+        "x_max": 44.844,
+        "y_max": 94.66
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      }
+    },
+    "chip_100": {
+      "id": "chip_100",
+      "x": 886,
+      "y": 2983,
+      "width": 80,
+      "height": 80,
+      "click_center_px": {
+        "x": 926,
+        "y": 3023
+      },
+      "click_center_pct": {
+        "x_pct": 48.229,
+        "y_pct": 93.302
+      },
+      "click_area_pct": {
+        "x_min": 46.146,
+        "y_min": 92.068,
+        "x_max": 50.312,
+        "y_max": 94.537
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "verified": {
+        "at": "2026-07-29T15:00:00+0200",
+        "method": "OneHand click + client screenshot",
+        "note": "visual: selection glow after click"
+      }
+    },
+    "chip_200": {
+      "id": "chip_200",
+      "x": 1006,
+      "y": 2975,
+      "width": 80,
+      "height": 80,
+      "click_center_px": {
+        "x": 1046,
+        "y": 3015
+      },
+      "click_center_pct": {
+        "x_pct": 54.479,
+        "y_pct": 93.056
+      },
+      "click_area_pct": {
+        "x_min": 52.396,
+        "y_min": 91.821,
+        "x_max": 56.562,
+        "y_max": 94.29
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "verified": {
+        "at": "2026-07-29T15:00:00+0200",
+        "method": "OneHand click + client screenshot",
+        "note": "visual: selection glow after click"
+      }
+    },
+    "chip_500": {
+      "id": "chip_500",
+      "x": 1130,
+      "y": 2982,
+      "width": 80,
+      "height": 80,
+      "click_center_px": {
+        "x": 1170,
+        "y": 3022
+      },
+      "click_center_pct": {
+        "x_pct": 60.938,
+        "y_pct": 93.272
+      },
+      "click_area_pct": {
+        "x_min": 58.854,
+        "y_min": 92.037,
+        "x_max": 63.021,
+        "y_max": 94.506
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "verified": {
+        "at": "2026-07-29T15:00:00+0200",
+        "method": "OneHand click + client screenshot",
+        "note": "visual: selection glow after click"
+      }
+    },
+    "ERASER": {
+      "id": "ERASER",
+      "x": 1280,
+      "y": 2980,
+      "width": 105,
+      "height": 110,
+      "click_center_px": {
+        "x": 1332,
+        "y": 3035
+      },
+      "click_center_pct": {
+        "x_pct": 69.375,
+        "y_pct": 93.673
+      },
+      "click_area_pct": {
+        "x_min": 66.667,
+        "y_min": 91.975,
+        "x_max": 72.135,
+        "y_max": 95.37
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet",
+      "note": "Undo last chip (ES: BORRADOR)."
+    },
+    "CANCEL_ALL": {
+      "id": "CANCEL_ALL",
+      "x": 1395,
+      "y": 2980,
+      "width": 105,
+      "height": 110,
+      "click_center_px": {
+        "x": 1447,
+        "y": 3035
+      },
+      "click_center_pct": {
+        "x_pct": 75.365,
+        "y_pct": 93.673
+      },
+      "click_area_pct": {
+        "x_min": 72.656,
+        "y_min": 91.975,
+        "x_max": 78.125,
+        "y_max": 95.37
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet",
+      "note": "Clear board (ES: BORRAR TODO).",
+      "verified": {
+        "at": "2026-07-29T15:00:00+0200",
+        "method": "OneHand click + client screenshot",
+        "note": "visual: board cleared after click"
+      }
+    },
+    "DOUBLE": {
+      "id": "DOUBLE",
+      "x": 1510,
+      "y": 2980,
+      "width": 105,
+      "height": 110,
+      "click_center_px": {
+        "x": 1562,
+        "y": 3035
+      },
+      "click_center_pct": {
+        "x_pct": 81.354,
+        "y_pct": 93.673
+      },
+      "click_area_pct": {
+        "x_min": 78.646,
+        "y_min": 91.975,
+        "x_max": 84.115,
+        "y_max": 95.37
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet",
+      "note": "Repeat last bet (ES: REPETIR).",
+      "verified": {
+        "at": "2026-07-29T15:00:00+0200",
+        "method": "OneHand click + client screenshot",
+        "note": "visual label x2 DOUBLE on cloth (was mislabeled REPEAT)"
+      }
+    },
+    "VOLUME": {
+      "id": "VOLUME",
+      "x": 40,
+      "y": 3150,
+      "width": 60,
+      "height": 65,
+      "click_center_px": {
+        "x": 70,
+        "y": 3182
+      },
+      "click_center_pct": {
+        "x_pct": 3.646,
+        "y_pct": 98.21
+      },
+      "click_area_pct": {
+        "x_min": 2.083,
+        "y_min": 97.222,
+        "x_max": 5.208,
+        "y_max": 99.228
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet"
+    },
+    "HELP": {
+      "id": "HELP",
+      "x": 105,
+      "y": 3150,
+      "width": 145,
+      "height": 65,
+      "click_center_px": {
+        "x": 177,
+        "y": 3182
+      },
+      "click_center_pct": {
+        "x_pct": 9.219,
+        "y_pct": 98.21
+      },
+      "click_area_pct": {
+        "x_min": 5.469,
+        "y_min": 97.222,
+        "x_max": 13.021,
+        "y_max": 99.228
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "proof": "geometry measured; effect not verified live yet",
+      "note": "Footer help (ES: AYUDA)."
+    },
+    "MORE_GAMES": {
+      "id": "MORE_GAMES",
+      "x": 260,
+      "y": 3150,
+      "width": 190,
+      "height": 65,
+      "click_center_px": {
+        "x": 355,
+        "y": 3182
+      },
+      "click_center_pct": {
+        "x_pct": 18.49,
+        "y_pct": 98.21
+      },
+      "click_area_pct": {
+        "x_min": 13.542,
+        "y_min": 97.222,
+        "x_max": 23.438,
+        "y_max": 99.228
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "forbidden",
+      "note": "Footer exit to multigamer (ES: M\u00c1S JUEGOS). Forbidden."
+    },
+    "BALANCE_DISPLAY": {
+      "id": "BALANCE_DISPLAY",
+      "x": 520,
+      "y": 3150,
+      "width": 300,
+      "height": 65,
+      "click_center_px": {
+        "x": 670,
+        "y": 3182
+      },
+      "click_center_pct": {
+        "x_pct": 34.896,
+        "y_pct": 98.21
+      },
+      "click_area_pct": {
+        "x_min": 27.083,
+        "y_min": 97.222,
+        "x_max": 42.708,
+        "y_max": 99.228
+      },
+      "kind": "readout",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "read_only"
+    },
+    "WIN_DISPLAY": {
+      "id": "WIN_DISPLAY",
+      "x": 840,
+      "y": 3150,
+      "width": 210,
+      "height": 65,
+      "click_center_px": {
+        "x": 945,
+        "y": 3182
+      },
+      "click_center_pct": {
+        "x_pct": 49.219,
+        "y_pct": 98.21
+      },
+      "click_area_pct": {
+        "x_min": 43.75,
+        "y_min": 97.222,
+        "x_max": 54.688,
+        "y_max": 99.228
+      },
+      "kind": "readout",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "read_only"
+    },
+    "DENOM_DISPLAY": {
+      "id": "DENOM_DISPLAY",
+      "x": 1070,
+      "y": 3150,
+      "width": 210,
+      "height": 65,
+      "click_center_px": {
+        "x": 1175,
+        "y": 3182
+      },
+      "click_center_pct": {
+        "x_pct": 61.198,
+        "y_pct": 98.21
+      },
+      "click_area_pct": {
+        "x_min": 55.729,
+        "y_min": 97.222,
+        "x_max": 66.667,
+        "y_max": 99.228
+      },
+      "kind": "readout",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "read_only"
+    },
+    "BET_DISPLAY": {
+      "id": "BET_DISPLAY",
+      "x": 1300,
+      "y": 3150,
+      "width": 220,
+      "height": 65,
+      "click_center_px": {
+        "x": 1410,
+        "y": 3182
+      },
+      "click_center_pct": {
+        "x_pct": 73.438,
+        "y_pct": 98.21
+      },
+      "click_area_pct": {
+        "x_min": 67.708,
+        "y_min": 97.222,
+        "x_max": 79.167,
+        "y_max": 99.228
+      },
+      "kind": "readout",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "read_only"
+    },
+    "SPIN": {
+      "id": "SPIN",
+      "x": 1647,
+      "y": 3138,
+      "width": 248,
+      "height": 77,
+      "click_center_px": {
+        "x": 1771,
+        "y": 3176
+      },
+      "click_center_pct": {
+        "x_pct": 92.24,
+        "y_pct": 98.025
+      },
+      "click_area_pct": {
+        "x_min": 85.781,
+        "y_min": 96.852,
+        "x_max": 98.698,
+        "y_max": 99.228
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "note": "Footer spin (ES: JUGAR). Mandatory to resolve a round; SPIN with an empty board rebets the last stake.",
+      "verified": {
+        "at": "2026-07-29T15:00:00+0200",
+        "method": "OneHand click + client screenshot",
+        "note": "gameplay: mandatory to resolve a round; SPIN on empty board rebets last stake (operator note 2026-07-29)"
+      }
+    },
+    "EDGE_TAB": {
+      "id": "EDGE_TAB",
+      "x": 1895,
+      "y": 3150,
+      "width": 23,
+      "height": 65,
+      "click_center_px": {
+        "x": 1906,
+        "y": 3182
+      },
+      "click_center_pct": {
+        "x_pct": 99.271,
+        "y_pct": 98.21
+      },
+      "click_area_pct": {
+        "x_min": 98.698,
+        "y_min": 97.222,
+        "x_max": 99.896,
+        "y_max": 99.228
+      },
+      "kind": "ui",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "avoid",
+      "proof": "geometry measured; effect not verified live yet"
+    },
+    "HELP_PANEL": {
+      "id": "HELP_PANEL",
+      "x": 300,
+      "y": 2220,
+      "width": 1320,
+      "height": 830,
+      "click_center_px": {
+        "x": 960,
+        "y": 2635
+      },
+      "click_center_pct": {
+        "x_pct": 50.0,
+        "y_pct": 81.327
+      },
+      "click_area_pct": {
+        "x_min": 15.625,
+        "y_min": 68.519,
+        "x_max": 84.375,
+        "y_max": 94.136
+      },
+      "kind": "readout",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "read_only",
+      "overlay": "help",
+      "note": "Help book content (INSIDE BETS / \u2026). Read-only."
+    },
+    "HELP_PREV": {
+      "id": "HELP_PREV",
+      "x": 720,
+      "y": 3060,
+      "width": 100,
+      "height": 75,
+      "click_center_px": {
+        "x": 770,
+        "y": 3097
+      },
+      "click_center_pct": {
+        "x_pct": 40.104,
+        "y_pct": 95.586
+      },
+      "click_area_pct": {
+        "x_min": 37.5,
+        "y_min": 94.444,
+        "x_max": 42.708,
+        "y_max": 96.759
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "help",
+      "note": "<< page of the help book."
+    },
+    "HELP_BACK": {
+      "id": "HELP_BACK",
+      "x": 820,
+      "y": 3060,
+      "width": 280,
+      "height": 75,
+      "click_center_px": {
+        "x": 960,
+        "y": 3097
+      },
+      "click_center_pct": {
+        "x_pct": 50.0,
+        "y_pct": 95.586
+      },
+      "click_area_pct": {
+        "x_min": 42.708,
+        "y_min": 94.444,
+        "x_max": 57.292,
+        "y_max": 96.759
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "help",
+      "note": "BACK TO GAME \u2014 closes the help book (only reliable exit)."
+    },
+    "HELP_NEXT": {
+      "id": "HELP_NEXT",
+      "x": 1100,
+      "y": 3060,
+      "width": 100,
+      "height": 75,
+      "click_center_px": {
+        "x": 1150,
+        "y": 3097
+      },
+      "click_center_pct": {
+        "x_pct": 59.896,
+        "y_pct": 95.586
+      },
+      "click_area_pct": {
+        "x_min": 57.292,
+        "y_min": 94.444,
+        "x_max": 62.5,
+        "y_max": 96.759
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "help",
+      "note": ">> page of the help book."
+    },
+    "HISTORY_PANEL": {
+      "id": "HISTORY_PANEL",
+      "x": 160,
+      "y": 2240,
+      "width": 1600,
+      "height": 900,
+      "click_center_px": {
+        "x": 960,
+        "y": 2690
+      },
+      "click_center_pct": {
+        "x_pct": 50.0,
+        "y_pct": 83.025
+      },
+      "click_area_pct": {
+        "x_min": 8.333,
+        "y_min": 69.136,
+        "x_max": 91.667,
+        "y_max": 96.914
+      },
+      "kind": "readout",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "read_only",
+      "overlay": "history",
+      "note": "5x20 last-100 chips (newest top-left). Read-only."
+    },
+    "HISTORY_CLOSE": {
+      "id": "HISTORY_CLOSE",
+      "x": 880,
+      "y": 2950,
+      "width": 160,
+      "height": 80,
+      "click_center_px": {
+        "x": 960,
+        "y": 2990
+      },
+      "click_center_pct": {
+        "x_pct": 50.0,
+        "y_pct": 92.284
+      },
+      "click_area_pct": {
+        "x_min": 45.833,
+        "y_min": 91.049,
+        "x_max": 54.167,
+        "y_max": 93.519
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "history",
+      "note": "CLOSE on the LAST 100 modal."
+    },
+    "HISTORY_TITLE": {
+      "id": "HISTORY_TITLE",
+      "x": 700,
+      "y": 2260,
+      "width": 520,
+      "height": 80,
+      "click_center_px": {
+        "x": 960,
+        "y": 2300
+      },
+      "click_center_pct": {
+        "x_pct": 50.0,
+        "y_pct": 70.988
+      },
+      "click_area_pct": {
+        "x_min": 36.458,
+        "y_min": 69.753,
+        "x_max": 63.542,
+        "y_max": 72.222
+      },
+      "kind": "readout",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "read_only",
+      "overlay": "history"
+    },
+    "race_0": {
+      "id": "race_0",
+      "x": 937,
+      "y": 2315,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 953,
+        "y": 2331
+      },
+      "click_center_pct": {
+        "x_pct": 49.635,
+        "y_pct": 71.944
+      },
+      "click_area_pct": {
+        "x_min": 48.802,
+        "y_min": 71.451,
+        "x_max": 50.469,
+        "y_max": 72.438
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_1": {
+      "id": "race_1",
+      "x": 411,
+      "y": 2794,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 427,
+        "y": 2810
+      },
+      "click_center_pct": {
+        "x_pct": 22.24,
+        "y_pct": 86.728
+      },
+      "click_area_pct": {
+        "x_min": 21.406,
+        "y_min": 86.235,
+        "x_max": 23.073,
+        "y_max": 87.222
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_10": {
+      "id": "race_10",
+      "x": 1001,
+      "y": 2871,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1017,
+        "y": 2887
+      },
+      "click_center_pct": {
+        "x_pct": 52.969,
+        "y_pct": 89.105
+      },
+      "click_area_pct": {
+        "x_min": 52.135,
+        "y_min": 88.611,
+        "x_max": 53.802,
+        "y_max": 89.599
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_11": {
+      "id": "race_11",
+      "x": 1462,
+      "y": 2794,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1478,
+        "y": 2810
+      },
+      "click_center_pct": {
+        "x_pct": 76.979,
+        "y_pct": 86.728
+      },
+      "click_area_pct": {
+        "x_min": 76.146,
+        "y_min": 86.235,
+        "x_max": 77.812,
+        "y_max": 87.222
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_12": {
+      "id": "race_12",
+      "x": 459,
+      "y": 2377,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 475,
+        "y": 2393
+      },
+      "click_center_pct": {
+        "x_pct": 24.74,
+        "y_pct": 73.858
+      },
+      "click_area_pct": {
+        "x_min": 23.906,
+        "y_min": 73.364,
+        "x_max": 25.573,
+        "y_max": 74.352
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_13": {
+      "id": "race_13",
+      "x": 1615,
+      "y": 2719,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1631,
+        "y": 2735
+      },
+      "click_center_pct": {
+        "x_pct": 84.948,
+        "y_pct": 84.414
+      },
+      "click_area_pct": {
+        "x_min": 84.115,
+        "y_min": 83.92,
+        "x_max": 85.781,
+        "y_max": 84.907
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_14": {
+      "id": "race_14",
+      "x": 258,
+      "y": 2719,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 274,
+        "y": 2735
+      },
+      "click_center_pct": {
+        "x_pct": 14.271,
+        "y_pct": 84.414
+      },
+      "click_area_pct": {
+        "x_min": 13.438,
+        "y_min": 83.92,
+        "x_max": 15.104,
+        "y_max": 84.907
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_15": {
+      "id": "race_15",
+      "x": 1189,
+      "y": 2331,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1205,
+        "y": 2347
+      },
+      "click_center_pct": {
+        "x_pct": 62.76,
+        "y_pct": 72.438
+      },
+      "click_area_pct": {
+        "x_min": 61.927,
+        "y_min": 71.944,
+        "x_max": 63.594,
+        "y_max": 72.932
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_16": {
+      "id": "race_16",
+      "x": 624,
+      "y": 2847,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 640,
+        "y": 2863
+      },
+      "click_center_pct": {
+        "x_pct": 33.333,
+        "y_pct": 88.364
+      },
+      "click_area_pct": {
+        "x_min": 32.5,
+        "y_min": 87.87,
+        "x_max": 34.167,
+        "y_max": 88.858
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_17": {
+      "id": "race_17",
+      "x": 1679,
+      "y": 2535,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1695,
+        "y": 2551
+      },
+      "click_center_pct": {
+        "x_pct": 88.281,
+        "y_pct": 78.735
+      },
+      "click_area_pct": {
+        "x_min": 87.448,
+        "y_min": 78.241,
+        "x_max": 89.115,
+        "y_max": 79.228
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_18": {
+      "id": "race_18",
+      "x": 194,
+      "y": 2535,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 210,
+        "y": 2551
+      },
+      "click_center_pct": {
+        "x_pct": 10.938,
+        "y_pct": 78.735
+      },
+      "click_area_pct": {
+        "x_min": 10.104,
+        "y_min": 78.241,
+        "x_max": 11.771,
+        "y_max": 79.228
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_19": {
+      "id": "race_19",
+      "x": 1307,
+      "y": 2351,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1323,
+        "y": 2367
+      },
+      "click_center_pct": {
+        "x_pct": 68.906,
+        "y_pct": 73.056
+      },
+      "click_area_pct": {
+        "x_min": 68.073,
+        "y_min": 72.562,
+        "x_max": 69.74,
+        "y_max": 73.549
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_2": {
+      "id": "race_2",
+      "x": 1583,
+      "y": 2448,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1599,
+        "y": 2464
+      },
+      "click_center_pct": {
+        "x_pct": 83.281,
+        "y_pct": 76.049
+      },
+      "click_area_pct": {
+        "x_min": 82.448,
+        "y_min": 75.556,
+        "x_max": 84.115,
+        "y_max": 76.543
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_20": {
+      "id": "race_20",
+      "x": 326,
+      "y": 2759,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 342,
+        "y": 2775
+      },
+      "click_center_pct": {
+        "x_pct": 17.812,
+        "y_pct": 85.648
+      },
+      "click_area_pct": {
+        "x_min": 16.979,
+        "y_min": 85.154,
+        "x_max": 18.646,
+        "y_max": 86.142
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_21": {
+      "id": "race_21",
+      "x": 1507,
+      "y": 2410,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1523,
+        "y": 2426
+      },
+      "click_center_pct": {
+        "x_pct": 79.323,
+        "y_pct": 74.877
+      },
+      "click_area_pct": {
+        "x_min": 78.49,
+        "y_min": 74.383,
+        "x_max": 80.156,
+        "y_max": 75.37
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_22": {
+      "id": "race_22",
+      "x": 178,
+      "y": 2582,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 194,
+        "y": 2598
+      },
+      "click_center_pct": {
+        "x_pct": 10.104,
+        "y_pct": 80.185
+      },
+      "click_area_pct": {
+        "x_min": 9.271,
+        "y_min": 79.691,
+        "x_max": 10.938,
+        "y_max": 80.679
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_23": {
+      "id": "race_23",
+      "x": 1128,
+      "y": 2863,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1144,
+        "y": 2879
+      },
+      "click_center_pct": {
+        "x_pct": 59.583,
+        "y_pct": 88.858
+      },
+      "click_area_pct": {
+        "x_min": 58.75,
+        "y_min": 88.364,
+        "x_max": 60.417,
+        "y_max": 89.352
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_24": {
+      "id": "race_24",
+      "x": 745,
+      "y": 2863,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 761,
+        "y": 2879
+      },
+      "click_center_pct": {
+        "x_pct": 39.635,
+        "y_pct": 88.858
+      },
+      "click_area_pct": {
+        "x_min": 38.802,
+        "y_min": 88.364,
+        "x_max": 40.469,
+        "y_max": 89.352
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_25": {
+      "id": "race_25",
+      "x": 1641,
+      "y": 2490,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1657,
+        "y": 2506
+      },
+      "click_center_pct": {
+        "x_pct": 86.302,
+        "y_pct": 77.346
+      },
+      "click_area_pct": {
+        "x_min": 85.469,
+        "y_min": 76.852,
+        "x_max": 87.135,
+        "y_max": 77.84
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_26": {
+      "id": "race_26",
+      "x": 808,
+      "y": 2319,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 824,
+        "y": 2335
+      },
+      "click_center_pct": {
+        "x_pct": 42.917,
+        "y_pct": 72.068
+      },
+      "click_area_pct": {
+        "x_min": 42.083,
+        "y_min": 71.574,
+        "x_max": 43.75,
+        "y_max": 72.562
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_27": {
+      "id": "race_27",
+      "x": 1663,
+      "y": 2675,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1679,
+        "y": 2691
+      },
+      "click_center_pct": {
+        "x_pct": 87.448,
+        "y_pct": 83.056
+      },
+      "click_area_pct": {
+        "x_min": 86.615,
+        "y_min": 82.562,
+        "x_max": 88.281,
+        "y_max": 83.549
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_28": {
+      "id": "race_28",
+      "x": 366,
+      "y": 2410,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 382,
+        "y": 2426
+      },
+      "click_center_pct": {
+        "x_pct": 19.896,
+        "y_pct": 74.877
+      },
+      "click_area_pct": {
+        "x_min": 19.062,
+        "y_min": 74.383,
+        "x_max": 20.729,
+        "y_max": 75.37
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_29": {
+      "id": "race_29",
+      "x": 232,
+      "y": 2490,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 248,
+        "y": 2506
+      },
+      "click_center_pct": {
+        "x_pct": 12.917,
+        "y_pct": 77.346
+      },
+      "click_area_pct": {
+        "x_min": 12.083,
+        "y_min": 76.852,
+        "x_max": 13.75,
+        "y_max": 77.84
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_3": {
+      "id": "race_3",
+      "x": 684,
+      "y": 2331,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 700,
+        "y": 2347
+      },
+      "click_center_pct": {
+        "x_pct": 36.458,
+        "y_pct": 72.438
+      },
+      "click_area_pct": {
+        "x_min": 35.625,
+        "y_min": 71.944,
+        "x_max": 37.292,
+        "y_max": 72.932
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_30": {
+      "id": "race_30",
+      "x": 1362,
+      "y": 2824,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1378,
+        "y": 2840
+      },
+      "click_center_pct": {
+        "x_pct": 71.771,
+        "y_pct": 87.654
+      },
+      "click_area_pct": {
+        "x_min": 70.938,
+        "y_min": 87.16,
+        "x_max": 72.604,
+        "y_max": 88.148
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_31": {
+      "id": "race_31",
+      "x": 210,
+      "y": 2675,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 226,
+        "y": 2691
+      },
+      "click_center_pct": {
+        "x_pct": 11.771,
+        "y_pct": 83.056
+      },
+      "click_area_pct": {
+        "x_min": 10.938,
+        "y_min": 82.562,
+        "x_max": 12.604,
+        "y_max": 83.549
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_32": {
+      "id": "race_32",
+      "x": 1065,
+      "y": 2319,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1081,
+        "y": 2335
+      },
+      "click_center_pct": {
+        "x_pct": 56.302,
+        "y_pct": 72.068
+      },
+      "click_area_pct": {
+        "x_min": 55.469,
+        "y_min": 71.574,
+        "x_max": 57.135,
+        "y_max": 72.562
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_33": {
+      "id": "race_33",
+      "x": 511,
+      "y": 2824,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 527,
+        "y": 2840
+      },
+      "click_center_pct": {
+        "x_pct": 27.448,
+        "y_pct": 87.654
+      },
+      "click_area_pct": {
+        "x_min": 26.615,
+        "y_min": 87.16,
+        "x_max": 28.281,
+        "y_max": 88.148
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_34": {
+      "id": "race_34",
+      "x": 1695,
+      "y": 2582,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1711,
+        "y": 2598
+      },
+      "click_center_pct": {
+        "x_pct": 89.115,
+        "y_pct": 80.185
+      },
+      "click_area_pct": {
+        "x_min": 88.281,
+        "y_min": 79.691,
+        "x_max": 89.948,
+        "y_max": 80.679
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_35": {
+      "id": "race_35",
+      "x": 566,
+      "y": 2351,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 582,
+        "y": 2367
+      },
+      "click_center_pct": {
+        "x_pct": 30.312,
+        "y_pct": 73.056
+      },
+      "click_area_pct": {
+        "x_min": 29.479,
+        "y_min": 72.562,
+        "x_max": 31.146,
+        "y_max": 73.549
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_36": {
+      "id": "race_36",
+      "x": 1547,
+      "y": 2759,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1563,
+        "y": 2775
+      },
+      "click_center_pct": {
+        "x_pct": 81.406,
+        "y_pct": 85.648
+      },
+      "click_area_pct": {
+        "x_min": 80.573,
+        "y_min": 85.154,
+        "x_max": 82.24,
+        "y_max": 86.142
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_4": {
+      "id": "race_4",
+      "x": 1414,
+      "y": 2377,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1430,
+        "y": 2393
+      },
+      "click_center_pct": {
+        "x_pct": 74.479,
+        "y_pct": 73.858
+      },
+      "click_area_pct": {
+        "x_min": 73.646,
+        "y_min": 73.364,
+        "x_max": 75.312,
+        "y_max": 74.352
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_5": {
+      "id": "race_5",
+      "x": 872,
+      "y": 2871,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 888,
+        "y": 2887
+      },
+      "click_center_pct": {
+        "x_pct": 46.25,
+        "y_pct": 89.105
+      },
+      "click_area_pct": {
+        "x_min": 45.417,
+        "y_min": 88.611,
+        "x_max": 47.083,
+        "y_max": 89.599
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_6": {
+      "id": "race_6",
+      "x": 1690,
+      "y": 2629,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1706,
+        "y": 2645
+      },
+      "click_center_pct": {
+        "x_pct": 88.854,
+        "y_pct": 81.636
+      },
+      "click_area_pct": {
+        "x_min": 88.021,
+        "y_min": 81.142,
+        "x_max": 89.688,
+        "y_max": 82.13
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_7": {
+      "id": "race_7",
+      "x": 290,
+      "y": 2448,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 306,
+        "y": 2464
+      },
+      "click_center_pct": {
+        "x_pct": 15.938,
+        "y_pct": 76.049
+      },
+      "click_area_pct": {
+        "x_min": 15.104,
+        "y_min": 75.556,
+        "x_max": 16.771,
+        "y_max": 76.543
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_8": {
+      "id": "race_8",
+      "x": 1249,
+      "y": 2847,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 1265,
+        "y": 2863
+      },
+      "click_center_pct": {
+        "x_pct": 65.885,
+        "y_pct": 88.364
+      },
+      "click_area_pct": {
+        "x_min": 65.052,
+        "y_min": 87.87,
+        "x_max": 66.719,
+        "y_max": 88.858
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "race_9": {
+      "id": "race_9",
+      "x": 183,
+      "y": 2629,
+      "width": 32,
+      "height": 32,
+      "click_center_px": {
+        "x": 199,
+        "y": 2645
+      },
+      "click_center_pct": {
+        "x_pct": 10.365,
+        "y_pct": 81.636
+      },
+      "click_area_pct": {
+        "x_min": 9.531,
+        "y_min": 81.142,
+        "x_max": 11.198,
+        "y_max": 82.13
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "RACE_NEIGHBORS_OF_ZERO": {
+      "id": "RACE_NEIGHBORS_OF_ZERO",
+      "x": 733,
+      "y": 2309,
+      "width": 440,
+      "height": 127,
+      "click_center_px": {
+        "x": 953,
+        "y": 2372
+      },
+      "click_center_pct": {
+        "x_pct": 49.635,
+        "y_pct": 73.21
+      },
+      "click_area_pct": {
+        "x_min": 38.177,
+        "y_min": 71.265,
+        "x_max": 61.094,
+        "y_max": 75.185
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "RACE_ZERO_GAME": {
+      "id": "RACE_ZERO_GAME",
+      "x": 793,
+      "y": 2388,
+      "width": 320,
+      "height": 95,
+      "click_center_px": {
+        "x": 953,
+        "y": 2435
+      },
+      "click_center_pct": {
+        "x_pct": 49.635,
+        "y_pct": 75.154
+      },
+      "click_area_pct": {
+        "x_min": 41.302,
+        "y_min": 73.704,
+        "x_max": 57.969,
+        "y_max": 76.636
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "RACE_ORPHANS_LEFT": {
+      "id": "RACE_ORPHANS_LEFT",
+      "x": 107,
+      "y": 2490,
+      "width": 241,
+      "height": 240,
+      "click_center_px": {
+        "x": 227,
+        "y": 2610
+      },
+      "click_center_pct": {
+        "x_pct": 11.823,
+        "y_pct": 80.556
+      },
+      "click_area_pct": {
+        "x_min": 5.573,
+        "y_min": 76.852,
+        "x_max": 18.125,
+        "y_max": 84.259
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "RACE_ORPHANS_RIGHT": {
+      "id": "RACE_ORPHANS_RIGHT",
+      "x": 1557,
+      "y": 2490,
+      "width": 241,
+      "height": 240,
+      "click_center_px": {
+        "x": 1677,
+        "y": 2610
+      },
+      "click_center_pct": {
+        "x_pct": 87.344,
+        "y_pct": 80.556
+      },
+      "click_area_pct": {
+        "x_min": 81.094,
+        "y_min": 76.852,
+        "x_max": 93.646,
+        "y_max": 84.259
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "RACE_SERIES_5_8": {
+      "id": "RACE_SERIES_5_8",
+      "x": 673,
+      "y": 2752,
+      "width": 560,
+      "height": 158,
+      "click_center_px": {
+        "x": 953,
+        "y": 2831
+      },
+      "click_center_pct": {
+        "x_pct": 49.635,
+        "y_pct": 87.377
+      },
+      "click_area_pct": {
+        "x_min": 35.052,
+        "y_min": 84.938,
+        "x_max": 64.219,
+        "y_max": 89.815
+      },
+      "kind": "overlay",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "overlay": "racetrack"
+    },
+    "WHEEL": {
+      "id": "WHEEL",
+      "x": 520,
+      "y": 1280,
+      "width": 880,
+      "height": 700,
+      "click_center_px": {
+        "x": 960,
+        "y": 1630
+      },
+      "click_center_pct": {
+        "x_pct": 50.0,
+        "y_pct": 50.309
+      },
+      "click_area_pct": {
+        "x_min": 27.083,
+        "y_min": 39.506,
+        "x_max": 72.917,
+        "y_max": 61.111
+      },
+      "kind": "readout",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "read_only",
+      "overlay": "statistics"
+    },
+    "HOT_NUMBERS": {
+      "id": "HOT_NUMBERS",
+      "x": 40,
+      "y": 1120,
+      "width": 480,
+      "height": 120,
+      "click_center_px": {
+        "x": 280,
+        "y": 1180
+      },
+      "click_center_pct": {
+        "x_pct": 14.583,
+        "y_pct": 36.42
+      },
+      "click_area_pct": {
+        "x_min": 2.083,
+        "y_min": 34.568,
+        "x_max": 27.083,
+        "y_max": 38.272
+      },
+      "kind": "readout",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "read_only",
+      "overlay": "statistics"
+    },
+    "COLD_NUMBERS": {
+      "id": "COLD_NUMBERS",
+      "x": 1400,
+      "y": 1120,
+      "width": 480,
+      "height": 120,
+      "click_center_px": {
+        "x": 1640,
+        "y": 1180
+      },
+      "click_center_pct": {
+        "x_pct": 85.417,
+        "y_pct": 36.42
+      },
+      "click_area_pct": {
+        "x_min": 72.917,
+        "y_min": 34.568,
+        "x_max": 97.917,
+        "y_max": 38.272
+      },
+      "kind": "readout",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "read_only",
+      "overlay": "statistics"
+    },
+    "LAST_NUMBER": {
+      "id": "LAST_NUMBER",
+      "x": 1500,
+      "y": 1430,
+      "width": 350,
+      "height": 300,
+      "click_center_px": {
+        "x": 1675,
+        "y": 1580
+      },
+      "click_center_pct": {
+        "x_pct": 87.24,
+        "y_pct": 48.765
+      },
+      "click_area_pct": {
+        "x_min": 78.125,
+        "y_min": 44.136,
+        "x_max": 96.354,
+        "y_max": 53.395
+      },
+      "kind": "readout",
+      "client": {
+        "width": 1920,
+        "height": 3240
+      },
+      "automation": "read_only",
+      "overlay": "statistics"
+    }
+  },
+  "catalog": {
+    "bet": 49,
+    "overlay": 46,
+    "readout": 12,
+    "ui": 24
+  },
+  "client": {
+    "width": 1920,
+    "height": 3240
+  },
+  "status": {
+    "geometry_source": "_tmp_logs/slot_roulette/panel_bot_cloth.png colour runs",
+    "built_at": "2026-07-29T16:29:56+0200",
+    "proof": "geometry only \u2014 Slot Roulette has no Godot :8090 oracle yet"
+  },
+  "note": "European single-zero. Interactive cloth on bottom panel y=2160..3240. Remote screen capture stitches two 1080p monitors (wheel+cloth = 2160); click coords stay in full 3240 client space."
+}

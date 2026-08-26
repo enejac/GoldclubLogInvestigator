@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roulette bill insert flow — .90 lab (2026-07-27)</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4f;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3fb950;
+      --warn: #d29922;
+      --cmd: #58a6ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      padding: 1.5rem 2rem;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #162032 0%, var(--bg) 100%);
+    }
+    h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
+    .sub { color: var(--muted); font-size: .95rem; }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem 2rem 3rem; }
+    section { margin-bottom: 2rem; }
+    h2 { font-size: 1.15rem; margin: 0 0 .75rem; color: var(--accent); }
+    .cmd {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--cmd);
+      padding: 1rem 1.25rem;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: .9rem;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    .cmd .flag { color: #79c0ff; }
+    .cmd .val { color: #ffa657; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .9rem;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: .55rem .75rem;
+      text-align: left;
+    }
+    th { background: var(--panel); color: var(--muted); font-weight: 600; }
+    tr:nth-child(even) td { background: rgba(255,255,255,.02); }
+    .ok { color: var(--accent); font-weight: 600; }
+    .fail { color: #f85149; }
+    .diagram {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      overflow-x: auto;
+    }
+    .lane { display: flex; gap: .75rem; align-items: stretch; margin-bottom: .5rem; }
+    .lane-tag {
+      flex: 0 0 88px;
+      background: #37474f;
+      color: #fff;
+      font-size: .7rem;
+      font-weight: 700;
+      padding: .5rem;
+      border-radius: 4px;
+      text-align: center;
+    }
+    .lane-body {
+      flex: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem;
+      align-items: center;
+    }
+    .node {
+      background: #fff;
+      color: #212121;
+      border: 1.5px solid #424242;
+      border-radius: 6px;
+      padding: .45rem .65rem;
+      font-size: .78rem;
+      min-width: 120px;
+    }
+    .node b { display: block; font-size: .82rem; }
+    .arrow { color: var(--muted); font-size: 1.1rem; padding: 0 .15rem; }
+    .arrow-label { font-size: .72rem; color: var(--cmd); max-width: 140px; }
+    .legend { font-size: .85rem; color: var(--muted); margin-top: 1rem; }
+    ul.compact { margin: .25rem 0; padding-left: 1.25rem; }
+    code { background: #0d1117; padding: .1rem .35rem; border-radius: 3px; font-size: .85em; }
+    footer { border-top: 1px solid var(--border); padding: 1rem 2rem; color: var(--muted); font-size: .8rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Roulette bill insert — layered flow report</h1>
+    <p class="sub">Cabinet <strong>10.0.0.90</strong> · GST20664 / GCC_RT_330106_01 · KeyCtrl <code>:30300</code> · 2026-07-27</p>
+  </header>
+
+  <main>
+    <section>
+      <h2>Inject command</h2>
+      <div class="cmd">
+        .\lab\roulette\Invoke-BillInjectRouletteRemote.ps1
+        <span class="flag">-PayloadProfile</span> <span class="val">captured</span>
+        <span class="flag">-Credits</span> <span class="val">200000</span>
+        <span class="flag">-Send</span>
+      </div>
+      <p class="legend"><strong>-Credits</strong> must match an active bill denomination on the cabinet (not arbitrary totals). Run <code>-ListDenominations</code> to print the table. Dallas line: <code>821 (config_code − 71)</code>.</p>
+      <table style="margin-top:1rem; max-width:720px;">
+        <thead><tr><th>COP note</th><th>Credits</th><th>Config code</th><th>Dallas</th><th>Inject</th></tr></thead>
+        <tbody>
+          <tr><td>1,000</td><td>100,000</td><td>97</td><td><code>821 26</code></td><td>—</td></tr>
+          <tr><td>2,000</td><td><strong>200,000</strong></td><td>98</td><td><code>821 27</code></td><td class="ok">Proven (<code>captured</code>)</td></tr>
+          <tr><td>5,000</td><td><strong>500,000</strong></td><td>99</td><td><code>821 28</code></td><td class="warn">Next step above 200k · not inject-proven yet</td></tr>
+          <tr><td>10,000</td><td>1,000,000</td><td>100</td><td><code>821 29</code></td><td>—</td></tr>
+          <tr><td>20,000</td><td>2,000,000</td><td>101</td><td><code>821 30</code></td><td>—</td></tr>
+          <tr><td>50,000</td><td>5,000,000</td><td>102</td><td><code>821 31</code></td><td>—</td></tr>
+          <tr><td>100,000</td><td>10,000,000</td><td>103</td><td><code>821 32</code></td><td>—</td></tr>
+        </tbody>
+      </table>
+      <p class="legend"><strong>400,000 is not valid</strong> — there is no 4,000 COP note. Use <code>-Credits 500000</code> for the next denomination, or <code>-Credits 200000 -RepeatCount 2</code> for two 2k notes (400k total).</p>
+      <div class="cmd" style="margin-top:1rem;">
+        .\lab\roulette\Invoke-BillInjectRouletteRemote.ps1
+        <span class="flag">-PayloadProfile</span> <span class="val">credit</span>
+        <span class="flag">-Credits</span> <span class="val">500000</span>
+        <span class="flag">-Send</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Layer overview</h2>
+      <div class="diagram">
+        <div class="lane">
+          <div class="lane-tag">L0<br>Physical</div>
+          <div class="lane-body">
+            <div class="node"><b>Bill validator</b>COM3 UART</div>
+            <span class="arrow">→</span>
+            <div class="node"><b>WinDivert inject</b>optional splice</div>
+          </div>
+        </div>
+        <div class="lane">
+          <div class="lane-tag">L1<br>Gateway</div>
+          <div class="lane-body">
+            <div class="node"><b>CommCtrl.exe</b>ASCII lines \r\n</div>
+          </div>
+        </div>
+        <div class="lane">
+          <div class="lane-tag">L2<br>TCP</div>
+          <div class="lane-body">
+            <div class="node"><b>:30300</b>KeyCtrl / bill bus</div>
+          </div>
+        </div>
+        <div class="lane">
+          <div class="lane-tag">L3<br>Game</div>
+          <div class="lane-body">
+            <div class="node"><b>ruleta.exe</b>RCM credit meter</div>
+          </div>
+        </div>
+        <div class="lane">
+          <div class="lane-tag">L4<br>State</div>
+          <div class="lane-body">
+            <div class="node"><b>gm2au</b>notesAccepted / events</div>
+          </div>
+        </div>
+        <div class="lane">
+          <div class="lane-tag">L5<br>Verify</div>
+          <div class="lane-body">
+            <div class="node"><b>ruleta log</b>RCM c= delta</div>
+            <div class="node"><b>SAS</b>meter 000B / LP $31–$37</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Physical bill — proven runs</h2>
+      <table>
+        <thead>
+          <tr><th>Time</th><th>After S2C 999</th><th>ruleta ack</th><th>RCM delta (c=)</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>12:07:45</td>
+            <td><code>821 27</code> → <code>700</code> / <code>777</code></td>
+            <td><code>BL 1</code> / <code>CN 1</code></td>
+            <td class="ok">+200,000 (1.3M → 1.5M)</td>
+          </tr>
+          <tr>
+            <td>12:33:23</td>
+            <td><code>821 18</code> <code>821 19</code> <code>822 98</code> → <code>823</code> <code>821 17</code></td>
+            <td><code>BL 10</code></td>
+            <td class="ok">+200,000 (0 → 200k)</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="legend">Capture: <code>aft/captures/bill_sniff_20260727_100634/dallas_capture.log</code></p>
+    </section>
+
+    <section>
+      <h2>Synthetic inject — sequence</h2>
+      <div class="diagram">
+        <div class="lane">
+          <div class="lane-tag">Idle</div>
+          <div class="lane-body">
+            <span class="arrow-label">S2C 899 ↔ C2S AL · C2S BZ 0/1 ↔ S2C 888/999</span>
+          </div>
+        </div>
+        <div class="lane">
+          <div class="lane-tag">Trigger</div>
+          <div class="lane-body">
+            <div class="node"><b>C2S</b>BZ 1</div>
+            <span class="arrow">→</span>
+            <div class="node"><b>S2C</b>999</div>
+            <span class="arrow">→</span>
+            <div class="node"><b>S2C inject</b>821 18|19|822 98|823|821 17</div>
+          </div>
+        </div>
+        <div class="lane">
+          <div class="lane-tag">Land</div>
+          <div class="lane-body">
+            <div class="node"><b>ruleta</b>RCM c= +200000</div>
+            <div class="node"><b>gm2au</b>notesAccepted.dat</div>
+            <div class="node"><b>TCP</b>drain 37 B · delta=0</div>
+          </div>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Attempt</th><th>Profile</th><th>Credits</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><code>credit</code> (821 27)</td><td>200k expected</td><td class="fail">No credit · stacker only · TCP desync</td></tr>
+          <tr><td>2</td><td><code>captured</code></td><td>200,000</td><td class="ok">Landed 14:01:43 · c= 0 → 200,000</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Verify</h2>
+      <div class="cmd">
+        Select-String \\10.0.0.90\c$\Goldclub\var\log\ruleta\2026-07-27.log -Pattern "RCM" | Select-Object -Last 5
+      </div>
+      <ul class="compact">
+        <li>Read-only sniff: <code>.\lab\roulette\Invoke-DallasSpliceRouletteRemote.ps1 -Mode capture -RunSeconds 120</code></li>
+        <li>Protocol detail: <code>lab/roulette/BILL-ACCEPTOR-PROTOCOL.md</code></li>
+        <li>Slot AFT diagram (separate bus): <code>aft/diagrams/igt-onehand-layered-flow.svg</code></li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    GoldClub Log Investigator · bill path only · AFT uses <code>:30550</code> (documented elsewhere)
+  </footer>
+</body>
+</html>

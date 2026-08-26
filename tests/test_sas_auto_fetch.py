@@ -34,6 +34,67 @@ def test_evaluate_auto_fetch_poll_newer_mtime_triggers_fetch() -> None:
     assert evaluate_auto_fetch_poll(123.5, 200.0) == (200.0, True)
 
 
+def test_local_meter_pair_ready_waits_for_both_folders() -> None:
+    """gm2au can lag SASControler1 by seconds — do not read the early side alone."""
+    from network.accounting_state_loader import local_meter_pair_ready
+
+    baseline = {"gm2au": 100.0, "SASControler1": 100.0}
+    # Only SAS advanced: hold.
+    ready, saw = local_meter_pair_ready(
+        baseline=baseline,
+        current={"gm2au": 100.0, "SASControler1": 200.0},
+        waited_s=0.2,
+        max_wait_s=1.5,
+    )
+    assert saw is True
+    assert ready is False
+    # Both advanced: go.
+    ready, saw = local_meter_pair_ready(
+        baseline=baseline,
+        current={"gm2au": 201.0, "SASControler1": 200.0},
+        waited_s=0.2,
+        max_wait_s=1.5,
+    )
+    assert ready is True and saw is True
+    # Budget expired with one-sided write (AFT-only): go anyway.
+    ready, saw = local_meter_pair_ready(
+        baseline=baseline,
+        current={"gm2au": 100.0, "SASControler1": 200.0},
+        waited_s=1.5,
+        max_wait_s=1.5,
+    )
+    assert ready is True and saw is True
+
+
+def test_local_auto_fetch_skips_compare_worker() -> None:
+    """On-cabinet Auto fetch must not pay for CompareWorker + LocalDiff."""
+    import inspect
+
+    from gui.sas_verify_dialog import (
+        AUTO_FETCH_MIN_REFRESH_LOCAL_S,
+        AUTO_FETCH_ROUND_IDLE_S,
+        SasVerifyDialog,
+    )
+
+    src = inspect.getsource(SasVerifyDialog._run_queued_auto_fetch_refresh)
+    assert "_run_queued_local_pair_refresh" in src
+    assert AUTO_FETCH_MIN_REFRESH_LOCAL_S <= 0.5
+    assert AUTO_FETCH_ROUND_IDLE_S <= 1.0
+
+
+def test_auto_fetch_remote_cadence_is_fast() -> None:
+    """A played game must show within ~1-2 s on a remote UNC root.
+
+    Measured on \\\\10.0.0.90: the SMB stat is ~30-40 ms and the full Machine
+    read ~40 ms, so anything above a 1 s poll / 1.5 s refresh spacing is pure
+    self-imposed lag (the old 4 s + 3 s cadence stacked to ~10 s per game).
+    """
+    from gui.sas_verify_dialog import AUTO_FETCH_POLL_INTERVAL_MS
+
+    assert AUTO_FETCH_POLL_INTERVAL_MS <= 1000
+    assert AUTO_FETCH_MIN_REFRESH_S <= 1.5
+
+
 def test_auto_fetch_refresh_delay_first_refresh_runs_now() -> None:
     assert (
         auto_fetch_refresh_delay_s(now_mono=500.0, last_refresh_mono=0.0, busy=False) == 0.0
@@ -41,9 +102,12 @@ def test_auto_fetch_refresh_delay_first_refresh_runs_now() -> None:
 
 
 def test_auto_fetch_refresh_delay_spaces_out_bursts() -> None:
-    # 2 s after the last refresh: wait out the rest of the spacing window.
-    delay = auto_fetch_refresh_delay_s(now_mono=502.0, last_refresh_mono=500.0, busy=False)
-    assert delay == AUTO_FETCH_MIN_REFRESH_S - 2.0
+    # Partway into the spacing window: wait out the rest of it.
+    half = AUTO_FETCH_MIN_REFRESH_S / 2.0
+    delay = auto_fetch_refresh_delay_s(
+        now_mono=500.0 + half, last_refresh_mono=500.0, busy=False
+    )
+    assert abs(delay - (AUTO_FETCH_MIN_REFRESH_S - half)) < 1e-9
     # Window already elapsed: run immediately.
     assert (
         auto_fetch_refresh_delay_s(
@@ -51,9 +115,10 @@ def test_auto_fetch_refresh_delay_spaces_out_bursts() -> None:
         )
         == 0.0
     )
-    # Local EGM uses a tighter coalesce window.
+    # Local EGM: short coalesce; dual-source pair wait absorbs write storms.
     from gui.sas_verify_dialog import AUTO_FETCH_MIN_REFRESH_LOCAL_S
 
+    assert 0.2 <= AUTO_FETCH_MIN_REFRESH_LOCAL_S <= 0.5
     delay_local = auto_fetch_refresh_delay_s(
         now_mono=500.2,
         last_refresh_mono=500.0,
@@ -69,10 +134,10 @@ def test_auto_fetch_refresh_delay_waits_while_work_is_in_flight() -> None:
         auto_fetch_refresh_delay_s(now_mono=900.0, last_refresh_mono=0.0, busy=True)
         == AUTO_FETCH_BUSY_RETRY_S
     )
-    # The longer of the two brakes wins.
+    # The longer of the two brakes wins (elapsed 0 → full spacing remains).
     assert auto_fetch_refresh_delay_s(
-        now_mono=501.0, last_refresh_mono=500.0, busy=True
-    ) == AUTO_FETCH_MIN_REFRESH_S - 1.0
+        now_mono=500.0, last_refresh_mono=500.0, busy=True
+    ) == max(AUTO_FETCH_MIN_REFRESH_S, AUTO_FETCH_BUSY_RETRY_S)
 
 
 def test_meters_fetched_status_text_second_accurate() -> None:
@@ -185,8 +250,8 @@ def test_latest_device_state_mtime_reads_newest(tmp_path, monkeypatch) -> None:
 
 
 
-def test_unchecking_auto_fetch_parks_the_busy_line_immediately() -> None:
-    """Turning Auto fetch off must stop the blue line now, not after debounce."""
+def test_unchecking_auto_fetch_suppresses_busy_helpers() -> None:
+    """Turning Auto fetch off still marks busy helpers suppressed (bar is gone)."""
     from PySide6.QtCore import QThreadPool
     from PySide6.QtWidgets import QApplication
 
@@ -205,76 +270,37 @@ def test_unchecking_auto_fetch_parks_the_busy_line_immediately() -> None:
     dlg._begin_meter_fetch = lambda **kw: True  # type: ignore[method-assign]
 
     dlg._auto_fetch_toggle.setChecked(True)
+    assert dlg._busy_progress is None
     dlg._set_busy_progress_active(True)
-    assert dlg._busy_progress.maximum() == 0
 
-    # Pretend a prefetch capture is still in flight when the user cancels.
     dlg._meter_fetch_running = lambda: True  # type: ignore[method-assign]
     dlg._auto_fetch_toggle.setChecked(False)
 
-    assert dlg._busy_progress.maximum() == 1
-    assert dlg._busy_progress.value() == 0
-    assert not dlg._busy_idle_timer.isActive()
+    assert dlg._busy_progress is None
+    assert dlg._busy_idle_timer is None
     assert dlg._busy_progress_suppressed is True
-    # Leftover workers must not restart the line.
     dlg._set_busy_progress_active(True)
-    assert dlg._busy_progress.maximum() == 1
-    # Manual Compare is allowed to animate again.
-    dlg._busy_progress_suppressed = False
-    dlg._set_busy_progress_active(True)
-    assert dlg._busy_progress.maximum() == 0
-
-    dlg.deleteLater()
-    app.processEvents()
-
-
-def test_dialog_busy_line_stays_up_between_phases() -> None:
-    """Idle is debounced: cabinet load -> COM capture animates as one run."""
-    from PySide6.QtCore import QThreadPool
-    from PySide6.QtWidgets import QApplication
-
-    from gui.sas_verify_dialog import SasVerifyDialog
-
-    app = QApplication.instance() or QApplication([])
-    dlg = SasVerifyDialog(SimpleNamespace(current_product_name="GUI-Test"), QThreadPool.globalInstance(), scan_root="")
-    dlg._prefetch_started = True
-
-    dlg._set_busy_progress_active(True)
-    assert dlg._busy_progress.maximum() == 0
-
-    # One phase finished: the bar keeps animating until the debounce expires.
-    dlg._set_busy_progress_active(False)
-    assert dlg._busy_progress.maximum() == 0
-    assert dlg._busy_idle_timer.isActive()
-
-    # Next phase started inside the window: cancel the pending stop.
-    dlg._set_busy_progress_active(True)
-    assert not dlg._busy_idle_timer.isActive()
-    assert dlg._busy_progress.maximum() == 0
-
-    # Nothing left in flight -> the debounced stop parks the bar.
-    dlg._set_busy_progress_active(False)
-    dlg._apply_busy_progress_idle()
-    assert dlg._busy_progress.maximum() == 1
-    assert dlg._busy_progress.value() == 0
-
-    # Work restarted before the timer fired: the stop is dropped.
-    dlg._set_busy_progress_active(True)
-    dlg._set_busy_progress_active(False)
-    dlg._busy_progress_should_run = lambda: True  # type: ignore[method-assign]
-    dlg._apply_busy_progress_idle()
-    assert dlg._busy_progress.maximum() == 0
+    assert dlg._busy_progress is None
 
     dlg.deleteLater()
     app.processEvents()
 
 
 def test_dialog_auto_fetch_toggle_behavior() -> None:
-    """Headless Qt: unchecked default, timer lifecycle, refetch on newer mtime."""
+    """Headless Qt: on at launch, timer lifecycle, refetch on newer mtime."""
     from PySide6.QtCore import QThreadPool
     from PySide6.QtWidgets import QApplication
 
-    from gui.sas_verify_dialog import SasVerifyDialog
+    from gui.sas_verify_dialog import (
+        _KEY_AUTO_FETCH,
+        SasVerifyDialog,
+        _sas_verify_settings,
+    )
+
+    # Pref lives at sasVerify/auto_fetch (not SasVerifyDialog/auto_fetch).
+    s = _sas_verify_settings()
+    s.remove(f"sasVerify/{_KEY_AUTO_FETCH}")
+    s.sync()
 
     app = QApplication.instance() or QApplication([])
     vm = SimpleNamespace(current_product_name="GUI-Test")
@@ -283,7 +309,8 @@ def test_dialog_auto_fetch_toggle_behavior() -> None:
     dlg._offline_log_scan = lambda: False  # type: ignore[method-assign]
     dlg._local_files_only_mode = lambda: False  # type: ignore[method-assign]
 
-    assert not dlg._auto_fetch_toggle.isChecked()
+    # Checked at every launch; watcher arms on show (or explicit toggle).
+    assert dlg._auto_fetch_toggle.isChecked()
     assert not dlg._auto_fetch_timer.isActive()
 
     enable_calls: list[tuple] = []
@@ -291,10 +318,9 @@ def test_dialog_auto_fetch_toggle_behavior() -> None:
     dlg._begin_cabinet_compare = lambda **kw: enable_calls.append(("compare", kw))  # type: ignore[method-assign]
     dlg._begin_meter_fetch = lambda **kw: enable_calls.append(("meters", kw)) or True  # type: ignore[method-assign]
 
-    dlg._auto_fetch_toggle.setChecked(True)
+    # Same path as showEvent: arm while checked. Refresh is queued, not inline.
+    dlg._arm_default_auto_fetch()
     assert dlg._auto_fetch_timer.isActive()
-    # The refresh is queued, never run inside the toggled handler (starting a
-    # cabinet load / COM capture there re-enters the dialog and freezes it).
     assert dlg._auto_fetch_refresh_queued
     assert enable_calls == []
     dlg._run_queued_auto_fetch_refresh()
@@ -305,6 +331,12 @@ def test_dialog_auto_fetch_toggle_behavior() -> None:
         {"prefetch": True, "force": True, "immediate_paint": False},
     ) in enable_calls
     assert any(c[0] == "meters" and c[1].get("force") for c in enable_calls)
+
+    dlg._auto_fetch_toggle.setChecked(False)
+    assert not dlg._auto_fetch_timer.isActive()
+    dlg._auto_fetch_toggle.setChecked(True)
+    assert dlg._auto_fetch_timer.isActive()
+    assert dlg._auto_fetch_refresh_queued
 
     calls: list[tuple] = []
     dlg._invalidate_machine_cabinet_cache = lambda: calls.append(("invalidate",))  # type: ignore[method-assign]
@@ -327,6 +359,9 @@ def test_dialog_auto_fetch_toggle_behavior() -> None:
     assert dlg._auto_fetch_refresh_queued
     assert calls == []
     assert dlg._auto_fetch_queue_timer.interval() > 0
+    # First enable-refresh left the round open (mocked workers never finish).
+    # A real round ends before the next queued refresh runs.
+    dlg._auto_fetch_round_active = False
     dlg._auto_fetch_last_force_mono = 0.0  # pretend the spacing window elapsed
     dlg._run_queued_auto_fetch_refresh()
     assert ("invalidate",) in calls
@@ -336,6 +371,7 @@ def test_dialog_auto_fetch_toggle_behavior() -> None:
 
     # A burst of state writes coalesces into the one pending refresh.
     calls.clear()
+    dlg._auto_fetch_round_active = False
     dlg._auto_fetch_last_force_mono = 0.0
     dlg._on_state_mtime_polled(300.0, "rootA")
     dlg._on_state_mtime_polled(400.0, "rootA")
@@ -377,6 +413,10 @@ def test_dialog_auto_fetch_toggle_behavior() -> None:
 
     dlg._auto_fetch_toggle.setChecked(False)
     assert not dlg._auto_fetch_timer.isActive()
+    # Leave pref on so later tests that rely on the default are not poisoned.
+    s2 = _sas_verify_settings()
+    s2.remove(f"sasVerify/{_KEY_AUTO_FETCH}")
+    s2.sync()
 
     dlg._mark_meters_fetched()
     assert re.fullmatch(
@@ -389,12 +429,15 @@ def test_dialog_auto_fetch_toggle_behavior() -> None:
 
 
 def test_status_strips_stay_thin() -> None:
-    """Busy line + prefetch line keep a fixed thin height across states."""
+    """Prefetch status line stays fixed-height; busy bar is not in the UI."""
     from PySide6.QtCore import QThreadPool
     from PySide6.QtWidgets import QApplication
 
-    from gui.sas_verify_dialog import SasVerifyDialog
-    from gui.thin_progress import THIN_BUSY_HEIGHT_PX
+    from gui.sas_verify_dialog import (
+        _KEY_AUTO_FETCH,
+        SasVerifyDialog,
+        _sas_verify_settings,
+    )
 
     app = QApplication.instance() or QApplication([])
     dlg = SasVerifyDialog(
@@ -403,19 +446,34 @@ def test_status_strips_stay_thin() -> None:
         scan_root="",
     )
     dlg._prefetch_started = True
+    # showEvent arms Auto fetch via QTimer — keep it off so no COM/cabinet work starts.
+    blocked = dlg._auto_fetch_toggle.blockSignals(True)
+    dlg._auto_fetch_toggle.setChecked(False)
+    dlg._auto_fetch_toggle.blockSignals(blocked)
     dlg.show()
     app.processEvents()
 
-    assert dlg._busy_progress.height() == THIN_BUSY_HEIGHT_PX
-    dlg._set_busy_progress_active(True)
-    app.processEvents()
-    assert dlg._busy_progress.height() == THIN_BUSY_HEIGHT_PX
+    assert dlg._busy_progress is None
 
     dlg._set_prefetch_status_text("x" * 400)
     app.processEvents()
     assert dlg._prefetch_status_label.height() == 18
     assert dlg._prefetch_status_label.wordWrap() is False
 
+    dlg._accept_worker_signals = False
+    for name in (
+        "_auto_fetch_timer",
+        "_auto_fetch_queue_timer",
+        "_settle_repaint_timer",
+        "_meter_flash_timer",
+        "_recovery_timer",
+    ):
+        timer = getattr(dlg, name, None)
+        if timer is not None:
+            timer.stop()
+    s = _sas_verify_settings()
+    s.remove(f"sasVerify/{_KEY_AUTO_FETCH}")
+    s.sync()
     dlg.deleteLater()
     app.processEvents()
 
@@ -478,6 +536,190 @@ def test_latest_device_state_mtime_includes_aft_xml(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(gp, "resolve_goldclub_layout", lambda root: layout)
 
     assert latest_device_state_mtime(r"C:\whatever\Goldclub\var") == 3_000_000
+
+
+def test_latest_device_state_mtime_ignores_aft_history_archive(
+    tmp_path, monkeypatch
+) -> None:
+    """History dumps must not be statted — they balloon UNC Auto-fetch polls."""
+    import os
+
+    import network.goldclub_paths as gp
+    from network.accounting_state_loader import (
+        device_state_watch_files,
+        latest_device_state_mtime,
+    )
+
+    state = tmp_path / "state"
+    sas = state / "SASControler1"
+    hist = sas / "History"
+    (state / "gm2au").mkdir(parents=True)
+    sas.mkdir(parents=True)
+    hist.mkdir(parents=True)
+    dm = state / "gm2au" / "DeviceManagerData.xml_1"
+    live = sas / "GCC_ST_local_01_aftMostRecentTransaction_v1.xml"
+    archive = sas / "GCC_ST_local_01_aftTransactionHistory_i99_v1.xml"
+    buried = hist / "GCC_ST_local_01_aftTransactionHistory_i1_v1.xml"
+    dm.write_text("<x/>", encoding="utf-8")
+    live.write_text("<aft/>", encoding="utf-8")
+    archive.write_text("<old/>", encoding="utf-8")
+    buried.write_text("<old/>", encoding="utf-8")
+    os.utime(dm, (1_000_000, 1_000_000))
+    os.utime(live, (2_000_000, 2_000_000))
+    os.utime(archive, (9_000_000, 9_000_000))
+    os.utime(buried, (9_500_000, 9_500_000))
+
+    watched = {p.name for p in device_state_watch_files(state)}
+    assert "GCC_ST_local_01_aftMostRecentTransaction_v1.xml" in watched
+    assert "GCC_ST_local_01_aftTransactionHistory_i99_v1.xml" not in watched
+    assert "GCC_ST_local_01_aftTransactionHistory_i1_v1.xml" not in watched
+
+    layout = SimpleNamespace(state_gcmessenger=state)
+    monkeypatch.setattr(gp, "resolve_goldclub_layout", lambda root: layout)
+    assert latest_device_state_mtime(r"C:\whatever\Goldclub\var") == 2_000_000
+
+
+def test_local_egm_status_never_promises_sas_mux() -> None:
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    from gui.sas_verify_dialog import SasVerifyDialog
+
+    app = QApplication.instance() or QApplication([])
+    dlg = SasVerifyDialog(
+        SimpleNamespace(current_product_name="GUI-Test"),
+        QThreadPool.globalInstance(),
+        scan_root=r"C:\Goldclub\var\log",
+    )
+    dlg._prefetch_started = True
+    dlg._local_files_only_mode = lambda: True  # type: ignore[method-assign]
+    dlg._offline_log_scan = lambda: False  # type: ignore[method-assign]
+    dlg._compare_running = lambda: False  # type: ignore[method-assign]
+    dlg._meter_fetch_running = lambda: False  # type: ignore[method-assign]
+    dlg._local_diff_running = True
+    dlg._update_prefetch_status()
+    text = dlg._prefetch_status_label.text()
+    assert "will appear automatically" not in text
+    assert "Cabinet loading" not in text
+    assert "local files" in text.lower()
+
+    dlg._local_diff_running = False
+    dlg._machine_state_loaded = True
+    dlg._loaded_cabinet_scan_root = r"C:\Goldclub\var\log"
+    dlg._scan_root = r"C:\Goldclub\var\log"
+    dlg._update_prefetch_status()
+    idle = dlg._prefetch_status_label.text()
+    assert "will appear automatically" not in idle
+    assert "Cabinet loading" not in idle
+
+    # Idle + empty must not claim "Loading…" (nothing is in flight).
+    dlg._machine_state_loaded = False
+    dlg._loaded_cabinet_scan_root = ""
+    dlg._update_prefetch_status()
+    empty = dlg._prefetch_status_label.text()
+    assert "Loading Machine meters" not in empty
+    assert "not found" in empty.lower()
+
+    dlg.deleteLater()
+    app.processEvents()
+
+
+def test_local_diff_end_round_does_not_double_render() -> None:
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    from gui.sas_verify_dialog import SasVerifyDialog
+
+    app = QApplication.instance() or QApplication([])
+    dlg = SasVerifyDialog(
+        SimpleNamespace(current_product_name="GUI-Test"),
+        QThreadPool.globalInstance(),
+        scan_root=r"C:\Goldclub\var\log",
+    )
+    dlg._prefetch_started = True
+    dlg._local_files_only_mode = lambda: True  # type: ignore[method-assign]
+    dlg._resolved_game_client_kind = lambda: "slot"  # type: ignore[method-assign]
+    dlg._reload_game_theme_catalog = lambda: None  # type: ignore[method-assign]
+    dlg._schedule_game_theme_catalog_reload = lambda: None  # type: ignore[method-assign]
+    dlg._seed_verify_rows_from_cabinet_if_needed = lambda: None  # type: ignore[method-assign]
+    dlg._machine_state = {"coinin": "10"}
+    dlg._machine_state_loaded = True
+    dlg._loaded_cabinet_scan_root = r"C:\Goldclub\var\log"
+    dlg._scan_root = r"C:\Goldclub\var\log"
+    dlg._last_parsed_rows = [SimpleNamespace()]  # truthy stand-in
+    renders: list[bool] = []
+    dlg._render = lambda **kw: renders.append(True)  # type: ignore[method-assign]
+    dlg._auto_fetch_round_active = True
+
+    dlg._on_local_diff_done(
+        "",
+        {"sas": {"coinin": "10"}, "machine": {"coinin": "10"}},
+    )
+    assert renders == [True]
+    assert dlg._auto_fetch_round_active is False
+
+    dlg.deleteLater()
+    app.processEvents()
+
+
+def test_auto_fetch_delay_treats_open_round_as_busy() -> None:
+    """Do not start a second Auto-fetch round while the first is still settling."""
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    from gui.sas_verify_dialog import SasVerifyDialog
+
+    app = QApplication.instance() or QApplication([])
+    dlg = SasVerifyDialog(
+        SimpleNamespace(current_product_name="GUI-Test"),
+        QThreadPool.globalInstance(),
+        scan_root=r"C:\Goldclub\var\log",
+    )
+    dlg._prefetch_started = True
+    dlg._auto_fetch_round_active = True
+    dlg._meter_fetch_running = lambda: False  # type: ignore[method-assign]
+    dlg._compare_running = lambda: False  # type: ignore[method-assign]
+    dlg._local_diff_running = False
+    dlg._manual_meters_refresh = False
+    assert dlg._auto_fetch_refresh_delay_now() >= AUTO_FETCH_BUSY_RETRY_S
+
+    dlg.deleteLater()
+    app.processEvents()
+
+
+def test_local_diff_in_flight_does_not_start_force_pending_compare() -> None:
+    """EGM play storm: finishing Machine must not immediately start another load."""
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    from gui.sas_verify_dialog import SasVerifyDialog
+
+    app = QApplication.instance() or QApplication([])
+    dlg = SasVerifyDialog(
+        SimpleNamespace(current_product_name="GUI-Test"),
+        QThreadPool.globalInstance(),
+        scan_root=r"C:\Goldclub\var\log",
+    )
+    dlg._prefetch_started = True
+    dlg._local_files_only_mode = lambda: True  # type: ignore[method-assign]
+    dlg._reload_game_theme_catalog = lambda: None  # type: ignore[method-assign]
+    dlg._schedule_game_theme_catalog_reload = lambda: None  # type: ignore[method-assign]
+    dlg._pool = SimpleNamespace(start=lambda *_a, **_k: None)  # type: ignore[assignment]
+    starts: list[dict] = []
+    dlg._begin_cabinet_compare = lambda **kw: starts.append(kw)  # type: ignore[method-assign]
+    dlg._run_cabinet_ui_refresh = lambda: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        AssertionError("UI refresh must wait for LocalDiff on local EGM")
+    )
+    dlg._cabinet_compare_force_pending = True
+    dlg._auto_fetch_round_active = True
+
+    dlg._apply_cabinet_state({"coinin": "1000"})
+    assert dlg._local_diff_running is True
+    assert dlg._cabinet_compare_force_pending is True
+    assert starts == []
+
+    dlg.deleteLater()
+    app.processEvents()
 
 
 def test_force_auto_fetch_queues_young_compare_instead_of_restart() -> None:
@@ -618,7 +860,7 @@ def test_force_auto_fetch_restarts_stuck_compare() -> None:
 
 
 def test_local_auto_fetch_skips_com_and_ends_round() -> None:
-    """On the EGM itself Auto fetch must reload files only — never open COM."""
+    """On the EGM itself Auto fetch is one LocalDiff — never CompareWorker or COM."""
     from PySide6.QtCore import QThreadPool
     from PySide6.QtWidgets import QApplication
 
@@ -633,28 +875,34 @@ def test_local_auto_fetch_skips_com_and_ends_round() -> None:
     dlg._prefetch_started = True
     dlg._local_files_only_mode = lambda: True  # type: ignore[method-assign]
     dlg._offline_log_scan = lambda: False  # type: ignore[method-assign]
-    calls: list[tuple] = []
-    compare_live = {"v": False}
+    blocked = dlg._auto_fetch_toggle.blockSignals(True)
+    dlg._auto_fetch_toggle.setChecked(True)
+    dlg._auto_fetch_toggle.blockSignals(blocked)
+    calls: list[str] = []
 
-    def _fake_compare(**kw):
-        calls.append(("compare", kw))
-        compare_live["v"] = True
+    dlg._begin_cabinet_compare = lambda **kw: calls.append("compare")  # type: ignore[method-assign]
+    dlg._begin_meter_fetch = lambda **kw: calls.append("meters") or True  # type: ignore[method-assign]
+    dlg._begin_local_pair_diff = lambda: calls.append("local_pair")  # type: ignore[method-assign]
+    # Both folders already advanced past the empty baseline → ready immediately.
+    import network.accounting_state_loader as asl
 
-    dlg._invalidate_machine_cabinet_cache = lambda: calls.append(("invalidate",))  # type: ignore[method-assign]
-    dlg._begin_cabinet_compare = _fake_compare  # type: ignore[method-assign]
-    dlg._begin_meter_fetch = lambda **kw: calls.append(("meters", kw)) or True  # type: ignore[method-assign]
-    dlg._compare_running = lambda: compare_live["v"]  # type: ignore[method-assign]
+    dlg._auto_fetch_source_mtimes = {}
+    asl_device = asl.device_source_mtimes
+    asl.device_source_mtimes = lambda _sr: {  # type: ignore[assignment]
+        "gm2au": 10.0,
+        "SASControler1": 10.0,
+    }
 
-    dlg._auto_fetch_refresh_queued = True
-    dlg._auto_fetch_last_force_mono = 0.0
-    dlg._run_queued_auto_fetch_refresh()
+    try:
+        dlg._auto_fetch_refresh_queued = True
+        dlg._auto_fetch_last_force_mono = 0.0
+        dlg._run_queued_auto_fetch_refresh()
+    finally:
+        asl.device_source_mtimes = asl_device  # type: ignore[assignment]
 
-    assert ("invalidate",) in calls
-    assert (
-        "compare",
-        {"prefetch": True, "force": True, "immediate_paint": False},
-    ) in calls
-    assert not any(c[0] == "meters" for c in calls)
+    assert "local_pair" in calls
+    assert "compare" not in calls
+    assert "meters" not in calls
     assert dlg._auto_fetch_round_active
 
     dlg.deleteLater()
@@ -740,6 +988,9 @@ def test_auto_fetch_refresh_survives_compare_kwargs() -> None:
         scan_root="",
     )
     dlg._prefetch_started = True
+    blocked = dlg._auto_fetch_toggle.blockSignals(True)
+    dlg._auto_fetch_toggle.setChecked(True)
+    dlg._auto_fetch_toggle.blockSignals(blocked)
     calls: list[tuple] = []
     dlg._invalidate_machine_cabinet_cache = lambda: calls.append(("invalidate",))  # type: ignore[method-assign]
     dlg._begin_cabinet_compare = lambda **kw: calls.append(("compare", kw))  # type: ignore[method-assign]
@@ -758,4 +1009,460 @@ def test_auto_fetch_refresh_survives_compare_kwargs() -> None:
 
     dlg.deleteLater()
     app.processEvents()
+
+
+def test_invalidate_keeps_machine_snapshot_for_autofetch() -> None:
+    """Auto fetch must not flash NO MACHINE by clearing the loaded snapshot."""
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    from gui.sas_verify_dialog import SasVerifyDialog
+
+    app = QApplication.instance() or QApplication([])
+    root = r"C:\Goldclub\var\log"
+    dlg = SasVerifyDialog(
+        SimpleNamespace(current_product_name="GUI-Test"),
+        QThreadPool.globalInstance(),
+        scan_root=root,
+    )
+    dlg._prefetch_started = True
+    dlg._auto_fetch_toggle.setChecked(False)
+    dlg._machine_state = {"coinin": "100"}
+    dlg._machine_state_loaded = True
+    dlg._loaded_cabinet_scan_root = root
+    dlg._machine_state_loaded_at = 1_000.0
+    dlg._scan_root = root
+
+    dlg._invalidate_machine_cabinet_cache()
+    assert dlg._machine_state == {"coinin": "100"}
+    assert dlg._machine_state_loaded is True
+    assert dlg._loaded_cabinet_scan_root == root
+    assert dlg._machine_state_loaded_at == 0.0
+    assert dlg._machine_loaded_for_current_root()
+    assert not dlg._cabinet_cache_valid()
+
+    dlg._invalidate_machine_cabinet_cache(wipe=True)
+    assert dlg._machine_state == {}
+    assert dlg._machine_state_loaded is False
+
+    dlg.deleteLater()
+    app.processEvents()
+
+
+def test_empty_machine_reload_keeps_previous_during_autofetch() -> None:
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    from gui.sas_verify_dialog import SasVerifyDialog
+
+    app = QApplication.instance() or QApplication([])
+    root = r"C:\Goldclub\var\log"
+    dlg = SasVerifyDialog(
+        SimpleNamespace(current_product_name="GUI-Test"),
+        QThreadPool.globalInstance(),
+        scan_root=root,
+    )
+    dlg._prefetch_started = True
+    # Keep Auto fetch "on" without starting real cabinet/COM work.
+    blocked = dlg._auto_fetch_toggle.blockSignals(True)
+    dlg._auto_fetch_toggle.setChecked(True)
+    dlg._auto_fetch_toggle.blockSignals(blocked)
+    dlg._auto_fetch_timer.stop()
+    dlg._scan_root = root
+    dlg._machine_state = {"coinin": "250"}
+    dlg._machine_state_loaded = True
+    dlg._loaded_cabinet_scan_root = root
+    dlg._machine_state_loaded_at = 50.0
+    dlg._active_compare_job_id = 1
+    dlg._schedule_empty_machine_retry = lambda: None  # type: ignore[method-assign]
+    dlg._run_cabinet_ui_refresh = lambda: None  # type: ignore[method-assign]
+    dlg._reload_game_theme_catalog = lambda: None  # type: ignore[method-assign]
+    dlg._schedule_game_theme_catalog_reload = lambda: None  # type: ignore[method-assign]
+
+    dlg._apply_cabinet_state({}, job_id=1)
+    assert dlg._machine_state == {"coinin": "250"}
+    assert dlg._machine_state_loaded is True
+    assert dlg._loaded_cabinet_scan_root == root
+
+    dlg._auto_fetch_toggle.setChecked(False)
+    dlg.deleteLater()
+    app.processEvents()
+
+
+def test_com_failure_ends_autofetch_round_even_during_recovery(monkeypatch) -> None:
+    """COM access-denied must not leave SYNCING / round_active stuck forever."""
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    import gui.sas_verify_dialog as mod
+    from gui.sas_verify_dialog import SasVerifyDialog
+
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(mod, "igt_sas_tester_is_running", lambda **kw: False)
+    monkeypatch.setattr(mod, "com_error_is_port_busy", lambda msg: True)
+    monkeypatch.setattr(mod, "com_error_is_link_dead", lambda msg: False)
+    # The manual (non-prefetch) path ends in a modal warning — swallow it or
+    # pytest blocks forever inside QMessageBox.exec().
+    boxes: list[str] = []
+    monkeypatch.setattr(
+        mod.QMessageBox,
+        "warning",
+        staticmethod(lambda *a, **k: boxes.append("warned")),
+    )
+    dlg = SasVerifyDialog(
+        SimpleNamespace(current_product_name="GUI-Test"),
+        QThreadPool.globalInstance(),
+        scan_root="",
+    )
+    dlg._prefetch_started = True
+    dlg._auto_fetch_toggle.setChecked(False)
+    dlg._auto_fetch_round_active = True
+    dlg._com_recovery_pending = True
+    dlg._game_recovery_pending = False
+    dlg._meter_fetch_running = lambda: False  # type: ignore[method-assign]
+    dlg._flush_pending_cabinet_ui_refresh = lambda: None  # type: ignore[method-assign]
+    dlg._refresh_com_port_list = lambda **kw: None  # type: ignore[method-assign]
+    dlg._update_onehand_warning_label = lambda *_a, **_k: None  # type: ignore[method-assign]
+    dlg._update_prefetch_status = lambda *_a, **_k: None  # type: ignore[method-assign]
+    dlg._resolved_com_port_for_fetch = lambda: "COM4"  # type: ignore[method-assign]
+
+    dlg._on_meter_fetch_error("Could not open COM4: Access is denied.")
+    assert dlg._auto_fetch_round_active is False
+
+    dlg.deleteLater()
+    app.processEvents()
+
+
+def test_arm_default_auto_fetch_skips_refresh_while_prefetch_compare_runs() -> None:
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    from gui.sas_verify_dialog import SasVerifyDialog
+
+    app = QApplication.instance() or QApplication([])
+    dlg = SasVerifyDialog(
+        SimpleNamespace(current_product_name="GUI-Test"),
+        QThreadPool.globalInstance(),
+        scan_root="",
+    )
+    dlg._prefetch_started = True
+    blocked = dlg._auto_fetch_toggle.blockSignals(True)
+    dlg._auto_fetch_toggle.setChecked(True)
+    dlg._auto_fetch_toggle.blockSignals(blocked)
+    dlg._auto_fetch_timer.stop()
+    dlg._auto_fetch_refresh_queued = False
+    dlg._compare_running = lambda: True  # type: ignore[method-assign]
+    dlg._meter_fetch_running = lambda: False  # type: ignore[method-assign]
+    dlg._local_diff_running = False
+    dlg._cabinet_compare_force_pending = False
+    dlg._begin_cabinet_compare = lambda **kw: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        AssertionError("must not force-refresh while prefetch compare runs")
+    )
+    dlg._begin_meter_fetch = lambda **kw: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        AssertionError("must not start COM while prefetch compare runs")
+    )
+
+    dlg._arm_default_auto_fetch()
+    assert dlg._auto_fetch_timer.isActive()
+    assert not dlg._auto_fetch_refresh_queued
+
+    dlg._auto_fetch_toggle.setChecked(False)
+    dlg.deleteLater()
+    app.processEvents()
+
+
+def _autofetch_on_dialog(scan_root: str):
+    """Dialog with Auto fetch checked but nothing armed / no real work started."""
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    from gui.sas_verify_dialog import (
+        _KEY_AUTO_FETCH,
+        SasVerifyDialog,
+        _sas_verify_settings,
+    )
+
+    # Keep suite default (True) — do not inherit a prior test's false pref.
+    s = _sas_verify_settings()
+    s.remove(f"sasVerify/{_KEY_AUTO_FETCH}")
+    s.sync()
+
+    app = QApplication.instance() or QApplication([])
+    dlg = SasVerifyDialog(
+        SimpleNamespace(current_product_name="GUI-Test"),
+        QThreadPool.globalInstance(),
+        scan_root=scan_root,
+    )
+    dlg._prefetch_started = True
+    blocked = dlg._auto_fetch_toggle.blockSignals(True)
+    dlg._auto_fetch_toggle.setChecked(True)
+    dlg._auto_fetch_toggle.blockSignals(blocked)
+    for name in (
+        "_auto_fetch_timer",
+        "_auto_fetch_queue_timer",
+        "_settle_repaint_timer",
+        "_meter_flash_timer",
+        "_recovery_timer",
+    ):
+        timer = getattr(dlg, name, None)
+        if timer is not None:
+            timer.stop()
+    dlg._scan_root = scan_root
+    return app, dlg
+
+
+def _close_autofetch_dialog(app, dlg) -> None:
+    """Tear down without persisting auto_fetch=false or racing dying timers."""
+    from gui.sas_verify_dialog import _KEY_AUTO_FETCH, _sas_verify_settings
+
+    dlg._accept_worker_signals = False
+    for name in (
+        "_auto_fetch_timer",
+        "_auto_fetch_queue_timer",
+        "_settle_repaint_timer",
+        "_meter_flash_timer",
+        "_recovery_timer",
+    ):
+        timer = getattr(dlg, name, None)
+        if timer is not None:
+            timer.stop()
+    try:
+        dlg._stop_meter_fetch_thread(wait_ms=200)
+    except Exception:
+        pass
+    try:
+        dlg._stop_compare_thread(wait_ms=200)
+    except Exception:
+        pass
+    toggle = getattr(dlg, "_auto_fetch_toggle", None)
+    if toggle is not None:
+        blocked = toggle.blockSignals(True)
+        toggle.setChecked(False)
+        toggle.blockSignals(blocked)
+    s = _sas_verify_settings()
+    s.remove(f"sasVerify/{_KEY_AUTO_FETCH}")
+    s.sync()
+    dlg.deleteLater()
+    app.processEvents()
+
+
+def test_empty_machine_retry_is_compare_only() -> None:
+    """An empty state file is no reason to re-open COM every retry cycle."""
+    root = r"C:\Goldclub\var\log"
+    app, dlg = _autofetch_on_dialog(root)
+    calls: list[str] = []
+    dlg._begin_cabinet_compare = lambda **kw: calls.append("compare")  # type: ignore[method-assign]
+    dlg._begin_meter_fetch = lambda **kw: calls.append("fetch") or True  # type: ignore[method-assign]
+    dlg._queue_auto_fetch_refresh = lambda: calls.append("full_round")  # type: ignore[method-assign]
+    dlg._compare_running = lambda: False  # type: ignore[method-assign]
+    dlg._local_diff_running = False
+    # Kept snapshot, soft-expired (the keep-on-empty state).
+    dlg._machine_state = {"coinin": "250"}
+    dlg._machine_state_loaded = True
+    dlg._loaded_cabinet_scan_root = root
+    dlg._machine_state_loaded_at = 0.0
+
+    dlg._retry_empty_machine_reload()
+    assert calls == ["compare"]
+    assert dlg._machine_empty_retry_count == 1
+
+    _close_autofetch_dialog(app, dlg)
+
+
+def test_empty_machine_retry_gives_up_after_cap() -> None:
+    from gui.sas_verify_dialog import AUTO_FETCH_EMPTY_MACHINE_RETRY_MAX
+
+    root = r"C:\Goldclub\var\log"
+    app, dlg = _autofetch_on_dialog(root)
+    dlg._machine_empty_retry_count = AUTO_FETCH_EMPTY_MACHINE_RETRY_MAX
+    dlg._schedule_empty_machine_retry()
+    assert dlg._machine_empty_retry_armed is False
+
+    dlg._machine_empty_retry_count = 0
+    dlg._schedule_empty_machine_retry()
+    assert dlg._machine_empty_retry_armed is True
+
+    _close_autofetch_dialog(app, dlg)
+
+
+def test_empty_machine_retry_skips_after_late_success() -> None:
+    """A load that succeeded between schedule and fire cancels the retry."""
+    root = r"C:\Goldclub\var\log"
+    app, dlg = _autofetch_on_dialog(root)
+    calls: list[str] = []
+    dlg._begin_cabinet_compare = lambda **kw: calls.append("compare")  # type: ignore[method-assign]
+    dlg._queue_auto_fetch_refresh = lambda: calls.append("full_round")  # type: ignore[method-assign]
+    dlg._compare_running = lambda: False  # type: ignore[method-assign]
+    dlg._local_diff_running = False
+    dlg._machine_state = {"coinin": "300"}
+    dlg._machine_state_loaded = True
+    dlg._loaded_cabinet_scan_root = root
+    dlg._machine_state_loaded_at = 1_000.0  # fresh successful load
+    dlg._machine_empty_retry_count = 3
+
+    dlg._retry_empty_machine_reload()
+    assert calls == []
+    assert dlg._machine_empty_retry_count == 0
+
+    _close_autofetch_dialog(app, dlg)
+
+
+def test_keep_on_empty_arms_share_recovery_for_unc(monkeypatch) -> None:
+    """A UNC root going empty starts the share watcher alongside the retry."""
+    root = r"\\10.0.0.90\c$\Goldclub\var\log"
+    monkeypatch.setattr(
+        "network.goldclub_paths.should_arm_share_recovery_after_empty_load",
+        lambda _sr: True,
+    )
+    app, dlg = _autofetch_on_dialog(root)
+    dlg._machine_state = {"coinin": "250"}
+    dlg._machine_state_loaded = True
+    dlg._loaded_cabinet_scan_root = root
+    dlg._machine_state_loaded_at = 50.0
+    dlg._schedule_empty_machine_retry = lambda: None  # type: ignore[method-assign]
+    dlg._update_prefetch_status = lambda *a, **k: None  # type: ignore[method-assign]
+
+    kept = dlg._keep_machine_on_empty_reload()
+    assert kept is True
+    assert dlg._share_recovery_pending is True
+    dlg._recovery_timer.stop()
+
+    _close_autofetch_dialog(app, dlg)
+
+
+def test_stale_local_diff_signal_is_dropped() -> None:
+    """A late done() from a watchdog-released task must not touch the dialog."""
+    root = r"C:\Goldclub\var\log"
+    app, dlg = _autofetch_on_dialog(root)
+    dlg._local_diff_job_id = 2  # a newer task is the current one
+    dlg._local_diff_running = True
+    dlg._machine_state = {"coinin": "111"}
+
+    dlg._on_local_diff_done(
+        "stale", {"sas": {}, "machine": {"coinin": "999"}, "__job__": 1}
+    )
+    assert dlg._local_diff_running is True
+    assert dlg._machine_state == {"coinin": "111"}
+
+    # The current task's signal still applies normally.
+    dlg._render = lambda **kw: None  # type: ignore[method-assign]
+    dlg._update_prefetch_status = lambda *a, **k: None  # type: ignore[method-assign]
+    dlg._on_local_diff_done(
+        "fresh", {"sas": {}, "machine": {"coinin": "999"}, "__job__": 2}
+    )
+    assert dlg._local_diff_running is False
+    assert dlg._machine_state == {"coinin": "999"}
+
+    _close_autofetch_dialog(app, dlg)
+
+def test_apply_cabinet_state_drops_stale_scan_root() -> None:
+    """A CompareWorker that finished after the edit box moved must not paint."""
+    root_a = r"\\10.0.0.90\c$\Goldclub\var"
+    root_b = r"\\10.0.0.171\c$\Goldclub\var"
+    app, dlg = _autofetch_on_dialog(root_a)
+    dlg._active_compare_job_id = 7
+    dlg._compare_job_roots[7] = root_a
+    blocked = dlg._scan_root_edit.blockSignals(True)
+    dlg._scan_root_edit.setText(root_b)
+    dlg._scan_root_edit.blockSignals(blocked)
+    dlg._scan_root = root_b
+    dlg._machine_state = {}
+    painted: list[bool] = []
+    dlg._run_cabinet_ui_refresh = lambda: painted.append(True)  # type: ignore[method-assign]
+    dlg._release_compare_busy_ui_if_idle = lambda **kw: None  # type: ignore[method-assign]
+
+    dlg._apply_cabinet_state({"coinin": "999"}, job_id=7)
+    assert dlg._machine_state == {}
+    assert painted == []
+    assert 7 not in dlg._compare_job_roots
+
+    _close_autofetch_dialog(app, dlg)
+
+
+def test_worker_error_clears_force_pending_before_round_close() -> None:
+    root = r"\\10.0.0.90\c$\Goldclub\var"
+    app, dlg = _autofetch_on_dialog(root)
+    dlg._active_compare_job_id = 3
+    dlg._compare_job_roots[3] = root
+    dlg._cabinet_compare_prefetch = True  # avoid modal QMessageBox in CI
+    dlg._cabinet_compare_force_pending = True
+    dlg._auto_fetch_round_resynced = True
+    dlg._auto_fetch_round_active = True
+    dlg._keep_machine_on_empty_reload = lambda: True  # type: ignore[method-assign]
+    dlg._arm_share_recovery = lambda: None  # type: ignore[method-assign]
+    dlg._prompt_local_d_scan_root = lambda **kw: None  # type: ignore[method-assign]
+    dlg._render = lambda **kw: None  # type: ignore[method-assign]
+    dlg._update_prefetch_status = lambda *a, **k: None  # type: ignore[method-assign]
+    dlg._meter_fetch_running = lambda: False  # type: ignore[method-assign]
+    dlg._compare_running = lambda: False  # type: ignore[method-assign]
+    dlg._local_diff_running = False
+
+    dlg._on_worker_error("cabinet XML missing", job_id=3)
+    assert dlg._cabinet_compare_force_pending is False
+    assert dlg._auto_fetch_round_resynced is False
+    assert dlg._auto_fetch_round_active is False
+
+    _close_autofetch_dialog(app, dlg)
+
+
+def test_local_pair_wait_gives_up_when_nothing_writes() -> None:
+    """Silent folders must not spin the 150 ms queue forever."""
+    import time
+
+    from gui.sas_verify_dialog import AUTO_FETCH_LOCAL_PAIR_WAIT_S
+
+    root = r"C:\Goldclub\var\log"
+    app, dlg = _autofetch_on_dialog(root)
+    dlg._auto_fetch_refresh_queued = True
+    dlg._auto_fetch_pair_wait_started_mono = (
+        time.monotonic() - AUTO_FETCH_LOCAL_PAIR_WAIT_S - 0.1
+    )
+    dlg._auto_fetch_source_mtimes = {"gm2au": 1.0, "SASControler1": 1.0}
+    dlg._local_diff_running = False
+    dlg._compare_running = lambda: False  # type: ignore[method-assign]
+
+    import network.accounting_state_loader as loader
+
+    orig = loader.device_source_mtimes
+    loader.device_source_mtimes = lambda _sr: {  # type: ignore[assignment]
+        "gm2au": 1.0,
+        "SASControler1": 1.0,
+    }
+    try:
+        dlg._run_queued_local_pair_refresh()
+    finally:
+        loader.device_source_mtimes = orig  # type: ignore[assignment]
+
+    assert dlg._auto_fetch_refresh_queued is False
+    assert dlg._auto_fetch_pair_wait_started_mono == 0.0
+    assert not dlg._auto_fetch_queue_timer.isActive()
+
+    _close_autofetch_dialog(app, dlg)
+
+
+def test_local_pair_wait_starts_clock_when_saw_is_false() -> None:
+    root = r"C:\Goldclub\var\log"
+    app, dlg = _autofetch_on_dialog(root)
+    dlg._auto_fetch_refresh_queued = True
+    dlg._auto_fetch_pair_wait_started_mono = 0.0
+    dlg._auto_fetch_source_mtimes = {"gm2au": 1.0, "SASControler1": 1.0}
+    dlg._local_diff_running = False
+    dlg._compare_running = lambda: False  # type: ignore[method-assign]
+
+    import network.accounting_state_loader as loader
+
+    orig = loader.device_source_mtimes
+    loader.device_source_mtimes = lambda _sr: {  # type: ignore[assignment]
+        "gm2au": 1.0,
+        "SASControler1": 1.0,
+    }
+    try:
+        dlg._run_queued_local_pair_refresh()
+    finally:
+        loader.device_source_mtimes = orig  # type: ignore[assignment]
+
+    assert dlg._auto_fetch_pair_wait_started_mono > 0.0
+    assert dlg._auto_fetch_refresh_queued is True
+
+    _close_autofetch_dialog(app, dlg)
 

@@ -1,4 +1,4 @@
-﻿"""Quick COM4 SAS link probe."""
+"""Quick COM4 SAS link probe."""
 import sys, time
 import serial
 from serial.tools import list_ports

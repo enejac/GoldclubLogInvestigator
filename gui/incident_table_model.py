@@ -85,10 +85,12 @@ class IncidentTableModel(QAbstractTableModel):
         self.has_validation_data = False
         self.has_ram_data = False
         self._flash: dict[int, int] = {}
+        self._insert_announced = False
         self._flash_timer = QTimer(self)
         self._flash_timer.setInterval(80)
         self._flash_timer.timeout.connect(self._tick_flash)
         view_model.filter_rebuilt.connect(self._on_filter_rebuilt)
+        view_model.rows_about_to_be_inserted.connect(self._on_rows_about_to_be_inserted)
         view_model.rows_inserted.connect(self._on_rows_inserted)
         view_model.bookmarks_changed.connect(self._on_bookmarks_changed)
         view_model.incident_ram_updated.connect(self._on_incident_ram_updated)
@@ -227,8 +229,16 @@ class IncidentTableModel(QAbstractTableModel):
         self.endResetModel()
         self._recompute_column_visibility_flags()
 
-    def _on_rows_inserted(self, first: int, last: int) -> None:
+    def _on_rows_about_to_be_inserted(self, first: int, last: int) -> None:
         self.beginInsertRows(QModelIndex(), first, last)
+        self._insert_announced = True
+
+    def _on_rows_inserted(self, first: int, last: int) -> None:
+        if not self._insert_announced:
+            # Defensive: a producer that skipped the "about to" signal would
+            # otherwise leave the view without an insert notification at all.
+            self.beginInsertRows(QModelIndex(), first, last)
+        self._insert_announced = False
         self.endInsertRows()
         self._merge_column_visibility_from_new_rows(first, last)
 

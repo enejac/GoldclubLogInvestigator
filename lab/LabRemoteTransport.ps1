@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Shared remote execution transport: WinRM first, PsExec (-s) fallback.
 
@@ -11,13 +11,13 @@
 #>
 
 if (-not (Get-Command Get-LabCredential -ErrorAction SilentlyContinue)) {
-    $labAccessPath = Join-Path $PSScriptRoot 'LabAccess.ps1'
+    $labAccessPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'LabAccess.ps1'
     if (Test-Path -LiteralPath $labAccessPath) {
         . $labAccessPath
     }
 }
 
-$script:LabFleetIps = @('10.0.0.83', '10.0.0.90', '10.0.0.100', '10.0.0.110', '10.0.0.112', '10.0.0.171')
+$script:LabFleetIps = @('10.0.0.83', '10.0.0.90', '10.0.0.100', '10.0.0.110', '10.0.0.111', '10.0.0.112', '10.0.0.171')
 
 function Initialize-LabRemoteContext {
     param(
@@ -28,10 +28,10 @@ function Initialize-LabRemoteContext {
     $credentialFromLab = $false
     if ($ComputerName -in $script:LabFleetIps) {
         if (Get-Command Get-LabPsExecArgs -ErrorAction SilentlyContinue) {
-            $psExecAuthArgs = @(Get-LabPsExecArgs)
+            $psExecAuthArgs = @(Get-LabPsExecArgs -ComputerName $ComputerName)
         }
         if (-not $Credential -and (Get-Command Get-LabCredential -ErrorAction SilentlyContinue)) {
-            $Credential = Get-LabCredential
+            $Credential = Get-LabCredential -ComputerName $ComputerName
             $credentialFromLab = $true
         }
     }
@@ -106,10 +106,36 @@ function Start-LabRemoteWinRmEnableAsync {
     param(
         [string]   $Computer,
         [string]   $PsExecPath,
-        [string[]] $PsExecAuthArgs = @()
+        [string[]] $PsExecAuthArgs = @(),
+        [switch]   $Wait
     )
+    # Prefer the shared LabAccess ensure (stages Enable-WinRM.ps1, waits for 5985).
+    if ($Wait -and (Get-Command Ensure-LabWinRmReady -ErrorAction SilentlyContinue)) {
+        try {
+            Ensure-LabWinRmReady -ComputerName $Computer -Quiet | Out-Null
+            return $true
+        } catch {
+            $log = Join-Path $env:TEMP ("lab_enablewinrm_{0}.log" -f $Computer)
+            "ENSURE_WINRM_FAILED: $_" | Out-File -FilePath $log -Encoding utf8 -Append
+            return $false
+        }
+    }
     $log = Join-Path $env:TEMP ("lab_enablewinrm_{0}.log" -f $Computer)
-    $remoteCmd = 'Enable-PSRemoting -Force -SkipNetworkProfileCheck; Set-Service WinRM -StartupType Automatic'
+    $remoteCmd = 'Enable-PSRemoting -Force -SkipNetworkProfileCheck; Set-Service WinRM -StartupType Automatic; Start-Service WinRM -ErrorAction SilentlyContinue'
+    if ($Wait) {
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $PsExecPath "\\$Computer" -accepteula @($PsExecAuthArgs) -s -n 120 `
+                powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $remoteCmd 2>&1 | Out-Null
+        } catch {
+            "SYNC_ENABLE_FAILED: $_" | Out-File -FilePath $log -Encoding utf8 -Append
+            return $false
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+        return (Test-LabWinRmReachable -Computer $Computer)
+    }
     $psArgs = @("\\$Computer", '-accepteula') + @($PsExecAuthArgs) + @('-s', '-d', '-n', '60',
         'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $remoteCmd)
     try {

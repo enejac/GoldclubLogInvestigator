@@ -94,7 +94,8 @@ PATH_ALIASES: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
     ),
     (
         re.compile(
-            r"\bmgconfig\b|\binactivity\b|\bInactivitySecondsToGameSelector\b|\bgame\s*selector\b",
+            r"\bmgconfig\b|\binactivity\b|\bInactivitySecondsToGameSelector\b|\bgame\s*selector\b"
+            r"|\bcashoutbuttonmode\b|\bcashout\s*button\b",
             re.I,
         ),
         (
@@ -111,6 +112,23 @@ PATH_ALIASES: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
             "**/CommCtrlSAS/**",
             "**/CommCtrl*",
             "**/var/state/**/GCMessenger/**",
+        ),
+    ),
+    (
+        re.compile(
+            r"\b("
+            r"roulette\s+error|error\s+list|error\s+screen|error\s+window|"
+            r"trial\s+expired|trial\s+error|TRIAL\s+DISPLAYED|"
+            r"alegro\s+error"
+            r")\b"
+            r"|\berror\s*[#:]?\s*\d{1,3}\b.*\b(roulette|ruleta|trial)\b"
+            r"|\b(roulette|ruleta|trial)\b.*\berror\s*[#:]?\s*\d{1,3}\b",
+            re.I,
+        ),
+        (
+            "**/roulette_error_catalog.json",
+            "**/data/roulette_error_catalog.json",
+            "**/known_issues.json",
         ),
     ),
     (
@@ -138,6 +156,42 @@ PATH_ALIASES: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
             "**/mgconfig.xml",
         ),
     ),
+    (
+        # Roulette main payout / ticket-printer payout method (NOT serialport layout).
+        re.compile(
+            r"\b("
+            r"outputtype|userpayout|pay\s*system|payout\s*method|payout\s*type|"
+            r"main\s*payout|ticket\s*printer\s*payout|ticket\s*payout|"
+            r"tito\s*payout|cashout\s*method|payoutautoconfirm|"
+            r"payout\s*auto\s*confirm"
+            r")\b"
+            r"|\b(ticket|tito|printer)\b.*\b(payout|cashout|pay\s*out)\b"
+            r"|\b(payout|cashout|pay\s*out)\b.*\b(ticket|tito|printer|method|type)\b",
+            re.I,
+        ),
+        (
+            "**/config/etc/application/ruleta/setup.xml",
+            "**/ruleta/setup.xml",
+            "**/HW/driverssetup/configuration.xml",
+            "**/driverssetup/configuration.xml",
+            "**/mgconfig.xml",
+        ),
+    ),
+    (
+        re.compile(
+            r"\b("
+            r"tito\s*driver|driverssetup|ticket\s*printer\s*driver|"
+            r"futurelogic|psa66|endpointaddress|tito0"
+            r")\b"
+            r"|\btito\b.*\b(driver|endpoint|30400)\b",
+            re.I,
+        ),
+        (
+            "**/HW/driverssetup/configuration.xml",
+            "**/driverssetup/configuration.xml",
+            "**/config/etc/application/HW/**",
+        ),
+    ),
 )
 
 # Paths that are pointers/wrappers — demote vs real config.
@@ -154,6 +208,26 @@ _DEMOTE_PATH_FRAGMENTS = (
     # Prefer live application\\ruleta\\setup.xml over the xml-configs mirror.
     "\\xml-configs\\",
     "/xml-configs/",
+)
+
+# Payout / cashout questions must not surface the COM name map as "the answer".
+_PAYOUT_METHOD_QUESTION = re.compile(
+    r"\b("
+    r"payout\s*method|payout\s*type|main\s*payout|outputtype|userpayout|"
+    r"pay\s*system|ticket\s*printer\s*payout|ticket\s*payout|tito\s*payout|"
+    r"cashout\s*method|cashoutbuttonmode|payoutautoconfirm"
+    r")\b"
+    r"|\b(ticket|tito|printer)\b.*\b(payout|cashout)\b"
+    r"|\b(payout|cashout)\b.*\b(ticket|tito|printer|method|type|configure)\b",
+    re.I,
+)
+
+_SERIALPORT_COM_QUESTION = re.compile(
+    r"\b("
+    r"serialport|layout\.json|locations\.json|which\s+com|com\s*port|"
+    r"ticket\s*printer\s*com|uart|leds\s*com"
+    r")\b",
+    re.I,
 )
 
 _STOP_TOKENS = frozenset(
@@ -519,6 +593,24 @@ def _path_demote(path: Path, question: str = "") -> float:
             demote -= 28.0
         else:
             demote -= 10.0
+    # Payout-method questions: bury COM layout / UI chrome that mention "Ticket".
+    payoutish = bool(q and _PAYOUT_METHOD_QUESTION.search(q))
+    serial_ok = bool(q and _SERIALPORT_COM_QUESTION.search(q))
+    if payoutish and not serial_ok:
+        if "\\serialport\\" in low or "/serialport/" in low:
+            demote -= 35.0
+        if name in {"layout.json", "locations.json"}:
+            demote -= 40.0
+        if "\\xml-configs\\" in low or "/xml-configs/" in low:
+            demote -= 40.0
+        if "\\setup.2\\" in low or "/setup.2/" in low:
+            demote -= 18.0
+        if "\\externalapps\\" in low or "/externalapps/" in low:
+            demote -= 25.0
+        if name in {"main_layout.xml", "mainmenu.xml", "oticket.xml"}:
+            demote -= 15.0
+        if "ticket0.dat" in low or "\\tickets\\" in low or "/tickets/" in low:
+            demote -= 20.0
     return demote
 
 
@@ -526,12 +618,15 @@ def _is_setup_option_question(question: str) -> bool:
     q = (question or "").strip()
     if not q:
         return False
+    if _PAYOUT_METHOD_QUESTION.search(q):
+        return True
     return bool(
         re.search(
             r"\b("
             r"no\s*credit|no\s*game|nogame|nocredit|credit|wager|board|"
             r"option|setting|lock|residual|admin\s*menu|"
-            r"setup\.decrypted|ruleta\s*setup|roulette\s*setup|minimal\s*wager"
+            r"setup\.decrypted|ruleta\s*setup|roulette\s*setup|minimal\s*wager|"
+            r"payout|cashout|handpay|tito"
             r")\b",
             q,
             re.I,
@@ -581,6 +676,18 @@ def _path_boost(path: Path, question: str) -> float:
             boost += 8.0
         elif name == "mgconfig.xml":
             boost += 6.0
+    payoutish = bool(_PAYOUT_METHOD_QUESTION.search(question))
+    if payoutish:
+        if name == "setup.xml" and ("\\ruleta\\" in low or "/ruleta/" in low):
+            boost += 30.0
+        if name == "configuration.xml" and (
+            "\\driverssetup\\" in low or "/driverssetup/" in low
+        ):
+            boost += 22.0
+        if name == "mgconfig.xml" and re.search(
+            r"cashoutbuttonmode|cashout\s*button|handpay", question, re.I
+        ):
+            boost += 20.0
     return boost
 
 
@@ -651,9 +758,27 @@ def _content_needles(question: str) -> list[str]:
         "ignore min wager",
         "lock in admin menu",
         "admin menu only when no credits",
+        "outputtype",
+        "userpayout",
+        "pay system",
+        "payoutautoconfirm",
+        "cashoutbuttonmode",
+        "aliasname",
     ):
         if phrase in ql:
             _add(phrase)
+
+    if _PAYOUT_METHOD_QUESTION.search(q):
+        for tok in (
+            "outputtype",
+            "userpayout",
+            "pay system",
+            "payoutAutoConfirm",
+            "CashoutButtonMode",
+            "tito",
+            "endpointaddress",
+        ):
+            _add(tok)
 
     # Bigrams from question tokens (skip stop words).
     tokens = [
@@ -710,6 +835,8 @@ def _primary_needle(question: str, content_needles: list[str] | None = None) -> 
         return "Aurum"
     if "credit" in q:
         return "credit"
+    if _PAYOUT_METHOD_QUESTION.search(question or ""):
+        return "outputtype"
     return None
 
 

@@ -1,16 +1,18 @@
-# Deploy Log Investigator Config Scanner to a lab EGM cabinet (SMB + optional PsExec to D:).
+# Deploy Log Investigator Config Scanner to a lab EGM cabinet (SMB + WinRM mirror to D:).
 param(
     [string]$ComputerName = "10.0.0.90",
     [string]$RemoteFolder = "ConfigScanner",
     [string]$LocalDrive = "D",
-    [string]$Exe = "dist\LogInvestigator.exe",
-    [string]$PsExecPath = "C:\Tools\PSTools\PsExec.exe",
+    [string]$Exe = "LogInvestigator.exe",
     [switch]$SkipMirror
 )
 
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $srcExe = Join-Path $root $Exe
+if (-not (Test-Path -LiteralPath $srcExe)) {
+    $srcExe = Join-Path $root "dist\LogInvestigator.exe"
+}
 
 if (-not (Test-Path -LiteralPath $srcExe)) {
     Write-Host "Build the exe first: .\build_exe.ps1" -ForegroundColor Yellow
@@ -24,8 +26,13 @@ if (Test-Path -LiteralPath $initScript) {
     cmdkey /add:$ComputerName /user:GOLD-CLUB\test /pass:test | Out-Null
 }
 
+. (Join-Path $root "LabAccess.ps1")
+
 function Deploy-ToUncRoot {
-    param([string]$UncRoot)
+    param(
+        [string]$UncRoot,
+        [string]$ReadmePath = ""
+    )
     if (-not (Test-Path -LiteralPath $UncRoot)) {
         New-Item -ItemType Directory -Path $UncRoot -Force | Out-Null
     }
@@ -36,12 +43,13 @@ function Deploy-ToUncRoot {
         }
     }
     Copy-Item -LiteralPath $srcExe -Destination (Join-Path $UncRoot "LogInvestigator.exe") -Force
+    if ($ReadmePath -and (Test-Path -LiteralPath $ReadmePath)) {
+        Copy-Item -LiteralPath $ReadmePath -Destination (Join-Path $UncRoot "README.txt") -Force
+    }
 }
 
 # Stage on C: (always reachable via admin share).
 $cUnc = "\\$ComputerName\c$\$RemoteFolder"
-Deploy-ToUncRoot -UncRoot $cUnc
-
 $cabinetRoot = "C:\$RemoteFolder"
 $readmePath = Join-Path $cUnc "README.txt"
 $readmeLines = @(
@@ -60,33 +68,64 @@ if (-not $SkipMirror) {
     $readmeLines[2] = "Run: ${LocalDrive}:\$RemoteFolder\LogInvestigator.exe"
     $readmeLines[9] = "Data folder: ${LocalDrive}:\$RemoteFolder\ (snapshots, reports, config.json)"
 }
+if (-not (Test-Path -LiteralPath $cUnc)) {
+    New-Item -ItemType Directory -Path $cUnc -Force | Out-Null
+}
 Set-Content -LiteralPath $readmePath -Value $readmeLines -Encoding UTF8
+Deploy-ToUncRoot -UncRoot $cUnc
 
-# Mirror to D:\ on the cabinet (D$ admin share is often not exposed over SMB).
+# Mirror to D:\ on the cabinet (D$ SMB when exposed, else WinRM copy from C:\ stage).
 $localRoot = "${LocalDrive}:\$RemoteFolder"
 $pushedLocal = $false
-if (-not $SkipMirror -and (Test-Path -LiteralPath $PsExecPath)) {
-    . (Join-Path $root "LabAccess.ps1")
-    $psAuth = Get-LabPsExecArgs
-    $remotePs = @"
-`$drive = '${LocalDrive}:'
-`$root = Join-Path `$drive '$RemoteFolder'
-`$stage = 'C:\$RemoteFolder'
-if (-not (Test-Path `$drive)) { exit 42 }
-New-Item -ItemType Directory -Path `$root, (Join-Path `$root 'snapshots'), (Join-Path `$root 'reports'), (Join-Path `$root 'templates') -Force | Out-Null
-Copy-Item (Join-Path `$stage 'LogInvestigator.exe') (Join-Path `$root 'LogInvestigator.exe') -Force
-Copy-Item (Join-Path `$stage 'README.txt') (Join-Path `$root 'README.txt') -Force -ErrorAction SilentlyContinue
-"@
-    & $PsExecPath "\\$ComputerName" -accepteula @psAuth -s -n 120 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $remotePs
-    if ($LASTEXITCODE -eq 0) {
-        $pushedLocal = $true
-    } elseif ($LASTEXITCODE -eq 42) {
-        Write-Host "Drive ${LocalDrive}: not present on $ComputerName - left copy on C:\$RemoteFolder only." -ForegroundColor Yellow
-    } else {
-        Write-Host "PsExec push to ${localRoot} failed (exit $LASTEXITCODE)." -ForegroundColor Yellow
+$mirrorMethod = ""
+
+if (-not $SkipMirror) {
+    $dUnc = "\\$ComputerName\${LocalDrive}`$\$RemoteFolder"
+    try {
+        $driveRoot = "\\$ComputerName\${LocalDrive}`$"
+        if (Test-Path -LiteralPath $driveRoot -ErrorAction Stop) {
+            Deploy-ToUncRoot -UncRoot $dUnc -ReadmePath $readmePath
+            $pushedLocal = $true
+            $mirrorMethod = "SMB ($dUnc)"
+        }
     }
-} elseif (-not $SkipMirror) {
-    Write-Host "PsExec not found at $PsExecPath - skipped ${localRoot} push." -ForegroundColor Yellow
+    catch {
+        Write-Host "[*] D`$ share not reachable over SMB; mirroring via WinRM..." -ForegroundColor DarkGray
+    }
+
+    if (-not $pushedLocal) {
+        $mirrorScript = {
+            param($DriveLetter, $Folder)
+            $drive = "${DriveLetter}:"
+            if (-not (Test-Path $drive)) { return "NO_DRIVE" }
+            $destRoot = Join-Path $drive $Folder
+            $stage = Join-Path "C:\" $Folder
+            New-Item -ItemType Directory -Path $destRoot,
+                (Join-Path $destRoot "snapshots"),
+                (Join-Path $destRoot "reports"),
+                (Join-Path $destRoot "templates") -Force | Out-Null
+            Copy-Item (Join-Path $stage "LogInvestigator.exe") (Join-Path $destRoot "LogInvestigator.exe") -Force
+            Copy-Item (Join-Path $stage "README.txt") (Join-Path $destRoot "README.txt") -Force -ErrorAction SilentlyContinue
+            return "OK"
+        }
+        try {
+            $mirrorResult = Invoke-LabWinRmCommand -ComputerName $ComputerName `
+                -ScriptBlock $mirrorScript -ArgumentList @($LocalDrive, $RemoteFolder)
+            if ($mirrorResult -eq "OK") {
+                $pushedLocal = $true
+                $mirrorMethod = "WinRM"
+            }
+            elseif ($mirrorResult -eq "NO_DRIVE") {
+                Write-Host "Drive ${LocalDrive}: not present on $ComputerName - left copy on C:\$RemoteFolder only." -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "WinRM push to ${localRoot} returned unexpected result: $mirrorResult" -ForegroundColor Yellow
+            }
+        }
+        catch {
+            Write-Host "WinRM push to ${localRoot} failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
 }
 
 Write-Host ""
@@ -94,8 +133,11 @@ Write-Host "Deployed to cabinet $ComputerName"
 Write-Host "  Staged:  \\$ComputerName\c$\$RemoteFolder\LogInvestigator.exe"
 if ($SkipMirror) {
     Write-Host "  Run on EGM: $cabinetRoot\LogInvestigator.exe"
-} elseif ($pushedLocal) {
+}
+elseif ($pushedLocal) {
+    Write-Host "  Mirrored: ${localRoot}\LogInvestigator.exe ($mirrorMethod)"
     Write-Host "  Run on EGM: ${localRoot}\LogInvestigator.exe"
-} else {
+}
+else {
     Write-Host "  Run on EGM: $cabinetRoot\LogInvestigator.exe (or copy to ${localRoot})"
 }

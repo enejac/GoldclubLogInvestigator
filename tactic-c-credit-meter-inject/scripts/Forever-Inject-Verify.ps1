@@ -13,7 +13,7 @@ param(
 $ErrorActionPreference = 'Continue'
 
 $repoRoot = 'C:\Users\Ezbogar\GoldclubLogInvestigator'
-$injectScript = Join-Path $repoRoot 'Send-TestAft1000.ps1'
+$injectScript = Join-Path $repoRoot 'lab\Send-TestAft1000.ps1'
 $remoteLogPath = "\\$CabinetIP\c$\Goldclub\var\log\SlotLog"
 $round = 0
 $successCount = 0

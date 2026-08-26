@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Continue'
 $repo = 'C:\Users\Ezbogar\GoldclubLogInvestigator'
 $capDir = Join-Path $repo 'tactic-c-credit-meter-inject\captured_payloads'
 . (Join-Path $capDir 'Build-CapturedAftPayload.ps1')
-$winDivert = Join-Path $repo 'Invoke-WinDivertAft.ps1'
+$winDivert = Join-Path $repo 'lab\Invoke-WinDivertAft.ps1'
 $slotBase = "\\$CabinetIP\c$\Goldclub\var\log\SlotLog"
 
 function Get-SlotLogPath {

@@ -47,7 +47,7 @@ param(
     [int[]]  $Ports = @(31100, 31101, 31150),
     [string] $PsExecPath = 'C:\Tools\PSTools\PsExec.exe',
     [string] $WinDivertDir = 'C:\Tools\WinDivert\extracted\WinDivert-2.2.2-A\x64',
-    [string] $OutDir = (Join-Path $PSScriptRoot 'aft\captures'),
+    [string] $OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent) 'aft\captures'),
     [string] $AurumServiceName = 'GoldClub.Aurum.Services',
     [pscredential] $Credential,
     [switch] $RemoveDriver
@@ -102,7 +102,8 @@ else { "WINDIVERT_NOT_STOPPED_SKIP_DELETE" }
 # ------------------------------------------------------------------ preconditions ----
 $dll = Join-Path $WinDivertDir 'WinDivert.dll'
 $sys = Join-Path $WinDivertDir 'WinDivert64.sys'
-$csSrc = Join-Path $PSScriptRoot 'WdSniff.cs'
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$csSrc = Join-Path $RepoRoot 'probes\WdSniff.cs'
 foreach ($f in @($PsExecPath, $dll, $sys, $csSrc)) {
     if (-not (Test-Path -LiteralPath $f)) { throw "Required file not found: $f" }
 }

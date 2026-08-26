@@ -1,0 +1,44 @@
+{
+  "layout_id": "layout2",
+  "skin": "futura_doublezeroCrycle",
+  "description": "Square<->race hybrid view via bottom CHANGE_VIEW \u2014 not a separate skin. Crycle theme (futura_doublezeroCrycle) is selected via top LAYOUT_SWITCH.",
+  "global_offset": {
+    "dx_pct": 0.0,
+    "dy_pct": 0.0
+  },
+  "targets": {
+    "CHANGE_VIEW": {
+      "x_pct": 94.839,
+      "y_pct": 73.877,
+      "verified": true,
+      "hits": 1,
+      "misses": 0,
+      "note": "RaceToSquare icon (oval>rect). Lab .90 2026-07-24: race->square verified (redish 60643->80537). Slightly right of layout1 SquareToRace (94.51,73.90)."
+    },
+    "1": {
+      "x_pct": 15.781,
+      "y_pct": 60.278,
+      "verified": true,
+      "hits": 1,
+      "misses": 0,
+      "credit_delta": -10000,
+      "http_actions": [
+        "BetType:Fields",
+        "Id:1",
+        "Bets:1"
+      ],
+      "note": "map_session_straight_bet_proof"
+    },
+    "chip_1": {
+      "x_pct": 37.5,
+      "y_pct": 94.074,
+      "verified": true,
+      "hits": 1,
+      "misses": 0,
+      "credit_delta": 0,
+      "http_actions": [],
+      "note": "map_session_chip"
+    }
+  },
+  "view": "race_track"
+}

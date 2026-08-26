@@ -1,0 +1,29 @@
+﻿[
+    {
+        "Idx":  0,
+        "Primary":  true,
+        "X":  0,
+        "Y":  0,
+        "W":  1920,
+        "H":  1080,
+        "Device":  "\\\\.\\DISPLAY1"
+    },
+    {
+        "Idx":  1,
+        "Primary":  false,
+        "X":  1920,
+        "Y":  0,
+        "W":  1920,
+        "H":  1080,
+        "Device":  "\\\\.\\DISPLAY2"
+    },
+    {
+        "Idx":  2,
+        "Primary":  false,
+        "X":  3840,
+        "Y":  0,
+        "W":  1920,
+        "H":  1080,
+        "Device":  "\\\\.\\DISPLAY3"
+    }
+]

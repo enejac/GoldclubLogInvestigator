@@ -43,6 +43,48 @@ def test_parse_log_file_respects_time_bounds(tmp_path: Path) -> None:
     assert not any("late" in s for s in snippets)
 
 
+def test_time_bounded_scan_survives_one_out_of_order_line(tmp_path: Path) -> None:
+    """A single clock-skewed line must not discard the rest of the file."""
+    log = tmp_path / "skew.log"
+    log.write_text(
+        "2026-01-01T11:00:00.000+00:00  ERROR  System.ArgumentOutOfRangeException: first\n"
+        "2026-01-05T09:00:00.000+00:00  ERROR  System.ArgumentOutOfRangeException: skewed\n"
+        "2026-01-01T11:10:00.000+00:00  ERROR  System.ArgumentOutOfRangeException: second\n",
+        encoding="utf-8",
+    )
+    t0 = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    r = parse_log_file(log, scan_start_time=t0, scan_end_time=t1)
+    snippets = [i.line_snippet for i in r.incidents]
+    assert any("first" in s for s in snippets)
+    assert any("second" in s for s in snippets)
+    assert not any("skewed" in s for s in snippets)
+
+
+def test_time_bounded_scan_stops_after_a_run_of_late_lines(tmp_path: Path) -> None:
+    """Chronological logs still stop early instead of reading to the end."""
+    from parser import _PAST_SCAN_END_STREAK_LIMIT
+
+    lines = ["2026-01-01T11:00:00.000+00:00  ERROR  System.ArgumentOutOfRangeException: inside\n"]
+    lines += [
+        f"2026-01-02T00:00:{i % 60:02d}.000+00:00  ERROR  "
+        f"System.ArgumentOutOfRangeException: after{i}\n"
+        for i in range(_PAST_SCAN_END_STREAK_LIMIT + 5)
+    ]
+    lines.append(
+        "2026-01-01T11:30:00.000+00:00  ERROR  System.ArgumentOutOfRangeException: unreachable\n"
+    )
+    log = tmp_path / "ordered.log"
+    log.write_text("".join(lines), encoding="utf-8")
+    t0 = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    r = parse_log_file(log, scan_start_time=t0, scan_end_time=t1)
+    snippets = [i.line_snippet for i in r.incidents]
+    assert any("inside" in s for s in snippets)
+    assert not any("after" in s for s in snippets)
+    assert not any("unreachable" in s for s in snippets)
+
+
 def test_time_bounded_scan_inherits_timestamp_for_continuation_lines(tmp_path: Path) -> None:
     """Stack lines without their own clock still respect the window via last seen timestamp."""
     log = tmp_path / "inherit.log"

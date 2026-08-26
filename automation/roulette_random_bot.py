@@ -17,6 +17,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from automation.bot_config import (
+    BotConfig,
+    active_bot_config,
+    load_bot_config,
+    push_bot_config,
+    reset_bot_config,
+)
 from automation.click_logger import ClickEvent, ClickLogger
 from automation.remote_input_agent import (
     build_input_agent_local,
@@ -31,9 +38,8 @@ from automation.roulette_layout_store import (
 )
 from automation.roulette_middleware import cancel_all_bets, fetch_player_state
 from automation.roulette_runner import (
-    OPEN_UI_SETTLE_SEC,
-    OPEN_UI_SETTLE_START_SEC,
     _latest_file,
+    peek_betting_phase,
     wait_for_betting_open,
 )
 
@@ -43,6 +49,7 @@ Mode = Literal["systematic", "random"]
 OnBatchDoneFn = Callable[[list["ClickTargetSpec"], list[ClickEvent], bool], bool]
 
 # Abort the sweep when the playable meter is at/under this (display credit units).
+# Overridden by BotConfig.min_credits when a profile is active.
 MIN_CREDITS_TO_RUN = 100
 
 # Same hard excludes as roulette_verify_ui — never lock / call attendant / cashout.
@@ -109,9 +116,23 @@ OVERLAY_IO: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "racetrack": (("CHANGE_VIEW",), ("CHANGE_VIEW",)),
 }
 
+# Legacy module defaults (safe profile). Prefer active_bot_config().
 OVERLAY_OPEN_SLEEP_MS = 1600
 OVERLAY_CLOSE_SLEEP_MS = 1200
 LAYOUT_SWITCH_SLEEP_MS = 2200
+
+
+def _cfg() -> BotConfig:
+    return active_bot_config()
+
+
+def _gap_ms(base: int) -> int:
+    cfg = _cfg()
+    j = int(cfg.gap_jitter_ms)
+    if j <= 0:
+        return max(0, int(base))
+    return max(0, int(base) + random.randint(-j, j))
+
 
 # Base chrome that opens a sub-window even when hitbox.overlay is null.
 # After clicking these, always dismiss so the sweep cannot get stuck.
@@ -172,12 +193,18 @@ def _read_credits(ip: str) -> tuple[int | None, str]:
         return None, f"bad credits value {raw!r}"
 
 
-def _credits_block_reason(credits: int | None, detail: str) -> str | None:
+def _credits_block_reason(
+    credits: int | None,
+    detail: str,
+    *,
+    min_credits: int | None = None,
+) -> str | None:
     """Non-empty reason means the bot must stop."""
+    floor = MIN_CREDITS_TO_RUN if min_credits is None else int(min_credits)
     if credits is None:
         return f"cannot read credits ({detail}); refusing to run without a credit meter"
-    if credits < MIN_CREDITS_TO_RUN:
-        return f"no/low credits ({credits} < {MIN_CREDITS_TO_RUN}); top up before continuing"
+    if credits < floor:
+        return f"no/low credits ({credits} < {floor}); top up before continuing"
     return None
 
 
@@ -268,6 +295,163 @@ def _needs_open_window(target: ClickTargetSpec) -> bool:
     return False
 
 
+def _closed_safe_targets(
+    catalog: list[ClickTargetSpec],
+    *,
+    layout_id: str,
+) -> list[ClickTargetSpec]:
+    """UI chrome that can be poked while bets are closed (no cloth / START)."""
+    out: list[ClickTargetSpec] = []
+    for t in catalog:
+        if t.layout_id != layout_id:
+            continue
+        if t.button_id in NEVER_CLICK or t.button_id in SKIP_IDS:
+            continue
+        if _needs_open_window(t):
+            continue
+        # Prefer base-surface hitboxes; overlay chrome is reached via openers below.
+        if t.overlay:
+            continue
+        out.append(t)
+    return out
+
+
+def _run_closed_phase_burst(
+    *,
+    ip: str,
+    agent: Any,
+    catalog: list[ClickTargetSpec],
+    layout_id: str,
+    logger: ClickLogger,
+    client_id: str,
+    progress: ProgressFn | None,
+    on_batch_done: OnBatchDoneFn | None,
+) -> tuple[int, bool]:
+    """
+    Randomize closed-safe UI clicks until betting opens or the budget is spent.
+
+    Returns ``(clicks_done, abort)``.
+    """
+    cfg = _cfg()
+    if not cfg.closed_phase_enabled or cfg.closed_clicks_max_per_wait <= 0:
+        return 0, False
+
+    roulette = _latest_file(Path(rf"\\{ip}\c$\Goldclub\var\log\ruleta Roulette"))
+    if roulette is None:
+        return 0, False
+    phase = peek_betting_phase(roulette)
+    if phase == "open":
+        return 0, False
+
+    pool = _closed_safe_targets(catalog, layout_id=layout_id)
+    if not pool:
+        _progress(progress, "closed-phase: no safe targets")
+        return 0, False
+
+    budget = int(cfg.closed_clicks_max_per_wait)
+    batch_n = int(cfg.closed_batch_size)
+    done = 0
+    _progress(
+        progress,
+        f"closed-phase: randomize up to {budget} clicks "
+        f"(batch={batch_n}, pool={len(pool)}, phase={phase})",
+    )
+
+    while done < budget:
+        phase = peek_betting_phase(roulette)
+        if phase == "open":
+            _progress(progress, f"closed-phase: betting opened after {done} clicks")
+            break
+
+        n = min(batch_n, budget - done)
+        batch = [random.choice(pool) for _ in range(n)]
+        steps: list[dict[str, Any]] = [
+            {
+                "type": "focus_process",
+                "value": ROULETTE_FOCUS_PROCESS,
+                "ms": cfg.focus_short_ms,
+            }
+        ]
+        batch_events: list[ClickEvent] = []
+        for b in batch:
+            batch_events.append(
+                logger.log(
+                    client_id=client_id,
+                    layout_id=b.layout_id,
+                    button_id=b.button_id,
+                    kind=b.kind,
+                    overlay=b.overlay,
+                    x_pct=b.x_pct,
+                    y_pct=b.y_pct,
+                    phase="planned",
+                    note="closed-phase",
+                )
+            )
+            steps.append(_click_step(b.x_pct, b.y_pct, ms=cfg.click_ms))
+            steps.append({"type": "sleep", "ms": _gap_ms(cfg.gap_ms)})
+
+        _progress(
+            progress,
+            f"closed-phase batch {done + 1}-{done + len(batch)} "
+            f"ids={[b.button_id for b in batch]}",
+        )
+        ok, detail = run_input_script_on_cabinet(
+            ip=ip,
+            agent=agent,
+            script={
+                "defaultKeyDelayMs": cfg.default_key_delay_ms,
+                "steps": steps,
+            },
+            focus_process=ROULETTE_FOCUS_PROCESS,
+            timeout=60,
+        )
+        for b in batch:
+            batch_events.append(
+                logger.log(
+                    client_id=client_id,
+                    layout_id=b.layout_id,
+                    button_id=b.button_id,
+                    kind=b.kind,
+                    overlay=b.overlay,
+                    x_pct=b.x_pct,
+                    y_pct=b.y_pct,
+                    phase="ok" if ok else "fail",
+                    agent_ok=ok,
+                    note=("closed-phase; " + detail) if not ok else "closed-phase",
+                )
+            )
+        if ok:
+            done += len(batch)
+        else:
+            _progress(progress, f"closed-phase batch FAIL: {detail}")
+            # Don't spin forever on agent failures.
+            break
+
+        # Dismiss panels that closed-phase openers may have raised.
+        touched_openers = {b.button_id for b in batch}
+        for ov, (openers, _) in OVERLAY_IO.items():
+            if touched_openers.intersection(openers) or any(
+                PANEL_OPENERS.get(oid) == ov for oid in touched_openers
+            ):
+                _close_overlay(
+                    ip=ip,
+                    agent=agent,
+                    layout_id=layout_id,
+                    overlay=ov,
+                    logger=logger,
+                    client_id=client_id,
+                )
+
+        if on_batch_done is not None:
+            try:
+                if bool(on_batch_done(batch, batch_events, ok)):
+                    return done, True
+            except Exception as e:  # noqa: BLE001
+                _progress(progress, f"on_batch_done warn: {e}")
+
+    return done, False
+
+
 def _ensure_betting_open(
     ip: str,
     *,
@@ -279,10 +463,13 @@ def _ensure_betting_open(
     if roulette is None:
         _progress(progress, "no ruleta Roulette log — skipping open-window wait")
         return True
-    settle = OPEN_UI_SETTLE_START_SEC if for_start else OPEN_UI_SETTLE_SEC
+    cfg = _cfg()
+    settle = (
+        cfg.open_ui_settle_start_sec if for_start else cfg.open_ui_settle_sec
+    )
     ok, detail = wait_for_betting_open(
         roulette,
-        timeout_sec=120.0,
+        timeout_sec=float(cfg.wait_betting_timeout_sec),
         settle_sec=settle,
         progress=progress,
     )
@@ -330,12 +517,17 @@ def _ensure_layout(
         phase="planned",
         note=f"layout switch -> {want}",
     )
+    cfg = _cfg()
     script = {
-        "defaultKeyDelayMs": 35,
+        "defaultKeyDelayMs": cfg.default_key_delay_ms,
         "steps": [
-            {"type": "focus_process", "value": ROULETTE_FOCUS_PROCESS, "ms": 200},
-            _click_step(center.x_pct, center.y_pct, ms=120),
-            {"type": "sleep", "ms": LAYOUT_SWITCH_SLEEP_MS},
+            {
+                "type": "focus_process",
+                "value": ROULETTE_FOCUS_PROCESS,
+                "ms": cfg.focus_ms,
+            },
+            _click_step(center.x_pct, center.y_pct, ms=cfg.click_ms),
+            {"type": "sleep", "ms": cfg.layout_switch_ms},
         ],
     }
     ok, detail = run_input_script_on_cabinet(
@@ -389,12 +581,17 @@ def _open_overlay(
             phase="planned",
             note=f"open overlay {overlay}",
         )
+        cfg = _cfg()
         script = {
-            "defaultKeyDelayMs": 35,
+            "defaultKeyDelayMs": cfg.default_key_delay_ms,
             "steps": [
-                {"type": "focus_process", "value": ROULETTE_FOCUS_PROCESS, "ms": 150},
-                _click_step(center.x_pct, center.y_pct, ms=110),
-                {"type": "sleep", "ms": OVERLAY_OPEN_SLEEP_MS},
+                {
+                    "type": "focus_process",
+                    "value": ROULETTE_FOCUS_PROCESS,
+                    "ms": cfg.focus_ms,
+                },
+                _click_step(center.x_pct, center.y_pct, ms=cfg.click_ms),
+                {"type": "sleep", "ms": cfg.overlay_open_ms},
             ],
         }
         ok, detail = run_input_script_on_cabinet(
@@ -431,8 +628,13 @@ def _close_overlay(
 ) -> None:
     _, closers = OVERLAY_IO.get(overlay, ((), ()))
     buttons = load_hitboxes(layout_id).get("buttons") or {}
+    cfg = _cfg()
     steps: list[dict[str, Any]] = [
-        {"type": "focus_process", "value": ROULETTE_FOCUS_PROCESS, "ms": 100}
+        {
+            "type": "focus_process",
+            "value": ROULETTE_FOCUS_PROCESS,
+            "ms": cfg.focus_short_ms,
+        }
     ]
     for closer in closers:
         if closer not in buttons:
@@ -451,14 +653,14 @@ def _close_overlay(
             phase="planned",
             note=f"close overlay {overlay}",
         )
-        steps.append(_click_step(center.x_pct, center.y_pct, ms=110))
-        steps.append({"type": "sleep", "ms": OVERLAY_CLOSE_SLEEP_MS})
+        steps.append(_click_step(center.x_pct, center.y_pct, ms=cfg.click_ms))
+        steps.append({"type": "sleep", "ms": cfg.overlay_close_ms})
         break
     else:
         # ESC does NOT close the help book on Alegro — still try as last resort
         # for other panels, then prefer HELP_EXIT coords if present.
         steps.append({"type": "key", "value": "ESCAPE"})
-        steps.append({"type": "sleep", "ms": OVERLAY_CLOSE_SLEEP_MS})
+        steps.append({"type": "sleep", "ms": cfg.overlay_close_ms})
         logger.log(
             client_id=client_id,
             layout_id=layout_id,
@@ -473,7 +675,7 @@ def _close_overlay(
     ok, detail = run_input_script_on_cabinet(
         ip=ip,
         agent=agent,
-        script={"defaultKeyDelayMs": 35, "steps": steps},
+        script={"defaultKeyDelayMs": cfg.default_key_delay_ms, "steps": steps},
         focus_process=ROULETTE_FOCUS_PROCESS,
         timeout=60,
     )
@@ -543,24 +745,29 @@ def dismiss_stuck_overlays(
         )
     # Extra HELP_EXIT + ESC for the dynamic paytable page.
     center = resolve_hitbox_center("HELP_EXIT", layout_id, allow_geometry=False)
+    cfg = _cfg()
     steps: list[dict[str, Any]] = [
-        {"type": "focus_process", "value": ROULETTE_FOCUS_PROCESS, "ms": 200}
+        {
+            "type": "focus_process",
+            "value": ROULETTE_FOCUS_PROCESS,
+            "ms": cfg.focus_ms,
+        }
     ]
     if center is not None:
         steps += [
-            _click_step(center.x_pct, center.y_pct, ms=130),
-            {"type": "sleep", "ms": OVERLAY_CLOSE_SLEEP_MS},
-            _click_step(center.x_pct, center.y_pct, ms=130),
-            {"type": "sleep", "ms": OVERLAY_CLOSE_SLEEP_MS},
+            _click_step(center.x_pct, center.y_pct, ms=cfg.click_ms),
+            {"type": "sleep", "ms": cfg.overlay_close_ms},
+            _click_step(center.x_pct, center.y_pct, ms=cfg.click_ms),
+            {"type": "sleep", "ms": cfg.overlay_close_ms},
         ]
     steps += [
         {"type": "key", "value": "ESCAPE"},
-        {"type": "sleep", "ms": OVERLAY_CLOSE_SLEEP_MS},
+        {"type": "sleep", "ms": cfg.overlay_close_ms},
     ]
     ok, detail = run_input_script_on_cabinet(
         ip=ip,
         agent=agent,
-        script={"defaultKeyDelayMs": 35, "steps": steps},
+        script={"defaultKeyDelayMs": cfg.default_key_delay_ms, "steps": steps},
         focus_process=ROULETTE_FOCUS_PROCESS,
         timeout=90,
     )
@@ -577,13 +784,16 @@ def run_random_bot(
     start_layout: str = "layout1",
     client_ids: tuple[str, ...] = ("player0",),
     max_clicks: int | None = None,
-    batch_size: int = 6,
-    shuffle_layouts: bool = True,
-    include_unverified: bool = True,
-    wait_betting: bool = True,
+    batch_size: int | None = None,
+    shuffle_layouts: bool | None = None,
+    include_unverified: bool | None = None,
+    wait_betting: bool | None = None,
     resume: bool = False,
     progress: ProgressFn | None = None,
     on_batch_done: OnBatchDoneFn | None = None,
+    bot_config: BotConfig | None = None,
+    bot_profile: str | None = None,
+    bot_config_path: Path | str | None = None,
 ) -> RandomBotResult:
     """
     Click through the mapped catalog.
@@ -593,12 +803,60 @@ def run_random_bot(
     *resume* — append to existing ``click_log.jsonl`` and skip already-ok targets.
     *on_batch_done* — optional hook after each batch; return True to abort early
       (used by bug-hunt to freeze packs mid-cycle when godot1 faults).
+    *bot_config* / *bot_profile* — timing profile (default: emulation from bot_config.json).
     """
+    cfg = (bot_config or load_bot_config(bot_profile, bot_config_path)).clamp()
+    if batch_size is not None:
+        cfg.batch_size = int(batch_size)
+    if shuffle_layouts is not None:
+        cfg.shuffle_layouts = bool(shuffle_layouts)
+    if include_unverified is not None:
+        cfg.include_unverified = bool(include_unverified)
+    if wait_betting is not None:
+        cfg.wait_betting = bool(wait_betting)
+    cfg.clamp()
+    token = push_bot_config(cfg)
+    try:
+        return _run_random_bot_impl(
+            ip=ip,
+            out_dir=out_dir,
+            mode=mode,
+            layouts=layouts,
+            start_layout=start_layout,
+            client_ids=client_ids,
+            max_clicks=max_clicks,
+            resume=resume,
+            progress=progress,
+            on_batch_done=on_batch_done,
+            cfg=cfg,
+        )
+    finally:
+        reset_bot_config(token)
+
+
+def _run_random_bot_impl(
+    *,
+    ip: str,
+    out_dir: Path | str,
+    mode: Mode,
+    layouts: tuple[str, ...],
+    start_layout: str,
+    client_ids: tuple[str, ...],
+    max_clicks: int | None,
+    resume: bool,
+    progress: ProgressFn | None,
+    on_batch_done: OnBatchDoneFn | None,
+    cfg: BotConfig,
+) -> RandomBotResult:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     client_id = client_ids[0] if client_ids else "player0"
     log_path = out / "click_log.jsonl"
     done = load_completed_clicks(log_path) if resume else set()
+    batch_size = cfg.batch_size
+    shuffle_layouts = cfg.shuffle_layouts
+    include_unverified = cfg.include_unverified
+    wait_betting = cfg.wait_betting
     logger = ClickLogger(
         out,
         cabinet_ip=ip,
@@ -611,9 +869,22 @@ def run_random_bot(
             "batch_size": batch_size,
             "shuffle_layouts": shuffle_layouts,
             "include_unverified": include_unverified,
+            "wait_betting": wait_betting,
+            "bot_profile": cfg.profile,
+            "bot_config": cfg.to_dict(),
             "resume": resume,
             "already_ok": len(done),
         },
+    )
+    (out / "bot_config_used.json").write_text(
+        json.dumps(cfg.to_dict(), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    _progress(
+        progress,
+        f"bot profile={cfg.profile} batch={batch_size} "
+        f"click={cfg.click_ms}ms gap={cfg.gap_ms}ms "
+        f"overlay_open={cfg.overlay_open_ms}ms",
     )
 
     catalog = build_catalog(layouts=layouts, include_unverified=include_unverified)
@@ -622,6 +893,13 @@ def run_random_bot(
     else:
         queue = list(catalog)
         random.shuffle(queue)
+        # Pack open-window targets first so each betting session gets denser cloth/UI clicks;
+        # closed-safe chrome is covered by the closed-phase burst while waiting.
+        open_first = [t for t in queue if _needs_open_window(t)]
+        rest = [t for t in queue if not _needs_open_window(t)]
+        random.shuffle(open_first)
+        random.shuffle(rest)
+        queue = open_first + rest
         if shuffle_layouts:
             # Bias: occasionally force a layout-switch target to the front.
             switchers = [t for t in queue if t.button_id in ("PANO", "LAYOUT_SWITCH")]
@@ -674,7 +952,7 @@ def run_random_bot(
         f"credits={credits if credits is not None else 'unknown'} "
         f"({cred_detail}) client={client_id}",
     )
-    block = _credits_block_reason(credits, cred_detail)
+    block = _credits_block_reason(credits, cred_detail, min_credits=cfg.min_credits)
     if block:
         logger.close()
         return RandomBotResult(
@@ -813,7 +1091,7 @@ def run_random_bot(
 
         # Credit gate once per batch (not per target — WinRM is expensive).
         credits, cred_detail = _read_credits(ip)
-        block = _credits_block_reason(credits, cred_detail)
+        block = _credits_block_reason(credits, cred_detail, min_credits=cfg.min_credits)
         if block:
             stop_reason = block
             _progress(progress, f"STOP: {block}")
@@ -822,6 +1100,25 @@ def run_random_bot(
         needs_window = any(_needs_open_window(b) for b in batch)
         has_start = any(b.button_id == "START" for b in batch)
         if needs_window and wait_betting:
+            # Burn the closed gap with random UI chrome clicks, then arm open.
+            closed_n, abort = _run_closed_phase_burst(
+                ip=ip,
+                agent=agent,
+                catalog=catalog,
+                layout_id=current_layout,
+                logger=logger,
+                client_id=client_id,
+                progress=progress,
+                on_batch_done=on_batch_done,
+            )
+            if closed_n:
+                clicked += closed_n
+            if abort:
+                aborted_early = True
+                abort_reason = "on_batch_done requested abort (fault pack)"
+                stop_reason = abort_reason
+                _progress(progress, f"STOP: {abort_reason}")
+                break
             # Re-check every window-dependent batch: a long overlay sweep can
             # outlast the 22s open, and START must land after chrome enables.
             if not _ensure_betting_open(ip, progress=progress, for_start=has_start):
@@ -839,7 +1136,11 @@ def run_random_bot(
                     )
                 skipped += len(batch)
                 continue
-            if not cloth_cleared_this_window and not has_start:
+            if (
+                cfg.cancel_cloth_before_bets
+                and not cloth_cleared_this_window
+                and not has_start
+            ):
                 try:
                     cancel_all_bets(ip)
                     cloth_cleared_this_window = True
@@ -847,7 +1148,11 @@ def run_random_bot(
                     _progress(progress, f"cancel_all warn: {e}")
 
         steps: list[dict[str, Any]] = [
-            {"type": "focus_process", "value": ROULETTE_FOCUS_PROCESS, "ms": 180}
+            {
+                "type": "focus_process",
+                "value": ROULETTE_FOCUS_PROCESS,
+                "ms": cfg.focus_ms,
+            }
         ]
         batch_events: list[ClickEvent] = []
         for b in batch:
@@ -864,14 +1169,20 @@ def run_random_bot(
                 )
             )
             # START needs a slightly firmer press once the disc/button is live.
-            click_ms = 130 if b.button_id == "START" else 95
-            gap_ms = 220 if b.button_id == "START" else 120
+            if b.button_id == "START":
+                click_ms = cfg.start_click_ms
+                gap_ms = _gap_ms(cfg.start_gap_ms)
+            else:
+                click_ms = cfg.click_ms
+                gap_ms = _gap_ms(cfg.gap_ms)
             steps.append(_click_step(b.x_pct, b.y_pct, ms=click_ms))
             steps.append({"type": "sleep", "ms": gap_ms})
-            if b.button_id == "START":
+            if b.button_id == "START" and cfg.start_double_tap:
                 # Double-tap like strategy scripts — first may only focus.
                 steps.append(_click_step(b.x_pct, b.y_pct, ms=click_ms))
-                steps.append({"type": "sleep", "ms": 180})
+                steps.append(
+                    {"type": "sleep", "ms": _gap_ms(cfg.start_double_gap_ms)}
+                )
 
         _progress(
             progress,
@@ -882,7 +1193,10 @@ def run_random_bot(
         ok, detail = run_input_script_on_cabinet(
             ip=ip,
             agent=agent,
-            script={"defaultKeyDelayMs": 35, "steps": steps},
+            script={
+                "defaultKeyDelayMs": cfg.default_key_delay_ms,
+                "steps": steps,
+            },
             focus_process=ROULETTE_FOCUS_PROCESS,
             timeout=90,
         )
@@ -961,7 +1275,7 @@ def run_random_bot(
                 pass
             cloth_cleared_this_window = False  # re-arm next betting chunk
             credits, cred_detail = _read_credits(ip)
-            block = _credits_block_reason(credits, cred_detail)
+            block = _credits_block_reason(credits, cred_detail, min_credits=cfg.min_credits)
             if block:
                 stop_reason = block
                 _progress(progress, f"STOP: {block}")
@@ -1057,7 +1371,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--start-layout", default="layout1")
     p.add_argument("--client-id", default="player0")
     p.add_argument("--max-clicks", type=int, default=0, help="0 = all")
-    p.add_argument("--batch-size", type=int, default=6)
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="0 = use profile batch_size from bot_config.json",
+    )
+    p.add_argument(
+        "--profile",
+        default="",
+        help="Bot timing profile (emulation|safe|custom). Default: active in JSON.",
+    )
+    p.add_argument(
+        "--config",
+        default="",
+        help="Path to bot_config.json (default: automation/bot_config.json).",
+    )
     p.add_argument("--no-wait-betting", action="store_true")
     p.add_argument("--verified-only", action="store_true")
     p.add_argument(
@@ -1089,11 +1418,13 @@ def main(argv: list[str] | None = None) -> int:
         start_layout=args.start_layout,
         client_ids=(args.client_id,),
         max_clicks=args.max_clicks or None,
-        batch_size=args.batch_size,
+        batch_size=args.batch_size or None,
         include_unverified=not args.verified_only,
         wait_betting=not args.no_wait_betting,
         resume=bool(args.resume),
         progress=print,
+        bot_profile=args.profile or None,
+        bot_config_path=args.config or None,
     )
     print(json.dumps({"ok": result.ok, "message": result.message, "out": result.out_dir}))
     return 0 if result.ok else 1

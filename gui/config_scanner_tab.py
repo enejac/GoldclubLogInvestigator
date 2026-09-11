@@ -106,6 +106,7 @@ from config_scanner.machine_identity import (
 )
 from config_scanner.xml_diff import (
     ContentChange,
+    is_catalog_content_change,
     is_encrypted_origin_config_path,
     is_structural_item_change,
     resolve_apply_value,
@@ -296,7 +297,13 @@ class SnapshotTableModel(QAbstractTableModel):
             if index.column() == 1:
                 return _snapshot_profile_cell(row)
             if index.column() == self.VERSION_COL:
-                return (row.exe_product_version or row.product_version or "").strip() or "—"
+                ver = (row.exe_product_version or row.product_version or "").strip() or "—"
+                kind = (row.onehand_build or "").strip()
+                if kind and ver == "—":
+                    return kind
+                if kind:
+                    return f"{ver} ({kind})"
+                return ver
             if index.column() == 3:
                 return "Full" if row.has_software else "Config"
             if index.column() == 4:
@@ -1166,11 +1173,14 @@ class ConfigScannerTabWidget(QFrame):
         encrypted_origin: bool,
         side_label: str,
         snapshot_name: str,
+        catalog: bool = False,
     ) -> QLabel:
         display = self._format_diff_cell_value(value)
         chip = QLabel(display)
         muted = value is None or not (value or "").strip()
-        if encrypted_origin:
+        if catalog:
+            chip.setStyleSheet(styles.get("chip_catalog", styles["chip_muted"]))
+        elif encrypted_origin:
             chip.setStyleSheet(
                 styles["encrypted_value_muted"] if muted else styles["encrypted_value"]
             )
@@ -1202,13 +1212,19 @@ class ConfigScannerTabWidget(QFrame):
         layout.setSpacing(8)
 
         setting_name = setting_display_name(change.path)
+        if is_catalog_content_change(change):
+            setting_name = f"{setting_name} (catalog)"
         change_line = format_setting_change_description(change).strip()
         setting_lbl = QLabel(setting_name)
         setting_lbl.setWordWrap(True)
         setting_lbl.setMinimumWidth(120)
-        setting_lbl.setStyleSheet(
-            styles["encrypted_setting"] if encrypted_origin else styles["plain_setting"]
-        )
+        if is_catalog_content_change(change):
+            setting_style = styles.get("catalog_setting", styles["legend"])
+        elif encrypted_origin:
+            setting_style = styles["encrypted_setting"]
+        else:
+            setting_style = styles["plain_setting"]
+        setting_lbl.setStyleSheet(setting_style)
         tip = f"XML path:\n{change.path}\n\n{change_line}"
         if encrypted_origin:
             tip += "\n\nFrom encrypted-on-disk ruleta setup.xml (decrypted for compare)."
@@ -1217,6 +1233,7 @@ class ConfigScannerTabWidget(QFrame):
 
         baseline_value = resolve_apply_value(change, "baseline")
         target_value = resolve_apply_value(change, "target")
+        catalog = is_catalog_content_change(change)
         layout.addWidget(
             self._make_value_chip(
                 baseline_value,
@@ -1224,6 +1241,7 @@ class ConfigScannerTabWidget(QFrame):
                 encrypted_origin=encrypted_origin,
                 side_label="Reference",
                 snapshot_name=baseline_name,
+                catalog=catalog,
             ),
             stretch=0,
         )
@@ -1237,6 +1255,7 @@ class ConfigScannerTabWidget(QFrame):
                 encrypted_origin=encrypted_origin,
                 side_label="Compared",
                 snapshot_name=target_name,
+                catalog=catalog,
             ),
             stretch=0,
         )
@@ -1310,7 +1329,16 @@ class ConfigScannerTabWidget(QFrame):
             actions_layout.addWidget(more)
             self._apply_buttons.append((more, True))
 
-        if primary_side is None and is_structural_item_change(change):
+        if primary_side is None and is_catalog_content_change(change):
+            note = QLabel("catalog — not a 1-cent fault")
+            note.setStyleSheet(styles["legend"])
+            note.setToolTip(
+                "DenominationList is the factory menu. The game plays "
+                "CreditRateValues / SingleDenomination (usually 1 cent). "
+                "Unused catalog entries are not written back."
+            )
+            actions_layout.addWidget(note)
+        elif primary_side is None and is_structural_item_change(change):
             note = QLabel("Whole driver — use Restore file")
             note.setStyleSheet(styles["legend"])
             note.setToolTip(
@@ -2716,6 +2744,7 @@ class ConfigScannerTabWidget(QFrame):
             for part in (
                 f"build {snapshot.build_number}" if snapshot.build_number else "",
                 f"product {snapshot.product_version}" if snapshot.product_version else "",
+                snapshot.onehand_build or "",
             )
             if part
         ]

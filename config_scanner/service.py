@@ -90,6 +90,7 @@ class SnapshotInfo:
     profile_id: str | None = None
     has_software: bool = False
     has_archive: bool = False
+    onehand_build: str | None = None
 
 
 def order_snapshots_newest_first(
@@ -454,6 +455,7 @@ class ConfigScannerService:
                     profile_id=build_info.profile_id,
                     has_software=snapshot_has_embedded_software(entry),
                     has_archive=snapshot_content_root(entry) is not None,
+                    onehand_build=build_info.onehand_build,
                 )
             )
         return order_snapshots_newest_first(rows)

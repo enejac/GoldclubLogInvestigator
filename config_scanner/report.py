@@ -15,6 +15,7 @@ from config_scanner.xml_diff import (
     ContentChange,
     FileDiff,
     change_summary,
+    is_catalog_content_change,
     is_encrypted_origin_config_path,
     is_structural_item_change,
 )
@@ -346,6 +347,11 @@ def compare_panel_encrypted_origin_styles(palette: object | None = None) -> dict
                 f"padding: 2px 8px; border-radius: 4px; "
                 f"background-color: {rgba_css(muted, 0.2)}; color: {muted.name()};"
             ),
+            "chip_catalog": (
+                f"padding: 2px 8px; border-radius: 4px; "
+                f"background-color: {rgba_css(muted, 0.16)}; color: {muted.name()};"
+            ),
+            "catalog_setting": f"color: {muted.name()};",
             "arrow": f"color: {muted.name()}; font-weight: 600; padding: 0 4px;",
             "file_card": (
                 f"border: 1px solid {rgba_css(muted, 0.35)}; border-radius: 6px; "
@@ -373,6 +379,11 @@ def compare_panel_encrypted_origin_styles(palette: object | None = None) -> dict
             "padding: 2px 8px; border-radius: 4px; "
             "background-color: rgba(158, 158, 158, 0.2); color: #9E9E9E;"
         ),
+        "chip_catalog": (
+            "padding: 2px 8px; border-radius: 4px; "
+            "background-color: rgba(158, 158, 158, 0.16); color: #B0B0B0;"
+        ),
+        "catalog_setting": "color: #B0B0B0;",
         "arrow": "color: #9E9E9E; font-weight: 600; padding: 0 4px;",
         "file_card": "border: 1px solid #3E3E42; border-radius: 6px; padding: 4px;",
     }
@@ -446,6 +457,9 @@ def is_actionable_content_change(
 
     if is_protected_identity_field(change.path, relative_path):
         return False
+    # Factory denom menu / 1-cent lock — display only, do not write the catalog.
+    if is_catalog_content_change(change):
+        return False
     # Whole HW driver add/remove is not a leaf Write — restore the file instead.
     if is_structural_item_change(change):
         return False
@@ -495,8 +509,10 @@ def content_change_panel_partition(
     primary: list[ContentChange] = []
     opaque: list[ContentChange] = []
     for change in changes:
-        if is_structural_item_change(change) or is_actionable_content_change(
-            change, relative_path=relative_path
+        if (
+            is_structural_item_change(change)
+            or is_catalog_content_change(change)
+            or is_actionable_content_change(change, relative_path=relative_path)
         ):
             primary.append(change)
         else:
@@ -512,6 +528,7 @@ def file_diff_has_actionable_changes(file_diff: FileDiff) -> bool:
     return any(
         is_actionable_content_change(c, relative_path=rel)
         or is_structural_item_change(c)
+        or is_catalog_content_change(c)
         for c in file_diff.content_diff
     )
 
@@ -628,6 +645,13 @@ def format_compare_panel_header(
 
 def _format_content_change(change: ContentChange) -> str:
     setting = _setting_name(change.path)
+    if is_catalog_content_change(change):
+        return (
+            f"  {setting} (catalog): {_format_plain_value(change.old_value)}"
+            f" \u2192 {_format_plain_value(change.new_value)} — "
+            f"factory menu / unused denoms; game plays CreditRateValues "
+            f"or SingleDenomination (usually 1 cent)"
+        )
     if is_structural_item_change(change):
         # Be explicit: list-index churn is NOT a rename of one driver into another.
         if change.change_type == "removed":

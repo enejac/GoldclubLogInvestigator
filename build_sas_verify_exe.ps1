@@ -21,6 +21,11 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
+$venvScripts = Join-Path $PSScriptRoot ".venv\Scripts"
+if (Test-Path -LiteralPath (Join-Path $venvScripts "python.exe")) {
+    $env:Path = "$venvScripts;$env:Path"
+}
+
 Write-Host "Building SasVerifyMeters.exe (standalone SAS verify) -> repo root" -ForegroundColor Cyan
 
 python -c "import PyInstaller" 2>$null

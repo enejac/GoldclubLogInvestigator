@@ -48,6 +48,22 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
+$venvScripts = Join-Path $PSScriptRoot ".venv\Scripts"
+if (Test-Path -LiteralPath (Join-Path $venvScripts "python.exe")) {
+    $env:Path = "$venvScripts;$env:Path"
+    Write-Host "Using repo venv: $venvScripts\python.exe" -ForegroundColor DarkGray
+}
+
+function Test-PythonModule {
+    param([Parameter(Mandatory)][string]$Module)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & python -c "import $Module" 2>$null | Out-Null
+    $ok = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $prev
+    return $ok
+}
+
 if ($SasVerify) {
     & (Join-Path $PSScriptRoot "build_sas_verify_exe.ps1") -InstallDeps:$InstallDeps
     exit $LASTEXITCODE
@@ -94,8 +110,7 @@ function Invoke-OfflineSafePipInstall {
 }
 
 # Ensure PyInstaller is available.
-python -c "import PyInstaller" 2>$null
-if ($LASTEXITCODE -ne 0) {
+if (-not (Test-PythonModule "PyInstaller")) {
     Write-Host "PyInstaller not found - attempting install..." -ForegroundColor Yellow
     if (-not (Invoke-OfflineSafePipInstall -PipArguments @('-m', 'pip', 'install', 'pyinstaller'))) {
         Write-Host "ERROR: PyInstaller is required and could not be installed offline." -ForegroundColor Red
@@ -120,15 +135,13 @@ if ($InstallDeps) {
 # Warn early if a full/local_ai build is missing optional deps.
 if ($profile -eq "full") {
     foreach ($mod in @("cv2", "numpy", "google.genai")) {
-        python -c "import $mod" 2>$null
-        if ($LASTEXITCODE -ne 0) {
+        if (-not (Test-PythonModule $mod)) {
             Write-Host "WARN: '$mod' not importable - that feature will be omitted. Run with -InstallDeps while online." -ForegroundColor Yellow
         }
     }
 }
 if ($profile -in @("local_ai", "full")) {
-    python -c "import llama_cpp" 2>$null
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Test-PythonModule "llama_cpp")) {
         Write-Host "WARN: llama_cpp not importable - AI Helper stays search-only. Run with -BundleLocalAi -InstallDeps." -ForegroundColor Yellow
     }
     # PyPI win wheels may ship Debug CRT (*D.dll); fetch official Release DLLs for packaging.

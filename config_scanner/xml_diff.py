@@ -121,12 +121,61 @@ def _element_text_value(element: ET.Element) -> str:
     return (element.text or "").strip()
 
 
+def _homogeneous_leaf_tag(element: ET.Element) -> str | None:
+    """Tag name when every child is a same-name leaf with no ``name`` attr."""
+    children = list(element)
+    if not children:
+        return None
+    names = {_element_local_name(child) for child in children}
+    if len(names) != 1:
+        return None
+    for child in children:
+        if list(child):
+            return None
+        if child.attrib.get("name"):
+            return None
+    return next(iter(names))
+
+
+def _is_joined_list_parent(element: ET.Element) -> bool:
+    """True when this node is stored as one comma-separated catalog/list value."""
+    if _homogeneous_leaf_tag(element) is None:
+        return False
+    from config_scanner.denom_compare import is_denom_list_parent_name
+
+    if is_denom_list_parent_name(_element_local_name(element)):
+        return True
+    return len(list(element)) >= 2
+
+
+def _join_leaf_list(element: ET.Element) -> str:
+    return ",".join(_element_text_value(child) for child in list(element))
+
+
+def _replace_leaf_list(element: ET.Element, value: str, child_tag: str) -> None:
+    for child in list(element):
+        element.remove(child)
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    for part in parts:
+        child = ET.SubElement(element, child_tag)
+        child.text = part
+
+
 def flat_xml_map(document: ET.ElementTree) -> dict[str, str]:
     root = document.getroot()
     parent_map = _build_parent_map(root)
+    joined_parents: set[ET.Element] = set()
     result: dict[str, str] = {}
     for element in root.iter():
+        if not _is_joined_list_parent(element):
+            continue
+        path = _element_path_with_map(element, parent_map)
+        result[path] = _join_leaf_list(element)
+        joined_parents.add(element)
+    for element in root.iter():
         if list(element):
+            continue
+        if parent_map.get(element) in joined_parents:
             continue
         path = _element_path_with_map(element, parent_map)
         result[path] = _element_text_value(element)
@@ -163,7 +212,9 @@ def compare_keyed_maps(
             changes.append(ContentChange("added", key, None, target_map[key]))
         elif baseline_exists and not target_exists:
             changes.append(ContentChange("removed", key, baseline_map[key], None))
-    return collapse_identity_item_changes(changes)
+    from config_scanner.denom_compare import classify_denom_changes
+
+    return classify_denom_changes(collapse_identity_item_changes(changes))
 
 
 def _item_identity_prefix(path: str) -> str | None:
@@ -250,6 +301,13 @@ def is_structural_item_change(change: ContentChange) -> bool:
         # Path ends with identity item segment → whole entry.
         return change.change_type in {"added", "removed"}
     return False
+
+
+def is_catalog_content_change(change: ContentChange) -> bool:
+    """True for factory denom-menu drift that is not an active-rate fault."""
+    from config_scanner.denom_compare import is_catalog_content_change as _is_catalog
+
+    return _is_catalog(change)
 
 
 def line_diff(baseline_lines: list[str], target_lines: list[str]) -> list[ContentChange]:
@@ -600,9 +658,12 @@ def apply_xml_value_at_path(file_path: Path, flat_path: str, value: str | None) 
     if element is None:
         raise ValueError(f"XML path not found in {file_path.name}: {flat_path}")
     if list(element):
-        raise ValueError(f"Cannot set text on non-leaf element: {flat_path}")
-
-    element.text = "" if value is None else value
+        child_tag = _homogeneous_leaf_tag(element)
+        if child_tag is None:
+            raise ValueError(f"Cannot set text on non-leaf element: {flat_path}")
+        _replace_leaf_list(element, "" if value is None else value, child_tag)
+    else:
+        element.text = "" if value is None else value
     tree.write(file_path, encoding="utf-8", xml_declaration=True)
 
 

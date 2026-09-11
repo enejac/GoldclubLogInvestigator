@@ -47,6 +47,10 @@ _tmp_logs/
 # Local ruleta version packages (software version swap tab)
 software_versions/
 
+# Local Python (this machine has no system Python; used for exe builds)
+.venv/
+.tools/
+
 # Python / build artifacts
 __pycache__/
 *.py[cod]

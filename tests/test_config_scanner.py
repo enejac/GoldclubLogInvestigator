@@ -517,6 +517,7 @@ def test_build_info_to_dict_uses_camel_case() -> None:
     assert payload["buildNumber"] == "37556"
     assert payload["scanTimestamp"] == "2026-07-13T10:00:00"
     assert payload["gameDrive"] == "D:\\"
+    assert payload["onehandBuild"] is None
     assert "build_number" not in payload
 
 

@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config_scanner.profiles import GameProfile, display_profile_label
+from onehand_build import detect_onehand_build_from_log_dir, format_onehand_build_suffix
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,8 @@ class BuildInfo:
     exe_product_name: str | None = None
     # Cabinet MachineName from ProductSerialNumber.json (e.g. GRT330106 / GST20664)
     machine_serial: str | None = None
+    # SlotLog ``OneHand.MainFrm - DB`` (Debug) vs a later mgconfig boot without it.
+    onehand_build: str | None = None
 
 
 def format_build_info_log_line(info: BuildInfo) -> str:
@@ -52,6 +55,8 @@ def format_build_info_log_line(info: BuildInfo) -> str:
             parts.append(f"{exe_label}={info.exe_product_version}")
         if info.exe_file_version and info.exe_file_version != info.exe_product_version:
             parts.append(f"fileVersion={info.exe_file_version}")
+    if info.onehand_build:
+        parts.append(f"onehandBuild={info.onehand_build}")
     return ", ".join(parts) if parts else "version unknown"
 
 
@@ -205,7 +210,7 @@ def format_software_display(info: BuildInfo) -> str:
         ver = f"build {build}"
     else:
         ver = "version unknown"
-    return f"{family} software {ver}"
+    return f"{family} software {ver}{format_onehand_build_suffix(info.onehand_build)}"
 
 
 def snapshot_software_token(info: BuildInfo) -> str:
@@ -380,6 +385,7 @@ class _ExeVersionInfo:
     file_version: str | None
     product_name: str | None
     display_version: str | None
+    onehand_build: str | None = None
 
 
 def _find_onehand_exe(scan_root: Path) -> Path | None:
@@ -593,26 +599,47 @@ def _extract_version_from_slotlog(log_dir: Path) -> str | None:
     return None
 
 
+def _slot_log_dir(scan_root: Path) -> Path | None:
+    """``Goldclub/var/log`` next to a slot folder, or the scan root itself."""
+    candidates = (
+        scan_root.parent / "var" / "log",
+        scan_root / "var" / "log",
+        scan_root,
+    )
+    for path in candidates:
+        try:
+            if path.is_dir():
+                return path
+        except OSError:
+            continue
+    return None
+
+
 def detect_slot_version(scan_root: Path) -> _ExeVersionInfo:
+    info = _ExeVersionInfo(None, None, None, None)
     exe_path = _find_onehand_exe(scan_root)
     if exe_path is not None:
         info = _extract_version_from_onehand_exe(exe_path)
-        if info.display_version or info.product_version:
-            return info
-    log_dir = scan_root.parent / "var" / "log"
-    try:
-        if log_dir.is_dir():
+    log_dir = _slot_log_dir(scan_root)
+    # Always read SlotLog for Debug/Release. PE IsDebug is not a SKU signal.
+    build = detect_onehand_build_from_log_dir(scan_root)
+    if build is None and log_dir is not None:
+        build = detect_onehand_build_from_log_dir(log_dir)
+    if not (info.display_version or info.product_version) and log_dir is not None:
+        try:
             core = _extract_version_from_slotlog(log_dir)
-            if core:
-                return _ExeVersionInfo(
-                    product_version=None,
-                    file_version=None,
-                    product_name=None,
-                    display_version=core,
-                )
-    except OSError:
-        pass
-    return _ExeVersionInfo(None, None, None, None)
+        except OSError:
+            core = None
+        if core:
+            info = _ExeVersionInfo(
+                product_version=None,
+                file_version=None,
+                product_name=None,
+                display_version=core,
+                onehand_build=build,
+            )
+            return info
+    return replace(info, onehand_build=build)
 
 
 def detect_roulette_exe_version(scan_root: Path) -> _ExeVersionInfo:
@@ -725,6 +752,7 @@ def _build_info_from_binary_fingerprint(
         exe_product_version=version_info.product_version or version_info.display_version,
         exe_file_version=version_info.file_version,
         exe_product_name=version_info.product_name,
+        onehand_build=version_info.onehand_build,
     )
 
 

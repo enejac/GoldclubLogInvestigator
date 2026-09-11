@@ -27,6 +27,7 @@ from product_version import (
     format_product_build_version,
     parse_product_core_from_build_string,
 )
+from onehand_build import detect_onehand_build_from_log_dir, format_onehand_build_suffix
 from gui.filter_runnable import (
     FilterIndexEmitter,
     QuickFilterSnapshot,
@@ -636,6 +637,7 @@ class IncidentViewModel(QObject):
         self._env_os: str | None = None
         self._env_enriched = False
         self._onehand_version: str | None = None
+        self._onehand_build: str | None = None
         self._accounting_registers_cache: dict[str, dict[str, int]] = {}
         self.current_product_name: str | None = None
         self.current_software_version: str | None = None
@@ -997,6 +999,10 @@ class IncidentViewModel(QObject):
     def onehand_version(self) -> str | None:
         """First ``OneHand.MainFrm - SlotMachine v…`` version seen this scan (same order as file parse)."""
         return self._onehand_version
+
+    def onehand_build(self) -> str | None:
+        """``Debug`` or ``Release`` from SlotLog ``OneHand.MainFrm - DB``, if seen."""
+        return self._onehand_build
 
     def software_version_product_raw(self) -> str | None:
         """Verbatim ``ProductVersion`` from ``OneHand.exe`` metadata (details tab), if read."""
@@ -1613,6 +1619,11 @@ class IncidentViewModel(QObject):
         self._software_version_product_raw = raw_pv
         self.current_software_version = core
         self.current_product_name = product
+        if self._looks_like_roulette_logs(root):
+            self._onehand_build = None
+        else:
+            # SlotLog MainFrm banner — not PE IsDebug / denom catalog.
+            self._onehand_build = detect_onehand_build_from_log_dir(root)
 
         if self.current_software_version:
             self.version_identified.emit(self.software_version_for_ai())
@@ -1624,7 +1635,9 @@ class IncidentViewModel(QObject):
         if not core:
             return PRODUCT_VERSION_PLACEHOLDER
         pn = (self.current_product_name or "").strip() or DEFAULT_PRODUCT_NAME
-        return format_product_build_version(pn, core)
+        return format_product_build_version(pn, core) + format_onehand_build_suffix(
+            self._onehand_build
+        )
 
     def _slotlog_candidate_paths(self, root: Path) -> list[str]:
         """Glob patterns matching SlotLog / OneHand logs (same family as version sniff)."""
@@ -3079,6 +3092,7 @@ class IncidentViewModel(QObject):
         self._event_ram_attempted.clear()
         self._live_ram_pending.clear()
         self._onehand_version = None
+        self._onehand_build = None
         self.current_product_name = None
         self.current_software_version = None
         self._software_version_product_raw = None

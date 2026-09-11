@@ -755,7 +755,9 @@ class MainWindow(QMainWindow):
         self._onehand_version_lbl.setToolTip(
             "Primary source (Windows): Product version from OneHand.exe beside the scan root "
             "(same as file Properties → Details), including RC labels (e.g. +RC6).\n"
-            "Fallback: log lines «OneHand.MainFrm - SlotMachine v…» / LogDaemon «Spawning v…»."
+            "Fallback: log lines «OneHand.MainFrm - SlotMachine v…» / LogDaemon «Spawning v…».\n"
+            "Debug vs Release: SlotLog «OneHand.MainFrm - DB» after static init "
+            "(not PE IsDebug, not denom count)."
         )
         self.software_version_label = self._onehand_version_lbl
         self.software_version_label.setText("Version: [Scanning...]")
@@ -1552,7 +1554,9 @@ class MainWindow(QMainWindow):
             self.software_version_label.setToolTip(
                 "Primary source (Windows): Product version from OneHand.exe beside the scan root "
                 "(same as file Properties → Details).\n"
-                "Fallback: log lines «OneHand.MainFrm - SlotMachine v…» / LogDaemon «Spawning v…»."
+                "Fallback: log lines «OneHand.MainFrm - SlotMachine v…» / LogDaemon «Spawning v…».\n"
+                "Debug vs Release: SlotLog «OneHand.MainFrm - DB» after static init "
+                "(not PE IsDebug, not denom count)."
             )
         inc = self._vm.selected_incident()
         if isinstance(inc, Incident):

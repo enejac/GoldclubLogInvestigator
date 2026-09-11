@@ -544,6 +544,7 @@ def merge_build_info_versions(target: BuildInfo, donor: BuildInfo) -> BuildInfo:
         exe_file_version=target.exe_file_version or donor.exe_file_version,
         exe_product_name=target.exe_product_name or donor.exe_product_name,
         machine_serial=target.machine_serial or donor.machine_serial,
+        onehand_build=target.onehand_build or donor.onehand_build,
     )
 
 
@@ -599,6 +600,7 @@ def enrich_snapshot_build_info(
         exe_file_version=merged.exe_file_version,
         exe_product_name=merged.exe_product_name,
         machine_serial=existing.machine_serial or refreshed.machine_serial,
+        onehand_build=existing.onehand_build or refreshed.onehand_build,
     )
     if persist and not build_info_version_fields_missing(merged):
         save_json(snapshot_dir / "build-info.json", build_info_to_dict(merged))
@@ -622,6 +624,7 @@ def build_info_to_dict(info: BuildInfo) -> dict[str, str | None]:
         "exeFileVersion": info.exe_file_version,
         "exeProductName": info.exe_product_name,
         "machineSerial": info.machine_serial,
+        "onehandBuild": info.onehand_build,
     }
 
 
@@ -692,4 +695,5 @@ def load_build_info(snapshot_dir: Path) -> BuildInfo:
         exe_file_version=data.get("exeFileVersion") or data.get("exe_file_version"),
         exe_product_name=data.get("exeProductName") or data.get("exe_product_name"),
         machine_serial=data.get("machineSerial") or data.get("machine_serial"),
+        onehand_build=data.get("onehandBuild") or data.get("onehand_build"),
     )
